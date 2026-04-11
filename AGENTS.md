@@ -3,11 +3,21 @@
 ## Build & Run
 
 ```bash
-make build   # builds to ./bin/vm AND codesigns with entitlements.plist
-make run     # runs ./bin/vm
+make build   # builds to ./bin/monolith AND codesigns with entitlements.plist
+make run     # builds and runs: monolith vm run (auto-generated name)
 ```
 
 `go build` alone is not enough. The binary **must** be codesigned with `entitlements.plist` (grants `com.apple.security.virtualization`) or it will crash at runtime. Always use `make build`.
+
+## CLI
+
+```bash
+monolith vm run [name]    # boot a VM (creates on first run, reuses if exists)
+monolith vm list          # list all VMs (name, disk size, created date, OS)
+monolith vm rm <name>     # delete a VM (prompts for confirmation)
+```
+
+If no name is given to `run`, one is auto-generated as `lith-NNNNN` (random 5-digit number). VM names must be lowercase alphanumeric with hyphens, max 63 characters (valid hostnames).
 
 ## Tests
 
@@ -24,30 +34,67 @@ macOS + aarch64 only. The entire codebase depends on Apple Virtualization.framew
 
 ## Package Layout
 
-Single Go package `monolith` with one CLI entry point:
-
-- `runtime.go` — `Run()` orchestrates VM boot (boot loader, vCPUs, RAM, network, serial console, virtio entropy)
-- `kernel.go` — `DefaultKernel()` downloads Alpine aarch64 ISO, extracts/decompresses kernel+initrd to `~/.cache/monlith/`. `DefaultRootFS()` downloads the Alpine minirootfs tarball.
-- `storage.go` — `DefaultDisk()` creates a 1 GiB ext4 disk image via go-diskfs and populates it with the Alpine minirootfs. Writes a custom `/etc/inittab` for hvc0 console.
-- `cmd/vm/main.go` — CLI entry point, calls `monolith.Run(".")`
+```
+monolith/
+  cmd/monolith/main.go   — CLI entry point, calls cli.Execute()
+  cli/
+    root.go               — root cobra command ("monolith")
+    vm/
+      vm.go               — "vm" parent command
+      run.go              — "vm run [name]" with name generation and validation
+      list.go             — "vm list" reads vms/ directory, prints table
+      rm.go               — "vm rm <name>" with confirmation prompt
+  runtime.go              — Run(name) orchestrates VM boot (boot loader, vCPUs, RAM, network, serial, entropy)
+  kernel.go               — DefaultKernel() downloads Alpine ISO, extracts/decompresses kernel+initrd. DefaultRootFS() downloads minirootfs tarball. Shared assets cached under ~/.cache/monlith/alpine/.
+  storage.go              — DefaultDisk(tarball, name) creates per-VM 1 GiB ext4 disk image under ~/.cache/monlith/vms/<name>/. Populates with Alpine minirootfs, configures user accounts, autologin, MOTD, hostname.
+  runtime_test.go         — test that boots a real VM
+  entitlements.plist      — codesigning entitlement for Virtualization.framework
+```
 
 ## Boot Flow
 
 1. `DefaultKernel()` — download Alpine ISO, extract `vmlinuz-virt` and `initramfs-virt`, decompress the EFI-stub kernel to raw ARM64 Image
 2. `DefaultRootFS()` — download `alpine-minirootfs-3.21.6-aarch64.tar.gz`
-3. `DefaultDisk()` — create 1 GiB sparse file, format ext4 (4096-byte blocks via go-diskfs), extract minirootfs tarball into it, write custom `/etc/inittab`
+3. `DefaultDisk(tarball, name)` — create 1 GiB sparse file at `vms/<name>/disk.img`, format ext4 (4096-byte blocks via go-diskfs), extract minirootfs tarball, write VM config files (inittab, passwd, shadow, group, motd, hostname, autologin, sudo, .profile)
 4. Boot VM with kernel args `console=hvc0 root=/dev/vda rootfstype=ext4 rw` using stock Alpine initramfs
 5. Alpine Init loads virtio drivers, mounts `/dev/vda` as root, runs `switch_root`
-6. Busybox init reads `/etc/inittab`, remounts root rw, spawns `getty` on `hvc0`
+6. Busybox init reads `/etc/inittab`, remounts root rw, auto-logs in as user `mono`
+
+## VM Configuration
+
+- **User**: `mono` (uid 1000, gid 1000), member of `wheel` group
+- **Autologin**: `getty -n -l /usr/local/bin/autologin` on hvc0 — no login prompt
+- **sudo**: `/usr/local/bin/sudo` wrapper script using `su`. `sudo <cmd>` runs as root, `sudo -i` opens root shell.
+- **Hostname**: set to the VM name (both `/etc/hostname` and `::sysinit:/bin/hostname <name>` in inittab)
+- **MOTD**: shows VM name, Alpine version, user info, root access, disk info
+- **Root password**: empty (allows `su` without password prompt)
+
+## Cache Directory
+
+```
+~/.cache/monlith/
+  alpine/                  — shared Alpine assets (kernel, initrd, minirootfs)
+    vmlinuz-virt
+    initramfs-virt
+    minirootfs.tar.gz
+  vms/                     — per-VM directories
+    my-dev-box/
+      disk.img
+    lith-48271/
+      disk.img
+```
+
+- The cache directory is `monlith` (typo of "monolith") — intentionally kept for consistency.
+- Delete `~/.cache/monlith/alpine/` to force re-download of shared assets.
+- Delete `~/.cache/monlith/vms/<name>/disk.img` to regenerate a VM's disk without re-downloading.
+- Delete `~/.cache/monlith/vms/<name>/` entirely to remove a VM (or use `monolith vm rm <name>`).
 
 ## Gotchas
 
 - First run downloads ~60MB Alpine ISO + ~4MB minirootfs from `dl-cdn.alpinelinux.org`; subsequent runs use cached assets.
-- Cached assets: `~/.cache/monlith/{vmlinuz-virt,initramfs-virt,minirootfs.tar.gz,disk.img}`. Delete this directory to force re-download.
-- The cache directory is `monlith` (typo of "monolith") — intentionally kept for consistency.
-- Delete just `disk.img` to regenerate the disk without re-downloading.
 - `vmlinuz-virt` is an EFI stub — `decompressKernel()` in `kernel.go` extracts the gzip-compressed raw ARM64 Image that `VZLinuxBootLoader` requires.
 - go-diskfs `recalculateBlocksize()` always picks 1024-byte blocks regardless of disk size. We call `ext4.Create()` directly with `SectorsPerBlock: 8` (4096-byte blocks) to avoid a journal allocation bug.
 - go-diskfs ext4 does not support hardlinks (`Link()` returns `ErrNotImplemented`). Tar hardlinks are handled by copying the target file's content.
+- go-diskfs `OpenFile` with `O_CREATE|O_RDWR` does not truncate existing files. `configureVM` calls `Remove()` before writing config files that may already exist from the tarball extraction.
 - Networking (`udhcpc`) currently fails with `AF_PACKET` not supported — the virt kernel may need the `af_packet` module loaded.
 - No linter, formatter, or CI config exists. No pre-commit hooks.

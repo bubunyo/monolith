@@ -33,7 +33,7 @@ func setRawMode(f *os.File) {
 	termios.Tcsetattr(f.Fd(), termios.TCSANOW, &attr)
 }
 
-func Run(path string) error {
+func Run(name string) error {
 	kernelConfig, err := DefaultKernel()
 	if err != nil {
 		return errors.Wrap(err, "DefaultKernel")
@@ -44,7 +44,7 @@ func Run(path string) error {
 		return errors.Wrap(err, "DefaultRootFS")
 	}
 
-	disk, err := DefaultDisk(rootfs)
+	disk, err := DefaultDisk(rootfs, name)
 	if err != nil {
 		return errors.Wrap(err, "DefaultDisk")
 	}

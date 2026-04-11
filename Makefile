@@ -3,10 +3,10 @@
 all: build exec
 
 build:
-	go build -o ./bin/vm ./cmd/vm/main.go
-	codesign --entitlements entitlements.plist -f -s - ./bin/vm
+	go build -o ./bin/monolith ./cmd/monolith/main.go
+	codesign --entitlements entitlements.plist -f -s - ./bin/monolith
 
 run: build exec
 
 exec:
-	./bin/vm
+	./bin/monolith vm run

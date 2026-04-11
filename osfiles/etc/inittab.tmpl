@@ -1,0 +1,19 @@
+# /etc/inittab — busybox init for monolith VM
+# Alpine initramfs already mounts proc, sysfs, devtmpfs and root (ro).
+::sysinit:/bin/mount -o remount,rw /
+::sysinit:/bin/mkdir -p /dev/pts /dev/shm /run /tmp
+::sysinit:/bin/mount -t devpts devpts /dev/pts
+::sysinit:/bin/mount -t tmpfs tmpfs /dev/shm
+::sysinit:/bin/mount -t tmpfs tmpfs /run
+::sysinit:/bin/mount -t tmpfs tmpfs /tmp
+::sysinit:/sbin/mdev -s
+::sysinit:/bin/hostname {{.Name}}
+::sysinit:/sbin/ifconfig lo 127.0.0.1 up
+::sysinit:/sbin/ifconfig eth0 up
+::sysinit:/sbin/udhcpc -i eth0 -q -n -f
+
+# Auto-login as mono (no login prompt)
+hvc0::respawn:/sbin/getty -n -l /usr/local/bin/autologin 0 hvc0
+
+::ctrlaltdel:/sbin/reboot
+::shutdown:/bin/umount -a -r

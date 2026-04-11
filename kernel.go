@@ -31,25 +31,25 @@ type KernelAssets struct {
 }
 
 func DefaultKernel() (*KernelAssets, error) {
-	cacheDir, err := cacheDir()
+	alpineDir, err := alpineCacheDir()
 	if err != nil {
 		return nil, err
 	}
 
-	kernelPath := filepath.Join(cacheDir, kernelName)
-	initrdPath := filepath.Join(cacheDir, initrdName)
+	kernelPath := filepath.Join(alpineDir, kernelName)
+	initrdPath := filepath.Join(alpineDir, initrdName)
 
 	if exists(kernelPath) && exists(initrdPath) {
 		return &KernelAssets{KernelPath: kernelPath, InitrdPath: initrdPath}, nil
 	}
 
-	isoPath := filepath.Join(cacheDir, isoName)
+	isoPath := filepath.Join(alpineDir, isoName)
 	if err := downloadISO(isoPath); err != nil {
 		return nil, fmt.Errorf("downloading iso: %w", err)
 	}
 	defer os.Remove(isoPath)
 
-	if err := extractFromISO(isoPath, cacheDir); err != nil {
+	if err := extractFromISO(isoPath, alpineDir); err != nil {
 		return nil, fmt.Errorf("extracting kernel: %w", err)
 	}
 
@@ -59,12 +59,12 @@ func DefaultKernel() (*KernelAssets, error) {
 // DefaultRootFS returns the path to the cached Alpine minirootfs tarball,
 // downloading it on first use.
 func DefaultRootFS() (string, error) {
-	cache, err := cacheDir()
+	alpineDir, err := alpineCacheDir()
 	if err != nil {
 		return "", err
 	}
 
-	rootfsPath := filepath.Join(cache, minirootfsName)
+	rootfsPath := filepath.Join(alpineDir, minirootfsName)
 	if exists(rootfsPath) {
 		return rootfsPath, nil
 	}
@@ -100,6 +100,17 @@ func cacheDir() (string, error) {
 		return "", err
 	}
 	dir := filepath.Join(home, ".cache", "monlith")
+	return dir, os.MkdirAll(dir, 0755)
+}
+
+// alpineCacheDir returns the path for shared Alpine assets (kernel, initrd,
+// minirootfs) scoped under the "alpine" subdirectory of the cache.
+func alpineCacheDir() (string, error) {
+	base, err := cacheDir()
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Join(base, "alpine")
 	return dir, os.MkdirAll(dir, 0755)
 }
 

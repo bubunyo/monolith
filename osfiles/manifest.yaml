@@ -1,0 +1,25 @@
+files:
+  - src: etc/hostname.tmpl
+    dst: etc/hostname
+    mode: "0644"
+  - src: etc/inittab.tmpl
+    dst: etc/inittab
+    mode: "0644"
+  - src: etc/motd.tmpl
+    dst: etc/motd
+    mode: "0644"
+  - src: etc/passwd
+    dst: etc/passwd
+    mode: "0644"
+  - src: etc/shadow
+    dst: etc/shadow
+    mode: "0600"
+  - src: etc/group
+    dst: etc/group
+    mode: "0644"
+  - src: usr/local/bin/autologin
+    dst: usr/local/bin/autologin
+    mode: "0755"
+  - src: usr/local/bin/sudo
+    dst: usr/local/bin/sudo
+    mode: "0755"
