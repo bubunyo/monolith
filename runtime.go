@@ -39,10 +39,20 @@ func Run(path string) error {
 		return errors.Wrap(err, "DefaultKernel")
 	}
 
-	// 1. Define the Boot Loader (Linux example)
+	rootfs, err := DefaultRootFS()
+	if err != nil {
+		return errors.Wrap(err, "DefaultRootFS")
+	}
+
+	disk, err := DefaultDisk(rootfs)
+	if err != nil {
+		return errors.Wrap(err, "DefaultDisk")
+	}
+
+	// 1. Define the Boot Loader
 	bootLoader, err := vz.NewLinuxBootLoader(
 		kernelConfig.KernelPath,
-		vz.WithCommandLine("console=hvc0 root=/dev/vda"),
+		vz.WithCommandLine("console=hvc0 root=/dev/vda rootfstype=ext4 rw"),
 		vz.WithInitrd(kernelConfig.InitrdPath),
 	)
 	if err != nil {
@@ -53,11 +63,6 @@ func Run(path string) error {
 	config, err := vz.NewVirtualMachineConfiguration(bootLoader, 2, 2*1024*1024*1024) // 2 vCPUs, 2GB RAM
 	if err != nil {
 		return errors.Wrap(err, "vx.VirtualMachineConfiguration")
-	}
-
-	disk, err := DefaultDisk()
-	if err != nil {
-		return errors.Wrap(err, "DefaultDisk")
 	}
 
 	// 3. Add Storage

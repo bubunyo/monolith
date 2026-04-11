@@ -15,11 +15,14 @@ import (
 )
 
 const (
-	alpineVersion = "3.21.0"
-	kernelURL     = "https://dl-cdn.alpinelinux.org/alpine/v3.21/releases/aarch64/alpine-virt-" + alpineVersion + "-aarch64.iso"
-	isoName       = "alpine-virt.iso"
-	kernelName    = "vmlinuz-virt"
-	initrdName    = "initramfs-virt"
+	alpineVersion    = "3.21.0"
+	alpineMinirootfs = "3.21.6"
+	kernelURL        = "https://dl-cdn.alpinelinux.org/alpine/v3.21/releases/aarch64/alpine-virt-" + alpineVersion + "-aarch64.iso"
+	minirootfsURL    = "https://dl-cdn.alpinelinux.org/alpine/v3.21/releases/aarch64/alpine-minirootfs-" + alpineMinirootfs + "-aarch64.tar.gz"
+	isoName          = "alpine-virt.iso"
+	kernelName       = "vmlinuz-virt"
+	initrdName       = "initramfs-virt"
+	minirootfsName   = "minirootfs.tar.gz"
 )
 
 type KernelAssets struct {
@@ -51,6 +54,44 @@ func DefaultKernel() (*KernelAssets, error) {
 	}
 
 	return &KernelAssets{KernelPath: kernelPath, InitrdPath: initrdPath}, nil
+}
+
+// DefaultRootFS returns the path to the cached Alpine minirootfs tarball,
+// downloading it on first use.
+func DefaultRootFS() (string, error) {
+	cache, err := cacheDir()
+	if err != nil {
+		return "", err
+	}
+
+	rootfsPath := filepath.Join(cache, minirootfsName)
+	if exists(rootfsPath) {
+		return rootfsPath, nil
+	}
+
+	fmt.Println("Downloading Alpine minirootfs...")
+	resp, err := http.Get(minirootfsURL)
+	if err != nil {
+		return "", fmt.Errorf("downloading minirootfs: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("downloading minirootfs: HTTP %d", resp.StatusCode)
+	}
+
+	f, err := os.Create(rootfsPath)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	if _, err := io.Copy(f, resp.Body); err != nil {
+		os.Remove(rootfsPath)
+		return "", fmt.Errorf("writing minirootfs: %w", err)
+	}
+
+	return rootfsPath, nil
 }
 
 func cacheDir() (string, error) {
