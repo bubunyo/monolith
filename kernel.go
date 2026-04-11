@@ -22,12 +22,14 @@ const (
 	isoName          = "alpine-virt.iso"
 	kernelName       = "vmlinuz-virt"
 	initrdName       = "initramfs-virt"
+	modloopName      = "modloop-virt"
 	minirootfsName   = "minirootfs.tar.gz"
 )
 
 type KernelAssets struct {
-	KernelPath string
-	InitrdPath string
+	KernelPath  string
+	InitrdPath  string
+	ModloopPath string
 }
 
 func DefaultKernel() (*KernelAssets, error) {
@@ -38,9 +40,14 @@ func DefaultKernel() (*KernelAssets, error) {
 
 	kernelPath := filepath.Join(alpineDir, kernelName)
 	initrdPath := filepath.Join(alpineDir, initrdName)
+	modloopPath := filepath.Join(alpineDir, modloopName)
 
-	if exists(kernelPath) && exists(initrdPath) {
-		return &KernelAssets{KernelPath: kernelPath, InitrdPath: initrdPath}, nil
+	if exists(kernelPath) && exists(initrdPath) && exists(modloopPath) {
+		return &KernelAssets{
+			KernelPath:  kernelPath,
+			InitrdPath:  initrdPath,
+			ModloopPath: modloopPath,
+		}, nil
 	}
 
 	isoPath := filepath.Join(alpineDir, isoName)
@@ -53,7 +60,11 @@ func DefaultKernel() (*KernelAssets, error) {
 		return nil, fmt.Errorf("extracting kernel: %w", err)
 	}
 
-	return &KernelAssets{KernelPath: kernelPath, InitrdPath: initrdPath}, nil
+	return &KernelAssets{
+		KernelPath:  kernelPath,
+		InitrdPath:  initrdPath,
+		ModloopPath: modloopPath,
+	}, nil
 }
 
 // DefaultRootFS returns the path to the cached Alpine minirootfs tarball,
@@ -153,7 +164,7 @@ func extractFromISO(isoPath, destDir string) error {
 		return fmt.Errorf("getting filesystem: %w", err)
 	}
 
-	for _, name := range []string{kernelName, initrdName} {
+	for _, name := range []string{kernelName, initrdName, modloopName} {
 		if err := extractFile(fs, "/boot/"+name, filepath.Join(destDir, name)); err != nil {
 			return fmt.Errorf("extracting %s: %w", name, err)
 		}

@@ -44,7 +44,7 @@ func Run(name string) error {
 		return errors.Wrap(err, "DefaultRootFS")
 	}
 
-	disk, err := DefaultDisk(rootfs, name)
+	disk, err := DefaultDisk(rootfs, kernelConfig.ModloopPath, name)
 	if err != nil {
 		return errors.Wrap(err, "DefaultDisk")
 	}
@@ -52,7 +52,7 @@ func Run(name string) error {
 	// 1. Define the Boot Loader
 	bootLoader, err := vz.NewLinuxBootLoader(
 		kernelConfig.KernelPath,
-		vz.WithCommandLine("console=hvc0 root=/dev/vda rootfstype=ext4 rw"),
+		vz.WithCommandLine("console=hvc0 root=/dev/vda rootfstype=ext4 rw modules=squashfs,loop"),
 		vz.WithInitrd(kernelConfig.InitrdPath),
 	)
 	if err != nil {

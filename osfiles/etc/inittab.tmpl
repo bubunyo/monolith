@@ -8,6 +8,18 @@
 ::sysinit:/bin/mount -t tmpfs tmpfs /tmp
 ::sysinit:/sbin/mdev -s
 ::sysinit:/bin/hostname {{.Name}}
+
+# Mount the modloop squashfs to make kernel modules available.
+# The squashfs contains modules/<version>/... at its root.
+# Mount at /.modloop, then symlink /lib/modules → /.modloop/modules
+# so modprobe finds /lib/modules/<version>/ as expected.
+::sysinit:/bin/mkdir -p /.modloop
+::sysinit:/bin/mount -t squashfs -o ro /lib/modloop-virt /.modloop
+::sysinit:/bin/rm -rf /lib/modules
+::sysinit:/bin/ln -s /.modloop/modules /lib/modules
+
+# Networking: load af_packet (needed for DHCP raw sockets), then configure.
+::sysinit:/sbin/modprobe af_packet
 ::sysinit:/sbin/ifconfig lo 127.0.0.1 up
 ::sysinit:/sbin/ifconfig eth0 up
 ::sysinit:/sbin/udhcpc -i eth0 -q -n -f

@@ -53,7 +53,7 @@ const defaultDiskSize = 1 << 30 // 1 GiB
 // DefaultDisk returns the path to the VM's disk image, creating and
 // populating it with the Alpine minirootfs on first use.
 // Each VM gets its own disk under ~/.cache/monlith/vms/<name>/disk.img.
-func DefaultDisk(rootfsTarball, name string) (string, error) {
+func DefaultDisk(rootfsTarball, modloopPath, name string) (string, error) {
 	cache, err := cacheDir()
 	if err != nil {
 		return "", err
@@ -69,14 +69,14 @@ func DefaultDisk(rootfsTarball, name string) (string, error) {
 		return diskPath, nil
 	}
 
-	if err := createDiskImage(diskPath, defaultDiskSize, rootfsTarball, name); err != nil {
+	if err := createDiskImage(diskPath, defaultDiskSize, rootfsTarball, modloopPath, name); err != nil {
 		os.Remove(diskPath) // clean up partial image on failure
 		return "", err
 	}
 	return diskPath, nil
 }
 
-func createDiskImage(path string, size int64, rootfsTarball, name string) error {
+func createDiskImage(path string, size int64, rootfsTarball, modloopPath, name string) error {
 	// Create a sparse file for the disk image.
 	f, err := os.Create(path)
 	if err != nil {
@@ -107,7 +107,7 @@ func createDiskImage(path string, size int64, rootfsTarball, name string) error 
 		return fmt.Errorf("creating ext4 filesystem: %w", err)
 	}
 
-	if err := populateRootFS(ext4fs, rootfsTarball, name); err != nil {
+	if err := populateRootFS(ext4fs, rootfsTarball, modloopPath, name); err != nil {
 		return fmt.Errorf("populating rootfs: %w", err)
 	}
 
@@ -116,7 +116,7 @@ func createDiskImage(path string, size int64, rootfsTarball, name string) error 
 
 // populateRootFS extracts an Alpine minirootfs tarball into the ext4
 // filesystem and writes a custom /etc/inittab for hvc0 console access.
-func populateRootFS(ext4fs filesystem.FileSystem, tarball, name string) error {
+func populateRootFS(ext4fs filesystem.FileSystem, tarball, modloopPath, name string) error {
 	f, err := os.Open(tarball)
 	if err != nil {
 		return err
@@ -217,6 +217,12 @@ func populateRootFS(ext4fs filesystem.FileSystem, tarball, name string) error {
 		}
 	}
 
+	// Copy the modloop squashfs into the rootfs so the kernel modules
+	// (including af_packet for networking) are available after boot.
+	if err := installModloop(ext4fs, modloopPath); err != nil {
+		return fmt.Errorf("installing modloop: %w", err)
+	}
+
 	// Apply VM-specific configuration: custom inittab, user accounts,
 	// autologin, and sudo support.
 	if err := configureVM(ext4fs, name); err != nil {
@@ -279,6 +285,38 @@ func writeFileBytes(ext4fs filesystem.FileSystem, name string, data []byte, hdr 
 	}
 
 	return data, nil
+}
+
+// installModloop copies the modloop squashfs image into the rootfs so that
+// kernel modules (notably af_packet, needed for DHCP) are available at boot.
+// The squashfs is stored at /lib/modloop-virt and mounted by inittab at
+// /lib/modules during sysinit.
+func installModloop(ext4fs filesystem.FileSystem, modloopPath string) error {
+	data, err := os.ReadFile(modloopPath)
+	if err != nil {
+		return fmt.Errorf("reading modloop: %w", err)
+	}
+
+	if err := ext4fs.Mkdir("lib"); err != nil {
+		return fmt.Errorf("mkdir lib: %w", err)
+	}
+
+	destPath := "lib/modloop-virt"
+	ef, err := ext4fs.OpenFile(destPath, os.O_CREATE|os.O_RDWR)
+	if err != nil {
+		return fmt.Errorf("create %s: %w", destPath, err)
+	}
+	if _, err := ef.Write(data); err != nil {
+		ef.Close()
+		return fmt.Errorf("write %s: %w", destPath, err)
+	}
+	ef.Close()
+
+	if err := ext4fs.Chmod(destPath, 0644); err != nil {
+		return fmt.Errorf("chmod %s: %w", destPath, err)
+	}
+
+	return nil
 }
 
 // configureVM installs all VM-specific configuration files into the ext4
