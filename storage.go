@@ -41,6 +41,13 @@ type templateData struct {
 	Name string
 }
 
+// truncater is the subset of ext4.FileSystem we need for Truncate.
+// The filesystem.FileSystem interface does not include Truncate, but the
+// concrete ext4 implementation does.
+type truncater interface {
+	Truncate(p string, size int64) error
+}
+
 const defaultDiskSize = 1 << 30 // 1 GiB
 
 // DefaultDisk returns the path to the VM's disk image, creating and
@@ -281,6 +288,13 @@ func configureVM(ext4fs filesystem.FileSystem, name string) error {
 	const monoUID = 1000
 	const monoGID = 1000
 
+	// We need Truncate to overwrite files without calling Remove (which has
+	// a go-diskfs bug that corrupts the block group descriptor free count).
+	trunc, ok := ext4fs.(truncater)
+	if !ok {
+		return fmt.Errorf("filesystem does not support Truncate")
+	}
+
 	// Parse the manifest.
 	manifestData, err := osFiles.ReadFile("osfiles/manifest.yaml")
 	if err != nil {
@@ -330,19 +344,25 @@ func configureVM(ext4fs filesystem.FileSystem, name string) error {
 			}
 		}
 
-		// Remove existing file first — go-diskfs OpenFile with O_CREATE
-		// does not truncate, so old content would bleed through.
-		ext4fs.Remove(entry.Dst)
-
+		// Overwrite the file in place. We avoid Remove() because go-diskfs
+		// ext4 Remove has a bug that double-counts freed blocks in the block
+		// group descriptor, causing "block bitmap and bg descriptor
+		// inconsistent" errors at mount time. Instead we open, write, then
+		// truncate the inode size to the new length (handles the case where
+		// the new content is shorter than the existing file).
 		ef, err := ext4fs.OpenFile(entry.Dst, os.O_CREATE|os.O_RDWR)
 		if err != nil {
 			return fmt.Errorf("create %s: %w", entry.Dst, err)
 		}
-		if _, err := ef.Write(content); err != nil {
+		n, err := ef.Write(content)
+		if err != nil {
 			ef.Close()
 			return fmt.Errorf("write %s: %w", entry.Dst, err)
 		}
 		ef.Close()
+		if err := trunc.Truncate(entry.Dst, int64(n)); err != nil {
+			return fmt.Errorf("truncate %s: %w", entry.Dst, err)
+		}
 
 		if err := ext4fs.Chmod(entry.Dst, mode); err != nil {
 			return fmt.Errorf("chmod %s: %w", entry.Dst, err)
@@ -367,16 +387,20 @@ export PS1='mono@%s:\w\$ '
 			return fmt.Errorf("mkdir %s: %w", dir, err)
 		}
 	}
-	ext4fs.Remove(profilePath)
+	// Overwrite .profile in place (no Remove — see go-diskfs bug above).
 	ef, err := ext4fs.OpenFile(profilePath, os.O_CREATE|os.O_RDWR)
 	if err != nil {
 		return fmt.Errorf("create %s: %w", profilePath, err)
 	}
-	if _, err := ef.Write([]byte(profileData)); err != nil {
+	n, err := ef.Write([]byte(profileData))
+	if err != nil {
 		ef.Close()
 		return fmt.Errorf("write %s: %w", profilePath, err)
 	}
 	ef.Close()
+	if err := trunc.Truncate(profilePath, int64(n)); err != nil {
+		return fmt.Errorf("truncate %s: %w", profilePath, err)
+	}
 	if err := ext4fs.Chmod(profilePath, 0644); err != nil {
 		return fmt.Errorf("chmod %s: %w", profilePath, err)
 	}
