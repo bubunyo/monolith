@@ -1,12 +1,11 @@
 package monolith
 
 import (
-	"fmt"
-	"os/exec"
+	"os"
 	"path/filepath"
 )
 
-const defaultDiskSize = "1g"
+const defaultDiskSize = 1 << 30 // 1 GiB
 
 func DefaultDisk() (string, error) {
 	cacheDir, err := cacheDir()
@@ -22,15 +21,11 @@ func DefaultDisk() (string, error) {
 	return diskPath, createDiskImage(diskPath, defaultDiskSize)
 }
 
-func createDiskImage(path, size string) error {
-	cmd := exec.Command("diskutil", "image", "create", "blank",
-		"--fs", "none",
-		"--format", "RAW",
-		"--size", size,
-		path,
-	)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("creating disk image: %s: %w", out, err)
+func createDiskImage(path string, size int64) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return err
 	}
-	return nil
+	defer f.Close()
+	return f.Truncate(size)
 }

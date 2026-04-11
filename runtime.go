@@ -55,21 +55,21 @@ func Run(path string) error {
 		return errors.Wrap(err, "vx.VirtualMachineConfiguration")
 	}
 
-	//disk, err := DefaultDisk()
-	//if err != nil {
-	//	return errors.Wrap(err, "DefaultDisk")
-	//}
+	disk, err := DefaultDisk()
+	if err != nil {
+		return errors.Wrap(err, "DefaultDisk")
+	}
 
 	// 3. Add Storage
-	//attachment, err := vz.NewDiskImageStorageDeviceAttachment(disk, false)
-	//if err != nil {
-	//	return errors.Wrap(err, "vz.NewDiskImageStorageDeviceAttachment")
-	//}
-	//storageConfig, err := vz.NewVirtioBlockDeviceConfiguration(attachment)
-	//if err != nil {
-	//	return errors.Wrap(err, "vz.NewVirtioBlockDeviceConfiguration")
-	//}
-	//config.SetStorageDevicesVirtualMachineConfiguration([]vz.StorageDeviceConfiguration{storageConfig})
+	attachment, err := vz.NewDiskImageStorageDeviceAttachment(disk, false)
+	if err != nil {
+		return errors.Wrap(err, "vz.NewDiskImageStorageDeviceAttachment")
+	}
+	storageConfig, err := vz.NewVirtioBlockDeviceConfiguration(attachment)
+	if err != nil {
+		return errors.Wrap(err, "vz.NewVirtioBlockDeviceConfiguration")
+	}
+	config.SetStorageDevicesVirtualMachineConfiguration([]vz.StorageDeviceConfiguration{storageConfig})
 
 	// 4. Add Network (NAT)
 	networkConfig, err := vz.NewNATNetworkDeviceAttachment()

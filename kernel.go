@@ -1,6 +1,8 @@
 package monolith
 
 import (
+	"bytes"
+	"compress/gzip"
 	"fmt"
 	"io"
 	"net/http"
@@ -56,7 +58,7 @@ func cacheDir() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	dir := filepath.Join(home, ".cache", "myruntime")
+	dir := filepath.Join(home, ".cache", "monlith")
 	return dir, os.MkdirAll(dir, 0755)
 }
 
@@ -104,6 +106,13 @@ func extractFromISO(isoPath, destDir string) error {
 			return fmt.Errorf("extracting %s: %w", name, err)
 		}
 	}
+
+	// The Alpine aarch64 vmlinuz-virt is an EFI stub with a gzip-compressed
+	// ARM64 Image payload. VZLinuxBootLoader needs the raw Image, so we
+	// decompress it in place.
+	if err := decompressKernel(filepath.Join(destDir, kernelName)); err != nil {
+		return fmt.Errorf("decompressing kernel: %w", err)
+	}
 	return nil
 }
 
@@ -122,4 +131,38 @@ func extractFile(fs filesystem.FileSystem, srcPath, destPath string) error {
 
 	_, err = io.Copy(dst, src)
 	return err
+}
+
+// decompressKernel extracts the raw ARM64 Image from an EFI-stub vmlinuz.
+// The EFI stub wraps a gzip stream (magic 0x1f 0x8b) containing the
+// uncompressed kernel that VZLinuxBootLoader requires.
+func decompressKernel(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+
+	gzipMagic := []byte{0x1f, 0x8b}
+	idx := bytes.Index(data, gzipMagic)
+	if idx < 0 {
+		// Not an EFI stub; assume already a raw Image.
+		return nil
+	}
+
+	gz, err := gzip.NewReader(bytes.NewReader(data[idx:]))
+	if err != nil {
+		return fmt.Errorf("opening gzip stream at offset %d: %w", idx, err)
+	}
+	defer gz.Close()
+
+	// Disable multistream so the reader stops after the first gzip member
+	// instead of trying to parse trailing EFI stub data as another member.
+	gz.Multistream(false)
+
+	image, err := io.ReadAll(gz)
+	if err != nil {
+		return fmt.Errorf("decompressing kernel: %w", err)
+	}
+
+	return os.WriteFile(path, image, 0644)
 }
