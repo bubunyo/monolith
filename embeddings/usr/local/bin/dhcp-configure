@@ -1,0 +1,31 @@
+#!/bin/sh
+# dhcp-configure — persistent DHCP client for monolith VMs.
+# Blocks until a lease is obtained. Retries indefinitely with backoff.
+
+IFACE="${1:-eth0}"
+MAX_WAIT=5
+ATTEMPT=0
+
+# Exit silently if interface does not exist (e.g. --network-mode none).
+if ! ifconfig "$IFACE" >/dev/null 2>&1; then
+	exit 0
+fi
+
+while true; do
+	ATTEMPT=$((ATTEMPT + 1))
+
+	# -i: interface  -q: quit after lease  -f: foreground
+	# -t 5: send up to 5 discovers  -T 3: 3s between discovers
+	# -n: exit non-zero if no lease
+	udhcpc -i "$IFACE" -q -f -n -t 5 -T 3 2>&1
+	if [ $? -eq 0 ]; then
+		exit 0
+	fi
+
+	# Backoff: wait longer between retries, cap at MAX_WAIT.
+	WAIT=$ATTEMPT
+	if [ $WAIT -gt $MAX_WAIT ]; then
+		WAIT=$MAX_WAIT
+	fi
+	sleep "$WAIT"
+done
