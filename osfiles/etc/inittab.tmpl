@@ -7,6 +7,7 @@
 ::sysinit:/bin/mount -t tmpfs tmpfs /run
 ::sysinit:/bin/mount -t tmpfs tmpfs /tmp
 ::sysinit:/sbin/mdev -s
+::sysinit:/bin/chmod 666 /dev/null /dev/zero /dev/urandom /dev/random /dev/tty
 ::sysinit:/bin/hostname {{.Name}}
 
 # Mount the modloop squashfs to make kernel modules available.

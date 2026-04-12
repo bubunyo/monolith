@@ -223,6 +223,12 @@ func populateRootFS(ext4fs filesystem.FileSystem, tarball, modloopPath, name str
 		return fmt.Errorf("installing modloop: %w", err)
 	}
 
+	// Set SUID bit on /bin/busybox so that busybox applets like su can
+	// switch users. Without this, "su" prints "must be suid to work properly".
+	if err := ext4fs.Chmod("bin/busybox", 0755|os.ModeSetuid); err != nil {
+		return fmt.Errorf("chmod suid busybox: %w", err)
+	}
+
 	// Apply VM-specific configuration: custom inittab, user accounts,
 	// autologin, and sudo support.
 	if err := configureVM(ext4fs, name); err != nil {

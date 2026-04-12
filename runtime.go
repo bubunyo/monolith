@@ -144,7 +144,7 @@ func Run(name string) error {
 			log.Println("recieved signal", result)
 		case newState := <-vm.StateChangedNotify():
 			if newState == vz.VirtualMachineStateRunning {
-				log.Println("start VM is running")
+				log.Println("VM is running")
 			}
 			if newState == vz.VirtualMachineStateStopped {
 				log.Println("stopped successfully")
