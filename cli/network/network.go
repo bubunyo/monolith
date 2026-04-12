@@ -13,6 +13,8 @@ var Cmd = &cobra.Command{
 
 func init() {
 	Cmd.AddCommand(createCmd)
+	Cmd.AddCommand(startCmd)
+	Cmd.AddCommand(stopCmd)
 	Cmd.AddCommand(listCmd)
 	Cmd.AddCommand(rmCmd)
 }

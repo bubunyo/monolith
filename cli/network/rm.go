@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"syscall"
 
 	"github.com/bubunyo/monolith"
 	"github.com/spf13/cobra"
@@ -46,15 +45,9 @@ var rmCmd = &cobra.Command{
 		}
 
 		// Stop the daemon if it's running.
-		pid, err := monolith.ReadNetworkPid(name)
-		if err == nil && pid > 0 {
-			proc, err := os.FindProcess(pid)
-			if err == nil {
-				// Send SIGTERM to the daemon.
-				if err := proc.Signal(syscall.SIGTERM); err == nil {
-					fmt.Printf("Stopped network daemon (pid %d)\n", pid)
-				}
-			}
+		stopped, _ := stopDaemon(name)
+		if stopped {
+			fmt.Printf("Stopped network daemon.\n")
 		}
 
 		// Remove the network directory.

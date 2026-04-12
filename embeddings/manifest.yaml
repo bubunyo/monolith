@@ -23,6 +23,9 @@ files:
   - src: usr/local/bin/sudo
     dst: usr/local/bin/sudo
     mode: "0755"
+  - src: usr/local/bin/dhcp-configure
+    dst: usr/local/bin/dhcp-configure
+    mode: "0755"
   - src: etc/apk/repositories
     dst: etc/apk/repositories
     mode: "0644"

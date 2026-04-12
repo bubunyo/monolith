@@ -11,7 +11,9 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
+	"unsafe"
 
 	"github.com/Code-Hex/vz/v3/vmnet"
 	"github.com/Code-Hex/vz/v3/xpc"
@@ -142,7 +144,7 @@ func IsNetworkDaemonAlive(name string) bool {
 // bytes to connecting clients over a unix domain socket.
 //
 // This function blocks until the daemon receives SIGTERM or SIGINT.
-func RunNetworkDaemon(name, mode string) error {
+func RunNetworkDaemon(name, mode string, verbose bool) error {
 	// Map monolith mode to vmnet mode.
 	var vmnetMode vmnet.Mode
 	switch mode {
@@ -220,7 +222,21 @@ func RunNetworkDaemon(name, mode string) error {
 	defer listener.Close()
 	defer os.Remove(sockPath)
 
-	log.Printf("network daemon %q started (mode=%s, subnet=%s, pid=%d)", name, mode, subnet.String(), os.Getpid())
+	log.Printf("network daemon %q started (mode=%s, subnet=%s, pid=%d, verbose=%t)", name, mode, subnet.String(), os.Getpid(), verbose)
+	log.Printf("serialization: %d bytes", len(serData))
+
+	// Start a monitor interface on the network to observe all traffic.
+	// Only active in verbose mode — logs DHCP, ARP, and other packets.
+	if verbose {
+		monIface, err := startMonitorInterface(network)
+		if err != nil {
+			log.Printf("warning: could not start monitor interface: %v", err)
+		} else {
+			log.Printf("monitor interface started (mac=%s, max_pkt=%d, max_read=%d)",
+				formatMACFromParam(monIface.Param), monIface.MaxPacketSize, monIface.MaxReadPacketCount)
+			go monitorPackets(name, monIface)
+		}
+	}
 
 	// Handle shutdown.
 	sigCh := make(chan os.Signal, 1)
@@ -249,6 +265,7 @@ func RunNetworkDaemon(name, mode string) error {
 		case conn := <-connCh:
 			// Serve the serialization bytes to the client.
 			// Protocol: 4-byte big-endian length prefix + raw bytes.
+			log.Printf("client connected from %s", conn.RemoteAddr())
 			go serveClient(conn, serData)
 
 		case err := <-errCh:
@@ -268,15 +285,16 @@ func serveClient(conn net.Conn, data []byte) {
 	lenBuf := make([]byte, 4)
 	binary.BigEndian.PutUint32(lenBuf, uint32(len(data)))
 	if _, err := conn.Write(lenBuf); err != nil {
-		log.Printf("error writing length to client: %v", err)
+		log.Printf("error writing length to client %s: %v", conn.RemoteAddr(), err)
 		return
 	}
 
 	// Write data.
 	if _, err := conn.Write(data); err != nil {
-		log.Printf("error writing data to client: %v", err)
+		log.Printf("error writing data to client %s: %v", conn.RemoteAddr(), err)
 		return
 	}
+	log.Printf("served %d bytes to client %s", len(data), conn.RemoteAddr())
 }
 
 // FetchNetworkSerialization connects to a network daemon's unix socket
@@ -312,4 +330,289 @@ func FetchNetworkSerialization(name string) ([]byte, error) {
 	}
 
 	return data, nil
+}
+
+// startMonitorInterface creates a vmnet.Interface on the network for packet monitoring.
+// The interface is set to not allocate a MAC (passive observer).
+func startMonitorInterface(network *vmnet.Network) (*vmnet.Interface, error) {
+	desc := xpc.NewDictionary(
+		xpc.KeyValue(vmnet.AllocateMacAddressKey, xpc.NewBool(false)),
+	)
+	return vmnet.StartInterfaceWithNetwork(network, desc)
+}
+
+// formatMACFromParam extracts and formats the MAC address from interface parameters.
+func formatMACFromParam(param *xpc.Dictionary) string {
+	if param == nil {
+		return "unknown"
+	}
+	mac := param.GetString("mac_address")
+	if mac == "" {
+		return "none"
+	}
+	return mac
+}
+
+// monitorPackets reads all packets from the vmnet interface and logs them.
+func monitorPackets(networkName string, iface *vmnet.Interface) {
+	mgr := vmnet.NewPktDescsManager(iface.MaxReadPacketCount, iface.MaxPacketSize)
+
+	// Use event callback for efficient packet notification.
+	iface.SetPacketsAvailableEventCallback(func(estimatedCount int) {
+		for {
+			count, err := iface.ReadPackets(mgr.PktDescs, iface.MaxReadPacketCount)
+			if err != nil {
+				log.Printf("[%s] monitor read error: %v", networkName, err)
+				return
+			}
+			if count == 0 {
+				return
+			}
+			for i := range count {
+				pkt := mgr.At(i)
+				size := pkt.GetPacketSize()
+				if size < 14 {
+					continue // too small for Ethernet header
+				}
+				// GetVmPktIov() returns a pointer to the struct iovec.
+				// On arm64, struct iovec = { void *iov_base; size_t iov_len; }
+				// The first 8 bytes are iov_base (pointer to the packet data).
+				iovPtr := pkt.GetVmPktIov()
+				iov_base := *(*unsafe.Pointer)(iovPtr)
+				frame := unsafe.Slice((*byte)(iov_base), size)
+				log.Printf("[%s] pkt size=%d", networkName, size)
+				logEthernetFrame(networkName, frame)
+			}
+			mgr.Reset()
+		}
+	})
+}
+
+// logEthernetFrame parses and logs an Ethernet frame.
+func logEthernetFrame(networkName string, frame []byte) {
+	if len(frame) < 14 {
+		return
+	}
+
+	dstMAC := formatMAC(frame[0:6])
+	srcMAC := formatMAC(frame[6:12])
+	etherType := binary.BigEndian.Uint16(frame[12:14])
+	payload := frame[14:]
+
+	switch etherType {
+	case 0x0806: // ARP
+		logARP(networkName, srcMAC, dstMAC, payload)
+	case 0x0800: // IPv4
+		logIPv4(networkName, srcMAC, dstMAC, payload)
+	case 0x86DD: // IPv6
+		if len(payload) >= 40 {
+			srcIP := formatIPv6(payload[8:24])
+			dstIP := formatIPv6(payload[24:40])
+			nextHdr := payload[6]
+			proto := ipv6ProtoName(nextHdr)
+			log.Printf("[%s] IPv6 %s -> %s  %s > %s  proto=%s  len=%d",
+				networkName, srcMAC, dstMAC, srcIP, dstIP, proto, len(frame))
+		}
+	default:
+		log.Printf("[%s] ETH %s -> %s  type=0x%04x  len=%d",
+			networkName, srcMAC, dstMAC, etherType, len(frame))
+	}
+}
+
+// logARP parses and logs an ARP packet.
+func logARP(networkName, srcMAC, dstMAC string, payload []byte) {
+	if len(payload) < 28 {
+		log.Printf("[%s] ARP %s -> %s  (truncated)", networkName, srcMAC, dstMAC)
+		return
+	}
+	op := binary.BigEndian.Uint16(payload[6:8])
+	senderIP := fmt.Sprintf("%d.%d.%d.%d", payload[14], payload[15], payload[16], payload[17])
+	targetIP := fmt.Sprintf("%d.%d.%d.%d", payload[24], payload[25], payload[26], payload[27])
+	senderMAC := formatMAC(payload[8:14])
+
+	opStr := "unknown"
+	switch op {
+	case 1:
+		opStr = "request"
+	case 2:
+		opStr = "reply"
+	}
+	log.Printf("[%s] ARP %s  %s (%s) -> %s  who-has %s",
+		networkName, opStr, senderIP, senderMAC, targetIP, targetIP)
+}
+
+// logIPv4 parses and logs an IPv4 packet, with special handling for DHCP/UDP.
+func logIPv4(networkName, srcMAC, dstMAC string, payload []byte) {
+	if len(payload) < 20 {
+		return
+	}
+	ihl := int(payload[0]&0x0f) * 4
+	proto := payload[9]
+	srcIP := fmt.Sprintf("%d.%d.%d.%d", payload[12], payload[13], payload[14], payload[15])
+	dstIP := fmt.Sprintf("%d.%d.%d.%d", payload[16], payload[17], payload[18], payload[19])
+
+	if proto == 17 && len(payload) >= ihl+8 { // UDP
+		udp := payload[ihl:]
+		srcPort := binary.BigEndian.Uint16(udp[0:2])
+		dstPort := binary.BigEndian.Uint16(udp[2:4])
+		udpPayload := udp[8:]
+
+		// DHCP: client port 68, server port 67
+		if (srcPort == 68 && dstPort == 67) || (srcPort == 67 && dstPort == 68) {
+			logDHCP(networkName, srcMAC, dstMAC, srcIP, dstIP, srcPort, udpPayload)
+			return
+		}
+		// DNS
+		if srcPort == 53 || dstPort == 53 {
+			log.Printf("[%s] DNS %s -> %s  %s:%d > %s:%d  len=%d",
+				networkName, srcMAC, dstMAC, srcIP, srcPort, dstIP, dstPort, len(udpPayload))
+			return
+		}
+		log.Printf("[%s] UDP %s -> %s  %s:%d > %s:%d  len=%d",
+			networkName, srcMAC, dstMAC, srcIP, srcPort, dstIP, dstPort, len(udpPayload))
+		return
+	}
+
+	if proto == 6 { // TCP
+		if len(payload) >= ihl+4 {
+			tcp := payload[ihl:]
+			srcPort := binary.BigEndian.Uint16(tcp[0:2])
+			dstPort := binary.BigEndian.Uint16(tcp[2:4])
+			log.Printf("[%s] TCP %s -> %s  %s:%d > %s:%d  len=%d",
+				networkName, srcMAC, dstMAC, srcIP, srcPort, dstIP, dstPort, len(payload)-ihl)
+			return
+		}
+	}
+
+	if proto == 1 { // ICMP
+		log.Printf("[%s] ICMP %s -> %s  %s > %s  len=%d",
+			networkName, srcMAC, dstMAC, srcIP, dstIP, len(payload)-ihl)
+		return
+	}
+
+	protoName := fmt.Sprintf("%d", proto)
+	switch proto {
+	case 6:
+		protoName = "TCP"
+	case 17:
+		protoName = "UDP"
+	case 1:
+		protoName = "ICMP"
+	case 2:
+		protoName = "IGMP"
+	}
+	log.Printf("[%s] IPv4 %s -> %s  %s > %s  proto=%s  len=%d",
+		networkName, srcMAC, dstMAC, srcIP, dstIP, protoName, len(payload))
+}
+
+// logDHCP parses and logs a DHCP packet.
+func logDHCP(networkName, srcMAC, dstMAC, srcIP, dstIP string, srcPort uint16, payload []byte) {
+	if len(payload) < 240 {
+		log.Printf("[%s] DHCP %s -> %s  %s > %s  (truncated, %d bytes)",
+			networkName, srcMAC, dstMAC, srcIP, dstIP, len(payload))
+		return
+	}
+
+	op := payload[0]
+	opStr := "unknown"
+	switch op {
+	case 1:
+		opStr = "request"
+	case 2:
+		opStr = "reply"
+	}
+
+	xid := binary.BigEndian.Uint32(payload[4:8])
+	clientMAC := formatMAC(payload[28:34])
+	yourIP := fmt.Sprintf("%d.%d.%d.%d", payload[16], payload[17], payload[18], payload[19])
+	serverIP := fmt.Sprintf("%d.%d.%d.%d", payload[20], payload[21], payload[22], payload[23])
+
+	// Parse DHCP message type from options (after 4-byte magic cookie at offset 236).
+	msgType := "unknown"
+	if len(payload) > 240 && payload[236] == 99 && payload[237] == 130 && payload[238] == 83 && payload[239] == 99 {
+		opts := payload[240:]
+		for len(opts) > 2 {
+			optType := opts[0]
+			if optType == 255 { // end
+				break
+			}
+			if optType == 0 { // pad
+				opts = opts[1:]
+				continue
+			}
+			optLen := int(opts[1])
+			if len(opts) < 2+optLen {
+				break
+			}
+			if optType == 53 && optLen == 1 { // DHCP Message Type
+				switch opts[2] {
+				case 1:
+					msgType = "DISCOVER"
+				case 2:
+					msgType = "OFFER"
+				case 3:
+					msgType = "REQUEST"
+				case 4:
+					msgType = "DECLINE"
+				case 5:
+					msgType = "ACK"
+				case 6:
+					msgType = "NAK"
+				case 7:
+					msgType = "RELEASE"
+				case 8:
+					msgType = "INFORM"
+				}
+			}
+			opts = opts[2+optLen:]
+		}
+	}
+
+	log.Printf("[%s] DHCP %s (%s)  xid=0x%08x  client=%s  your-ip=%s  server-ip=%s  %s > %s  src-mac=%s",
+		networkName, msgType, opStr, xid, clientMAC, yourIP, serverIP, srcIP, dstIP, srcMAC)
+}
+
+// formatMAC formats 6 bytes as a MAC address string.
+func formatMAC(b []byte) string {
+	if len(b) < 6 {
+		return "??:??:??:??:??:??"
+	}
+	return fmt.Sprintf("%02x:%02x:%02x:%02x:%02x:%02x", b[0], b[1], b[2], b[3], b[4], b[5])
+}
+
+// formatIPv6 formats 16 bytes as a shortened IPv6 address string.
+func formatIPv6(b []byte) string {
+	if len(b) < 16 {
+		return "?"
+	}
+	ip := net.IP(b)
+	return ip.String()
+}
+
+// ipv6ProtoName returns a human-readable name for an IPv6 next header value.
+func ipv6ProtoName(proto byte) string {
+	switch proto {
+	case 6:
+		return "TCP"
+	case 17:
+		return "UDP"
+	case 58:
+		return "ICMPv6"
+	case 59:
+		return "NoNext"
+	default:
+		return fmt.Sprintf("%d", proto)
+	}
+}
+
+// formatHexDump returns a hex dump of the first n bytes for debugging.
+func formatHexDump(data []byte, maxLen int) string {
+	if len(data) > maxLen {
+		data = data[:maxLen]
+	}
+	parts := make([]string, len(data))
+	for i, b := range data {
+		parts[i] = fmt.Sprintf("%02x", b)
+	}
+	return strings.Join(parts, " ")
 }

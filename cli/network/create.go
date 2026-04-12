@@ -3,10 +3,7 @@ package network
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"regexp"
-	"syscall"
-	"time"
 
 	"github.com/bubunyo/monolith"
 	"github.com/spf13/cobra"
@@ -14,7 +11,10 @@ import (
 
 var namePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*[a-z0-9]$|^[a-z0-9]$`)
 
-var flagMode string
+var (
+	flagMode          string
+	flagCreateVerbose bool
+)
 
 var createCmd = &cobra.Command{
 	Use:   "create <name>",
@@ -42,6 +42,15 @@ var createCmd = &cobra.Command{
 			return fmt.Errorf("network %q already exists and is running", name)
 		}
 
+		// Check if the network directory already exists (stopped network).
+		dir, err := monolith.NetworkDir(name)
+		if err != nil {
+			return err
+		}
+		if _, err := os.Stat(dir); err == nil {
+			return fmt.Errorf("network %q already exists (use 'network start' to restart it)", name)
+		}
+
 		// Write initial config.
 		cfg := monolith.NetworkConfig{
 			Mode: flagMode,
@@ -50,43 +59,9 @@ var createCmd = &cobra.Command{
 			return fmt.Errorf("writing network config: %w", err)
 		}
 
-		// Spawn the daemon as a background process.
-		// The daemon is the same binary running the hidden __netd command.
-		exe, err := os.Executable()
-		if err != nil {
-			return fmt.Errorf("finding executable: %w", err)
-		}
-
-		daemonCmd := exec.Command(exe, "__netd", name, flagMode)
-
-		// Redirect daemon stdout/stderr to a log file.
-		dir, err := monolith.NetworkDir(name)
-		if err != nil {
+		// Spawn the daemon.
+		if err := spawnDaemon(name, flagMode, flagCreateVerbose); err != nil {
 			return err
-		}
-		logFile, err := os.Create(dir + "/daemon.log")
-		if err != nil {
-			return fmt.Errorf("creating daemon log: %w", err)
-		}
-		daemonCmd.Stdout = logFile
-		daemonCmd.Stderr = logFile
-
-		// Detach from the parent process group so the daemon survives.
-		daemonCmd.SysProcAttr = &syscall.SysProcAttr{
-			Setpgid: true,
-		}
-
-		if err := daemonCmd.Start(); err != nil {
-			logFile.Close()
-			return fmt.Errorf("starting daemon: %w", err)
-		}
-		logFile.Close()
-
-		// Wait briefly for the daemon to write its PID and socket.
-		time.Sleep(500 * time.Millisecond)
-
-		if !monolith.IsNetworkDaemonAlive(name) {
-			return fmt.Errorf("daemon for network %q failed to start (check %s/daemon.log)", name, dir)
 		}
 
 		// Re-read config to get the subnet.
@@ -103,4 +78,5 @@ var createCmd = &cobra.Command{
 
 func init() {
 	createCmd.Flags().StringVar(&flagMode, "mode", monolith.NetworkShared, `network mode: shared or isolated (default: shared)`)
+	createCmd.Flags().BoolVarP(&flagCreateVerbose, "verbose", "v", false, "enable packet-level logging in daemon")
 }
