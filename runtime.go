@@ -34,6 +34,9 @@ func setRawMode(f *os.File) {
 }
 
 func Run(name string) error {
+	// Ensure state is cleaned up when we exit, regardless of how.
+	defer CleanState(name)
+
 	kernelConfig, err := DefaultKernel()
 	if err != nil {
 		return errors.Wrap(err, "DefaultKernel")
@@ -130,6 +133,12 @@ func Run(name string) error {
 	err = vm.Start()
 	if err != nil {
 		return errors.Wrap(err, "vz.Start")
+	}
+
+	// Write state file so `vm list` can report this VM as running.
+	// Store our PID and the MAC address (used to look up the DHCP-assigned IP).
+	if err := WriteState(name, os.Getpid(), mac.String()); err != nil {
+		log.Printf("warning: failed to write state file: %v", err)
 	}
 
 	errCh := make(chan error, 1)

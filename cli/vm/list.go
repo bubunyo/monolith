@@ -7,6 +7,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/bubunyo/monolith"
 	"github.com/spf13/cobra"
 )
 
@@ -35,6 +36,8 @@ var listCmd = &cobra.Command{
 			name    string
 			size    int64
 			created time.Time
+			state   string
+			ip      string
 		}
 		var vms []vmInfo
 		for _, e := range entries {
@@ -46,10 +49,19 @@ var listCmd = &cobra.Command{
 			if err != nil {
 				continue // no disk.img, skip
 			}
+
+			// Read runtime state (running/stopped + IP).
+			status, err := monolith.ReadState(e.Name())
+			if err != nil {
+				status = &monolith.VMStatus{State: "stopped"}
+			}
+
 			vms = append(vms, vmInfo{
 				name:    e.Name(),
 				size:    info.Size(),
 				created: info.ModTime(),
+				state:   status.State,
+				ip:      status.IP,
 			})
 		}
 
@@ -59,10 +71,16 @@ var listCmd = &cobra.Command{
 		}
 
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-		fmt.Fprintln(w, "NAME\tDISK\tCREATED\tOS")
+		fmt.Fprintln(w, "NAME\tSTATE\tIP\tDISK\tCREATED\tOS")
 		for _, vm := range vms {
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n",
+			ip := vm.ip
+			if ip == "" {
+				ip = "-"
+			}
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
 				vm.name,
+				vm.state,
+				ip,
 				formatSize(vm.size),
 				vm.created.Format("2006-01-02 15:04"),
 				"alpine",

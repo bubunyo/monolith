@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/bubunyo/monolith"
 	"github.com/spf13/cobra"
 )
 
@@ -27,6 +28,12 @@ var rmCmd = &cobra.Command{
 		vmPath := filepath.Join(dir, name)
 		if _, err := os.Stat(vmPath); os.IsNotExist(err) {
 			return fmt.Errorf("VM %q does not exist", name)
+		}
+
+		// Check if the VM is currently running.
+		status, _ := monolith.ReadState(name)
+		if status != nil && status.State == "running" {
+			return fmt.Errorf("VM %q is currently running. Stop it before deleting", name)
 		}
 
 		fmt.Printf("Delete VM %q? This will remove all data. [y/N]: ", name)
