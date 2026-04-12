@@ -110,7 +110,7 @@ func findVMsOnNetwork(networkName string) []string {
 	if err != nil {
 		return nil
 	}
-	vmsDir := home + "/.cache/monlith/vms"
+	vmsDir := home + "/.cache/monolith/vms"
 
 	entries, err := os.ReadDir(vmsDir)
 	if err != nil {

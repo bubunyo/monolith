@@ -52,7 +52,7 @@ const defaultDiskSize = 1 << 30 // 1 GiB
 
 // DefaultDisk returns the path to the VM's disk image, creating and
 // populating it with the Alpine minirootfs on first use.
-// Each VM gets its own disk under ~/.cache/monlith/vms/<name>/disk.img.
+// Each VM gets its own disk under ~/.cache/monolith/vms/<name>/disk.img.
 func DefaultDisk(rootfsTarball, modloopPath, name string) (string, error) {
 	cache, err := cacheDir()
 	if err != nil {

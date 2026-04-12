@@ -105,7 +105,7 @@ Named networks allow multiple VMs to share the same vmnet.Network instance, enab
 Named networks use a **daemon process** to keep the vmnet kernel resource alive:
 
 1. `monolith network create <name>` spawns a background daemon (`monolith __netd <name> <mode>`)
-2. The daemon creates a `vmnet.Network`, serializes it via `CopySerialization()`, and listens on a unix domain socket at `~/.cache/monlith/networks/<name>/daemon.sock`
+2. The daemon creates a `vmnet.Network`, serializes it via `CopySerialization()`, and listens on a unix domain socket at `~/.cache/monolith/networks/<name>/daemon.sock`
 3. When a VM starts with `--network <name>`, it connects to the socket, receives the serialized network bytes, and reconstructs the `vmnet.Network` via `NewNetworkWithSerialization()`
 4. The daemon stays alive to keep the vmnet kernel resource open. Stopping the daemon tears down the network.
 
@@ -142,7 +142,7 @@ The `vmnet_network_create_with_serialization` API requires the deserializing pro
 ## Cache Directory
 
 ```
-~/.cache/monlith/
+~/.cache/monolith/
   alpine/                  — shared Alpine assets (kernel, initrd, minirootfs)
     vmlinuz-virt
     initramfs-virt
@@ -162,11 +162,10 @@ The `vmnet_network_create_with_serialization` API requires the deserializing pro
       daemon.log           # daemon stdout/stderr
 ```
 
-- The cache directory is `monlith` (typo of "monolith") — intentionally kept for consistency.
-- Delete `~/.cache/monlith/alpine/` to force re-download of shared assets.
-- Delete `~/.cache/monlith/vms/<name>/disk.img` to regenerate a VM's disk without re-downloading.
-- Delete `~/.cache/monlith/vms/<name>/` entirely to remove a VM (or use `monolith vm rm <name>`).
-- Delete `~/.cache/monlith/networks/<name>/` entirely to remove a network (or use `monolith network rm <name>`).
+- Delete `~/.cache/monolith/alpine/` to force re-download of shared assets.
+- Delete `~/.cache/monolith/vms/<name>/disk.img` to regenerate a VM's disk without re-downloading.
+- Delete `~/.cache/monolith/vms/<name>/` entirely to remove a VM (or use `monolith vm rm <name>`).
+- Delete `~/.cache/monolith/networks/<name>/` entirely to remove a network (or use `monolith network rm <name>`).
 
 ## Gotchas
 

@@ -35,7 +35,7 @@ func NetworkDir(name string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".cache", "monlith", "networks", name), nil
+	return filepath.Join(home, ".cache", "monolith", "networks", name), nil
 }
 
 // NetworksDir returns the parent directory for all named networks.
@@ -44,7 +44,7 @@ func NetworksDir() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".cache", "monlith", "networks"), nil
+	return filepath.Join(home, ".cache", "monolith", "networks"), nil
 }
 
 // ReadNetworkConfig reads a named network's configuration.

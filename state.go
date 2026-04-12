@@ -153,7 +153,7 @@ func vmDir(name string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".cache", "monlith", "vms", name), nil
+	return filepath.Join(home, ".cache", "monolith", "vms", name), nil
 }
 
 // processAlive checks if a process with the given PID is still running.

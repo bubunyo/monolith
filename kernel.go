@@ -110,7 +110,7 @@ func cacheDir() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	dir := filepath.Join(home, ".cache", "monlith")
+	dir := filepath.Join(home, ".cache", "monolith")
 	return dir, os.MkdirAll(dir, 0755)
 }
 

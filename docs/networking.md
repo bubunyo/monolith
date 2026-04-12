@@ -229,7 +229,7 @@ resource must be kept alive by a process for as long as the network exists.
 The `monolith network create` command:
 
 1. Validates the name and mode.
-2. Writes an initial `config.json` to `~/.cache/monlith/networks/<name>/`.
+2. Writes an initial `config.json` to `~/.cache/monolith/networks/<name>/`.
 3. Spawns a detached background process: `monolith __netd <name> <mode>`.
 4. Waits 500ms, then verifies the daemon is alive.
 
@@ -241,7 +241,7 @@ The hidden `__netd` command (defined in `cli/netd.go`) calls
 3. Serializes the network via `network.CopySerialization()`.
 4. Extracts the raw bytes from the XPC dictionary.
 5. Writes a PID file.
-6. Listens on a unix domain socket at `~/.cache/monlith/networks/<name>/daemon.sock`.
+6. Listens on a unix domain socket at `~/.cache/monolith/networks/<name>/daemon.sock`.
 7. Serves the serialization bytes to each connecting VM.
 8. Blocks until `SIGTERM` or `SIGINT`.
 
@@ -279,7 +279,7 @@ network serialization.
 ### Filesystem Layout
 
 ```
-~/.cache/monlith/networks/
+~/.cache/monolith/networks/
   my-net/
     config.json          # {"mode":"shared","subnet":"192.168.64.0/24"}
     pid                  # daemon PID (plain text)
@@ -453,7 +453,7 @@ at least one packet.
 Check the daemon log:
 
 ```bash
-cat ~/.cache/monlith/networks/<name>/daemon.log
+cat ~/.cache/monolith/networks/<name>/daemon.log
 ```
 
 Common causes:
