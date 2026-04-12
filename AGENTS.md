@@ -7,7 +7,7 @@ make build   # builds to ./bin/monolith AND codesigns with entitlements.plist
 make run     # builds and runs: monolith vm run (auto-generated name)
 ```
 
-`go build` alone is not enough. The binary **must** be codesigned with `entitlements.plist` (grants `com.apple.security.virtualization` and `com.apple.vm.networking`) or it will crash at runtime. Always use `make build`. Set `CODESIGN_IDENTITY` env var for Developer ID signing (defaults to `-` for ad-hoc).
+`go build` alone is not enough. The binary **must** be codesigned with `entitlements.plist` (grants `com.apple.security.virtualization`) or it will crash at runtime. Always use `make build`. Set `CODESIGN_IDENTITY` env var to override the signing identity (defaults to ad-hoc signing with `-`). See `docs/codesigning.md` for setup instructions.
 
 ## CLI
 
@@ -73,7 +73,7 @@ monolith/
   config.go               — VMConfig with CPUs, Memory, NetworkMode, NetworkName, HostInterface. Per-VM config at vms/<name>/config.json.
   state.go                — VMState/VMStatus, IP discovery (DHCP leases + ARP fallback), per-VM network stats via vmenet.
   runtime_test.go         — test that boots a real VM
-  entitlements.plist      — codesigning entitlements (com.apple.security.virtualization, com.apple.vm.networking)
+  entitlements.plist      — codesigning entitlements (com.apple.security.virtualization)
 ```
 
 ## Network Modes
@@ -84,7 +84,7 @@ Five network modes are supported via the `--network-mode` flag on `vm run`:
 |------|------|---------------|----------|
 | `nat` (default) | `--network-mode nat` | `VZNATNetworkDeviceAttachment` | macOS 11+ |
 | `shared` | `--network-mode shared` | `vmnet.SharedMode` + `VZVmnetNetworkDeviceAttachment` | macOS 26+ |
-| `host` | `--network-mode host --host-interface en0` | `VZBridgedNetworkDeviceAttachment` | `com.apple.vm.networking` entitlement |
+| `host` | `--network-mode host --host-interface en0` | `VZBridgedNetworkDeviceAttachment` | `com.apple.vm.networking` entitlement (requires provisioning profile or SIP disabled) |
 | `isolated` | `--network-mode isolated` | `vmnet.HostMode` + `VZVmnetNetworkDeviceAttachment` | macOS 26+ |
 | `none` | `--network-mode none` | No network device | - |
 

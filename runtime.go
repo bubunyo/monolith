@@ -1,6 +1,7 @@
 package monolith
 
 import (
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -65,13 +66,13 @@ func Run(name string) error {
 		vz.WithInitrd(kernelConfig.InitrdPath),
 	)
 	if err != nil {
-		return errors.Wrap(err, "vx.NewLinuxBootLoader")
+		return errors.Wrap(err, "vz.NewLinuxBootLoader")
 	}
 
 	// 2. Configure the VM with per-VM CPU and memory settings.
 	config, err := vz.NewVirtualMachineConfiguration(bootLoader, cfg.CPUs, cfg.Memory)
 	if err != nil {
-		return errors.Wrap(err, "vx.VirtualMachineConfiguration")
+		return errors.Wrap(err, "vz.NewVirtualMachineConfiguration")
 	}
 
 	// 3. Add Storage
@@ -94,17 +95,17 @@ func Run(name string) error {
 	// 5. Setup Console (Required for interaction)
 	setRawMode(os.Stdin)
 
-	portAttachement, err := vz.NewFileHandleSerialPortAttachment(os.Stdin, os.Stdout)
+	portAttachment, err := vz.NewFileHandleSerialPortAttachment(os.Stdin, os.Stdout)
 	if err != nil {
 		return errors.Wrap(err, "vz.NewFileHandleSerialPortAttachment")
 	}
-	serialConfig, err := vz.NewVirtioConsoleDeviceSerialPortConfiguration(portAttachement)
+	serialConfig, err := vz.NewVirtioConsoleDeviceSerialPortConfiguration(portAttachment)
 	if err != nil {
-		return errors.Wrap(err, "vz.NewFileHandleSerialPortAttachment")
+		return errors.Wrap(err, "vz.NewVirtioConsoleDeviceSerialPortConfiguration")
 	}
 	config.SetSerialPortsVirtualMachineConfiguration([]*vz.VirtioConsoleDeviceSerialPortConfiguration{serialConfig})
-	// Add entropy device for virtio random
 
+	// Add entropy device for virtio random
 	entropyConfig, err := vz.NewVirtioEntropyDeviceConfiguration()
 	if err != nil {
 		return errors.Wrap(err, "vz.NewVirtioEntropyDeviceConfiguration")
@@ -114,12 +115,12 @@ func Run(name string) error {
 	// 6. Validate and Create the VM
 	validated, err := config.Validate()
 	if !validated || err != nil {
-		log.Fatal("Invalid configuration: ", err)
+		return fmt.Errorf("invalid VM configuration: %w", err)
 	}
 
 	vm, err := vz.NewVirtualMachine(config)
 	if err != nil {
-		return errors.Wrap(err, "vz.NewFileHandleSerialPortAttachment")
+		return errors.Wrap(err, "vz.NewVirtualMachine")
 	}
 
 	signalCh := make(chan os.Signal, 1)
@@ -137,8 +138,6 @@ func Run(name string) error {
 		log.Printf("warning: failed to write state file: %v", err)
 	}
 
-	errCh := make(chan error, 1)
-
 	for {
 		select {
 		case <-signalCh:
@@ -146,7 +145,7 @@ func Run(name string) error {
 			if err != nil {
 				return errors.Wrap(err, "vm.RequestStop")
 			}
-			log.Println("recieved signal", result)
+			log.Println("received signal", result)
 		case newState := <-vm.StateChangedNotify():
 			if newState == vz.VirtualMachineStateRunning {
 				log.Println("VM is running")
@@ -155,8 +154,9 @@ func Run(name string) error {
 				log.Println("stopped successfully")
 				return nil
 			}
-		case err := <-errCh:
-			log.Println("in start:", err)
+			if newState == vz.VirtualMachineStateError {
+				return fmt.Errorf("VM entered error state")
+			}
 		}
 	}
 }

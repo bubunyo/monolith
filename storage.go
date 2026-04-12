@@ -19,10 +19,10 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-//go:embed osfiles
-var osFiles embed.FS
+//go:embed embeddings
+var embeddings embed.FS
 
-// manifest represents the osfiles/manifest.yaml structure.
+// manifest represents the embeddings/manifest.yaml structure.
 type manifest struct {
 	Files []manifestEntry `yaml:"files"`
 }
@@ -326,7 +326,7 @@ func installModloop(ext4fs filesystem.FileSystem, modloopPath string) error {
 }
 
 // configureVM installs all VM-specific configuration files into the ext4
-// filesystem using embedded assets from osfiles/ and a YAML manifest.
+// filesystem using embedded assets from embeddings/ and a YAML manifest.
 // The name parameter is used as the VM's hostname and appears in templates.
 func configureVM(ext4fs filesystem.FileSystem, name string) error {
 	const monoUID = 1000
@@ -340,7 +340,7 @@ func configureVM(ext4fs filesystem.FileSystem, name string) error {
 	}
 
 	// Parse the manifest.
-	manifestData, err := osFiles.ReadFile("osfiles/manifest.yaml")
+	manifestData, err := embeddings.ReadFile("embeddings/manifest.yaml")
 	if err != nil {
 		return fmt.Errorf("reading manifest: %w", err)
 	}
@@ -353,7 +353,7 @@ func configureVM(ext4fs filesystem.FileSystem, name string) error {
 
 	for _, entry := range m.Files {
 		// Read source from embedded FS.
-		src, err := osFiles.ReadFile("osfiles/" + entry.Src)
+		src, err := embeddings.ReadFile("embeddings/" + entry.Src)
 		if err != nil {
 			return fmt.Errorf("reading embedded %s: %w", entry.Src, err)
 		}

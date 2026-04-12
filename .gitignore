@@ -27,6 +27,9 @@ go.work.sum
 # env file
 .env
 
+# Code signing identity (contains personal certificate name)
+.codesign_identity
+
 # Editor/IDE
 .idea/
 .vscode/

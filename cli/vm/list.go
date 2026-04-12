@@ -172,7 +172,7 @@ func vmsDir() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".cache", "monlith", "vms"), nil
+	return filepath.Join(home, ".cache", "monolith", "vms"), nil
 }
 
 // dash returns "-" if s is empty, otherwise returns s.
