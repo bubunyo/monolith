@@ -14,4 +14,5 @@ func init() {
 	Cmd.AddCommand(runCmd)
 	Cmd.AddCommand(listCmd)
 	Cmd.AddCommand(rmCmd)
+	Cmd.AddCommand(topCmd)
 }

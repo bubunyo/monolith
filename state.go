@@ -30,6 +30,15 @@ type VMStatus struct {
 	MemoryRSS  int64     // host-side RSS in bytes
 }
 
+// NetStats holds per-VM network counters from the host's vmenet interface.
+// RX/TX are from the guest's perspective (RX = bytes received by guest).
+type NetStats struct {
+	RxBytes int64
+	TxBytes int64
+	RxPkts  int64
+	TxPkts  int64
+}
+
 // WriteState writes the VM state file into the VM's cache directory.
 func WriteState(name string, pid int, mac string) error {
 	dir, err := vmDir(name)
@@ -83,7 +92,7 @@ func ReadState(name string) (*VMStatus, error) {
 	}
 
 	// Process is alive — look up IP and gather host-side stats.
-	ip := lookupIPByMAC(state.MAC)
+	ip := LookupIPByMAC(state.MAC)
 	cpuPct, rssBytes := processStats(state.PID)
 
 	var startedAt time.Time
@@ -98,6 +107,34 @@ func ReadState(name string) (*VMStatus, error) {
 		CPUPercent: cpuPct,
 		MemoryRSS:  rssBytes,
 	}, nil
+}
+
+// ReadRawState reads the raw VM state file without computing derived status.
+// Used by the top command to access PID/MAC for per-tick stat gathering.
+// Returns nil if the VM is not running or state file is missing.
+func ReadRawState(name string) (*VMState, error) {
+	dir, err := vmDir(name)
+	if err != nil {
+		return nil, err
+	}
+
+	statePath := filepath.Join(dir, stateFileName)
+	data, err := os.ReadFile(statePath)
+	if err != nil {
+		return nil, err
+	}
+
+	var state VMState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return nil, err
+	}
+
+	if !processAlive(state.PID) {
+		os.Remove(statePath)
+		return nil, fmt.Errorf("VM %q is not running (stale state)", name)
+	}
+
+	return &state, nil
 }
 
 // CleanState removes the state file for the given VM.
@@ -137,21 +174,136 @@ func processAlive(pid int) bool {
 // processStats returns the CPU% and RSS (in bytes) for the given PID by
 // shelling out to `ps`. Returns zeros if the process is not found or ps fails.
 func processStats(pid int) (cpuPct float64, rssBytes int64) {
-	// ps -o pcpu=,rss= -p <pid>
-	// Output example: "  0.3 19056\n"  (CPU%, RSS in KiB)
-	out, err := exec.Command("ps", "-o", "pcpu=,rss=", "-p", strconv.Itoa(pid)).Output()
+	cpuPct, rssBytes, _ = ProcessStatsEx(pid)
+	return
+}
+
+// ProcessStatsEx returns CPU%, RSS (bytes), and cumulative CPU time for the
+// given PID. The cpuTime string is in the format "H:MM:SS" or "M:SS".
+func ProcessStatsEx(pid int) (cpuPct float64, rssBytes int64, cpuTime string) {
+	// ps -o pcpu=,rss=,time= -p <pid>
+	// Output example: "  0.3 19056 0:02:15\n"
+	out, err := exec.Command("ps", "-o", "pcpu=,rss=,time=", "-p", strconv.Itoa(pid)).Output()
 	if err != nil {
-		return 0, 0
+		return 0, 0, ""
 	}
 
 	fields := strings.Fields(strings.TrimSpace(string(out)))
-	if len(fields) < 2 {
-		return 0, 0
+	if len(fields) < 3 {
+		return 0, 0, ""
 	}
 
 	cpuPct, _ = strconv.ParseFloat(fields[0], 64)
 	rssKiB, _ := strconv.ParseInt(fields[1], 10, 64)
-	return cpuPct, rssKiB * 1024
+	return cpuPct, rssKiB * 1024, fields[2]
+}
+
+// VmenetForMAC finds the vmenet<N> interface associated with the given guest
+// MAC address by parsing the bridge100 address cache from `ifconfig bridge100`.
+//
+// The address cache section looks like:
+//
+//	Address cache:
+//	    ce:b7:d1:c3:89:1d Vlan1 vmenet0 1116 flags=0<>
+//
+// Returns "" if no matching interface is found.
+func VmenetForMAC(mac string) string {
+	if mac == "" {
+		return ""
+	}
+	targetNorm := normalizeMAC(mac)
+	if targetNorm == "" {
+		return ""
+	}
+
+	out, err := exec.Command("ifconfig", "bridge100").Output()
+	if err != nil {
+		return ""
+	}
+
+	// Scan for lines in the address cache section.
+	inCache := false
+	for _, line := range strings.Split(string(out), "\n") {
+		trimmed := strings.TrimSpace(line)
+
+		if strings.HasPrefix(trimmed, "Address cache:") {
+			inCache = true
+			continue
+		}
+
+		if !inCache {
+			continue
+		}
+
+		// End of address cache section — lines that aren't indented entries.
+		if !strings.HasPrefix(line, "\t") && !strings.HasPrefix(line, "    ") {
+			if trimmed != "" {
+				break
+			}
+			continue
+		}
+
+		// Parse: "ce:b7:d1:c3:89:1d Vlan1 vmenet0 1116 flags=0<>"
+		fields := strings.Fields(trimmed)
+		if len(fields) < 3 {
+			continue
+		}
+		entryMAC := normalizeMAC(fields[0])
+		if entryMAC == targetNorm {
+			return fields[2] // e.g. "vmenet0"
+		}
+	}
+
+	return ""
+}
+
+// NetworkStats returns per-VM network counters by querying the given
+// vmenet interface via `netstat -I <iface> -b`.
+//
+// Note: from the host's perspective, Ibytes = bytes received from guest
+// (guest TX) and Obytes = bytes sent to guest (guest RX). We swap them
+// so the returned values are from the guest's perspective.
+//
+// netstat output:
+//
+//	Name  Mtu  Network  Address   Ipkts Ierrs  Ibytes   Opkts Oerrs  Obytes  Coll
+//	vmenet0 1500 <Link#27> ba:23:...  9     0     1286    156     0     24693     0
+func NetworkStats(iface string) NetStats {
+	if iface == "" {
+		return NetStats{}
+	}
+
+	out, err := exec.Command("netstat", "-I", iface, "-b").Output()
+	if err != nil {
+		return NetStats{}
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(lines) < 2 {
+		return NetStats{}
+	}
+
+	// Parse the data line (skip header). There may be multiple lines
+	// (one per address family); we want the first one (link-level).
+	fields := strings.Fields(lines[1])
+	// Expected fields: Name Mtu Network Address Ipkts Ierrs Ibytes Opkts Oerrs Obytes Coll
+	//                  0    1   2       3       4     5     6      7     8     9      10
+	if len(fields) < 11 {
+		return NetStats{}
+	}
+
+	iPkts, _ := strconv.ParseInt(fields[4], 10, 64)
+	iBytes, _ := strconv.ParseInt(fields[6], 10, 64)
+	oPkts, _ := strconv.ParseInt(fields[7], 10, 64)
+	oBytes, _ := strconv.ParseInt(fields[9], 10, 64)
+
+	// Swap: host Ibytes = guest TX, host Obytes = guest RX
+	return NetStats{
+		RxBytes: oBytes,
+		TxBytes: iBytes,
+		RxPkts:  oPkts,
+		TxPkts:  iPkts,
+	}
 }
 
 // lookupIPByMAC reads the macOS DHCP server leases file to find the IP
@@ -170,7 +322,9 @@ func processStats(pid int) (cpuPct float64, rssBytes int64) {
 // The hw_address is prefixed with "1," (ethernet type) and uses shortened
 // octets (e.g. "e:3d:be" instead of "0e:3d:be"). We normalize both sides
 // for comparison.
-func lookupIPByMAC(mac string) string {
+// LookupIPByMAC reads the macOS DHCP server leases file to find the IP
+// address assigned to the given MAC address.
+func LookupIPByMAC(mac string) string {
 	if mac == "" {
 		return ""
 	}
