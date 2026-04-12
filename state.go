@@ -4,54 +4,62 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
 const stateFileName = "state.json"
 
 // VMState represents the persisted runtime state of a VM.
 type VMState struct {
-	PID int    `json:"pid"`
-	MAC string `json:"mac"`
+	PID       int    `json:"pid"`
+	MAC       string `json:"mac"`
+	StartedAt int64  `json:"started_at"` // unix timestamp
 }
 
 // VMStatus is the computed status of a VM for display purposes.
 type VMStatus struct {
-	State string // "running" or "stopped"
-	IP    string // e.g. "192.168.64.3" or "" if unknown
+	State      string    // "running" or "stopped"
+	IP         string    // e.g. "192.168.64.3" or "" if unknown
+	StartedAt  time.Time // zero if stopped
+	CPUPercent float64   // host-side CPU% of the VM process
+	MemoryRSS  int64     // host-side RSS in bytes
 }
 
 // WriteState writes the VM state file into the VM's cache directory.
 func WriteState(name string, pid int, mac string) error {
-	vmDir, err := vmDir(name)
+	dir, err := vmDir(name)
 	if err != nil {
 		return err
 	}
 
 	state := VMState{
-		PID: pid,
-		MAC: mac,
+		PID:       pid,
+		MAC:       mac,
+		StartedAt: time.Now().Unix(),
 	}
 	data, err := json.Marshal(state)
 	if err != nil {
 		return fmt.Errorf("marshaling state: %w", err)
 	}
 
-	return os.WriteFile(filepath.Join(vmDir, stateFileName), data, 0644)
+	return os.WriteFile(filepath.Join(dir, stateFileName), data, 0644)
 }
 
 // ReadState reads and validates the VM state file. If the state file exists
 // but the process is no longer alive, the stale file is removed and a
 // "stopped" status is returned.
 func ReadState(name string) (*VMStatus, error) {
-	vmDir, err := vmDir(name)
+	dir, err := vmDir(name)
 	if err != nil {
 		return &VMStatus{State: "stopped"}, nil
 	}
 
-	statePath := filepath.Join(vmDir, stateFileName)
+	statePath := filepath.Join(dir, stateFileName)
 	data, err := os.ReadFile(statePath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -74,12 +82,21 @@ func ReadState(name string) (*VMStatus, error) {
 		return &VMStatus{State: "stopped"}, nil
 	}
 
-	// Process is alive — look up IP from ARP table using the stored MAC.
+	// Process is alive — look up IP and gather host-side stats.
 	ip := lookupIPByMAC(state.MAC)
+	cpuPct, rssBytes := processStats(state.PID)
+
+	var startedAt time.Time
+	if state.StartedAt > 0 {
+		startedAt = time.Unix(state.StartedAt, 0)
+	}
 
 	return &VMStatus{
-		State: "running",
-		IP:    ip,
+		State:      "running",
+		IP:         ip,
+		StartedAt:  startedAt,
+		CPUPercent: cpuPct,
+		MemoryRSS:  rssBytes,
 	}, nil
 }
 
@@ -115,6 +132,26 @@ func processAlive(pid int) bool {
 	// Signal 0 tests for process existence.
 	err = proc.Signal(syscall.Signal(0))
 	return err == nil
+}
+
+// processStats returns the CPU% and RSS (in bytes) for the given PID by
+// shelling out to `ps`. Returns zeros if the process is not found or ps fails.
+func processStats(pid int) (cpuPct float64, rssBytes int64) {
+	// ps -o pcpu=,rss= -p <pid>
+	// Output example: "  0.3 19056\n"  (CPU%, RSS in KiB)
+	out, err := exec.Command("ps", "-o", "pcpu=,rss=", "-p", strconv.Itoa(pid)).Output()
+	if err != nil {
+		return 0, 0
+	}
+
+	fields := strings.Fields(strings.TrimSpace(string(out)))
+	if len(fields) < 2 {
+		return 0, 0
+	}
+
+	cpuPct, _ = strconv.ParseFloat(fields[0], 64)
+	rssKiB, _ := strconv.ParseInt(fields[1], 10, 64)
+	return cpuPct, rssKiB * 1024
 }
 
 // lookupIPByMAC reads the macOS DHCP server leases file to find the IP

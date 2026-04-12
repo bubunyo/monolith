@@ -37,6 +37,12 @@ func Run(name string) error {
 	// Ensure state is cleaned up when we exit, regardless of how.
 	defer CleanState(name)
 
+	// Read per-VM hardware configuration (written by the CLI before Run).
+	cfg, err := ReadConfig(name)
+	if err != nil {
+		return errors.Wrap(err, "ReadConfig")
+	}
+
 	kernelConfig, err := DefaultKernel()
 	if err != nil {
 		return errors.Wrap(err, "DefaultKernel")
@@ -62,8 +68,8 @@ func Run(name string) error {
 		return errors.Wrap(err, "vx.NewLinuxBootLoader")
 	}
 
-	// 2. Configure the VM
-	config, err := vz.NewVirtualMachineConfiguration(bootLoader, 2, 2*1024*1024*1024) // 2 vCPUs, 2GB RAM
+	// 2. Configure the VM with per-VM CPU and memory settings.
+	config, err := vz.NewVirtualMachineConfiguration(bootLoader, cfg.CPUs, cfg.Memory)
 	if err != nil {
 		return errors.Wrap(err, "vx.VirtualMachineConfiguration")
 	}
