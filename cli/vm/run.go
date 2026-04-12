@@ -87,9 +87,9 @@ var runCmd = &cobra.Command{
 }
 
 func init() {
-	runCmd.Flags().UintVar(&flagCPUs, "cpus", 0, "number of vCPUs (default: 1)")
-	runCmd.Flags().StringVar(&flagMemory, "memory", "", `RAM size, e.g. "512M", "1G", "2048M" (default: 512M)`)
-	runCmd.Flags().StringVar(&flagNetwork, "network", "", `network mode: nat, shared, host, isolated, none (default: nat)`)
+	runCmd.Flags().UintVarP(&flagCPUs, "cpus", "c", 0, "number of vCPUs (default: 1)")
+	runCmd.Flags().StringVarP(&flagMemory, "memory", "m", "", `RAM size, e.g. "512M", "1G", "2048M" (default: 512M)`)
+	runCmd.Flags().StringVarP(&flagNetwork, "network", "n", "", `network mode: nat, shared, host, isolated, none (default: nat)`)
 	runCmd.Flags().StringVar(&flagHostInterface, "host-interface", "", `physical NIC for host mode (e.g. "en0")`)
 }
 
