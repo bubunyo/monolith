@@ -18,23 +18,24 @@ const (
 	NetworkNone     = "none"
 )
 
-// ValidNetworkModes is the set of accepted --network values.
+// ValidNetworkModes is the set of accepted --network-mode values.
 var ValidNetworkModes = []string{NetworkNAT, NetworkShared, NetworkHost, NetworkIsolated, NetworkNone}
 
 // VMConfig holds the per-VM hardware configuration.
 type VMConfig struct {
 	CPUs          uint   `json:"cpus"`
 	Memory        uint64 `json:"memory"`                   // bytes
-	Network       string `json:"network"`                  // "nat", "shared", "host", "isolated", "none"
+	NetworkMode   string `json:"network_mode"`             // "nat", "shared", "host", "isolated", "none"
+	NetworkName   string `json:"network_name,omitempty"`   // named network to join (for shared/isolated modes)
 	HostInterface string `json:"host_interface,omitempty"` // physical NIC for "host" mode (e.g. "en0")
 }
 
 // DefaultConfig returns the default VM configuration: 1 vCPU, 512 MiB RAM, NAT networking.
 func DefaultConfig() VMConfig {
 	return VMConfig{
-		CPUs:    1,
-		Memory:  512 * 1024 * 1024,
-		Network: NetworkNAT,
+		CPUs:        1,
+		Memory:      512 * 1024 * 1024,
+		NetworkMode: NetworkNAT,
 	}
 }
 
@@ -66,8 +67,8 @@ func ReadConfig(name string) (VMConfig, error) {
 	if cfg.Memory == 0 {
 		cfg.Memory = 512 * 1024 * 1024
 	}
-	if cfg.Network == "" {
-		cfg.Network = NetworkNAT
+	if cfg.NetworkMode == "" {
+		cfg.NetworkMode = NetworkNAT
 	}
 
 	return cfg, nil

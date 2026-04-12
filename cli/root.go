@@ -3,6 +3,7 @@ package cli
 import (
 	"os"
 
+	"github.com/bubunyo/monolith/cli/network"
 	"github.com/bubunyo/monolith/cli/vm"
 	"github.com/spf13/cobra"
 )
@@ -21,4 +22,5 @@ func Execute() {
 
 func init() {
 	rootCmd.AddCommand(vm.Cmd)
+	rootCmd.AddCommand(network.Cmd)
 }

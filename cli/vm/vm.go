@@ -15,4 +15,5 @@ func init() {
 	Cmd.AddCommand(listCmd)
 	Cmd.AddCommand(rmCmd)
 	Cmd.AddCommand(topCmd)
+	Cmd.AddCommand(pruneCmd)
 }

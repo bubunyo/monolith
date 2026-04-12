@@ -16,6 +16,7 @@ var namePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*[a-z0-9]$|^[a-z0-9]$`)
 var (
 	flagCPUs          uint
 	flagMemory        string
+	flagNetworkMode   string
 	flagNetwork       string
 	flagHostInterface string
 )
@@ -57,23 +58,30 @@ var runCmd = &cobra.Command{
 			}
 			cfg.Memory = mem
 		}
-		if cmd.Flags().Changed("network") {
-			if !isValidNetwork(flagNetwork) {
-				return fmt.Errorf("invalid network mode %q; must be one of: nat, shared, host, isolated, none", flagNetwork)
+		if cmd.Flags().Changed("network-mode") {
+			if !isValidNetwork(flagNetworkMode) {
+				return fmt.Errorf("invalid network mode %q; must be one of: nat, shared, host, isolated, none", flagNetworkMode)
 			}
-			cfg.Network = flagNetwork
+			cfg.NetworkMode = flagNetworkMode
+		}
+		if cmd.Flags().Changed("network") {
+			cfg.NetworkName = flagNetwork
 		}
 		if cmd.Flags().Changed("host-interface") {
 			cfg.HostInterface = flagHostInterface
 		}
 
 		// Validate host-interface is set when using host mode.
-		if cfg.Network == monolith.NetworkHost && cfg.HostInterface == "" {
+		if cfg.NetworkMode == monolith.NetworkHost && cfg.HostInterface == "" {
 			return fmt.Errorf("host network mode requires --host-interface (e.g. --host-interface en0)")
 		}
 		// Warn if host-interface is set but mode isn't host.
-		if cfg.HostInterface != "" && cfg.Network != monolith.NetworkHost {
-			return fmt.Errorf("--host-interface is only valid with --network host")
+		if cfg.HostInterface != "" && cfg.NetworkMode != monolith.NetworkHost {
+			return fmt.Errorf("--host-interface is only valid with --network-mode host")
+		}
+		// Validate --network is only used with shared/isolated modes.
+		if cfg.NetworkName != "" && cfg.NetworkMode != monolith.NetworkShared && cfg.NetworkMode != monolith.NetworkIsolated {
+			return fmt.Errorf("--network is only valid with --network-mode shared or --network-mode isolated")
 		}
 
 		// Persist config so Run() and vm list can read it.
@@ -81,7 +89,7 @@ var runCmd = &cobra.Command{
 			return fmt.Errorf("writing config: %w", err)
 		}
 
-		fmt.Printf("Booting VM %q (%d vCPU, %s RAM, network: %s)...\n", name, cfg.CPUs, formatMemory(cfg.Memory), cfg.Network)
+		fmt.Printf("Booting VM %q (%d vCPU, %s RAM, network: %s)...\n", name, cfg.CPUs, formatMemory(cfg.Memory), cfg.NetworkMode)
 		return monolith.Run(name)
 	},
 }
@@ -89,7 +97,8 @@ var runCmd = &cobra.Command{
 func init() {
 	runCmd.Flags().UintVarP(&flagCPUs, "cpus", "c", 0, "number of vCPUs (default: 1)")
 	runCmd.Flags().StringVarP(&flagMemory, "memory", "m", "", `RAM size, e.g. "512M", "1G", "2048M" (default: 512M)`)
-	runCmd.Flags().StringVarP(&flagNetwork, "network", "n", "", `network mode: nat, shared, host, isolated, none (default: nat)`)
+	runCmd.Flags().StringVar(&flagNetworkMode, "network-mode", "", `network mode: nat, shared, host, isolated, none (default: nat)`)
+	runCmd.Flags().StringVarP(&flagNetwork, "network", "n", "", `named network to join (for shared/isolated modes)`)
 	runCmd.Flags().StringVar(&flagHostInterface, "host-interface", "", `physical NIC for host mode (e.g. "en0")`)
 }
 

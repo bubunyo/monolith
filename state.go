@@ -93,7 +93,7 @@ func ReadState(name string) (*VMStatus, error) {
 
 	// Process is alive — look up IP and gather host-side stats.
 	cfg, _ := ReadConfig(name)
-	ip := lookupIPForMode(cfg.Network, state.MAC)
+	ip := lookupIPForMode(cfg.NetworkMode, state.MAC)
 	cpuPct, rssBytes := processStats(state.PID)
 
 	var startedAt time.Time

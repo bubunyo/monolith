@@ -5,6 +5,7 @@ import (
 
 	"github.com/Code-Hex/vz/v3"
 	"github.com/Code-Hex/vz/v3/vmnet"
+	"github.com/Code-Hex/vz/v3/xpc"
 )
 
 // configureNetwork sets up the VM's network device based on the config.
@@ -16,7 +17,7 @@ func configureNetwork(vmConfig *vz.VirtualMachineConfiguration, cfg VMConfig) (s
 		return "", fmt.Errorf("generating MAC address: %w", err)
 	}
 
-	mode := cfg.Network
+	mode := cfg.NetworkMode
 	if mode == "" {
 		mode = NetworkNAT
 	}
@@ -25,9 +26,19 @@ func configureNetwork(vmConfig *vz.VirtualMachineConfiguration, cfg VMConfig) (s
 		return mac.String(), nil
 	}
 
-	attachment, err := createNetworkAttachment(mode, cfg.HostInterface)
-	if err != nil {
-		return "", fmt.Errorf("creating network attachment (%s): %w", mode, err)
+	var attachment vz.NetworkDeviceAttachment
+
+	// If a named network is specified, join it via the daemon.
+	if cfg.NetworkName != "" {
+		attachment, err = joinNamedNetwork(cfg.NetworkName)
+		if err != nil {
+			return "", fmt.Errorf("joining named network %q: %w", cfg.NetworkName, err)
+		}
+	} else {
+		attachment, err = createNetworkAttachment(mode, cfg.HostInterface)
+		if err != nil {
+			return "", fmt.Errorf("creating network attachment (%s): %w", mode, err)
+		}
 	}
 
 	netDevConfig, err := vz.NewVirtioNetworkDeviceConfiguration(attachment)
@@ -38,6 +49,29 @@ func configureNetwork(vmConfig *vz.VirtualMachineConfiguration, cfg VMConfig) (s
 	vmConfig.SetNetworkDevicesVirtualMachineConfiguration([]*vz.VirtioNetworkDeviceConfiguration{netDevConfig})
 
 	return mac.String(), nil
+}
+
+// joinNamedNetwork connects to a network daemon's unix socket, receives
+// the serialized vmnet.Network, reconstructs it, and returns the attachment.
+func joinNamedNetwork(name string) (vz.NetworkDeviceAttachment, error) {
+	// Fetch the raw serialization bytes from the daemon.
+	data, err := FetchNetworkSerialization(name)
+	if err != nil {
+		return nil, err
+	}
+
+	// Reconstruct the XPC dictionary from the raw bytes.
+	dict := xpc.NewDictionary(
+		xpc.KeyValue("networkSerialization", xpc.NewData(data)),
+	)
+
+	// Recreate the vmnet.Network from the serialization.
+	network, err := vmnet.NewNetworkWithSerialization(dict)
+	if err != nil {
+		return nil, fmt.Errorf("deserializing network: %w", err)
+	}
+
+	return vz.NewVmnetNetworkDeviceAttachment(network)
 }
 
 // createNetworkAttachment builds the appropriate vz.NetworkDeviceAttachment for the given mode.

@@ -250,7 +250,7 @@ func (m *model) gatherStats() {
 	}
 
 	// IP and uptime.
-	m.ip = lookupIPForTop(m.cfg.Network, state.MAC)
+	m.ip = lookupIPForTop(m.cfg.NetworkMode, state.MAC)
 	if state.StartedAt > 0 {
 		m.uptime = time.Since(time.Unix(state.StartedAt, 0))
 	}
@@ -271,7 +271,7 @@ func (m *model) gatherStats() {
 	// Network stats.
 	// For "none" mode there's no network device.
 	// For "host" mode the VM uses a bridged physical NIC; no per-VM vmenet exists.
-	hasVmenet := m.cfg.Network != monolith.NetworkNone && m.cfg.Network != monolith.NetworkHost
+	hasVmenet := m.cfg.NetworkMode != monolith.NetworkNone && m.cfg.NetworkMode != monolith.NetworkHost
 	if hasVmenet {
 		if m.vmenet == "" {
 			m.vmenet = monolith.VmenetForMAC(state.MAC)
@@ -435,7 +435,7 @@ func (m model) View() string {
 
 	// ── Network box ──
 	var netBox string
-	switch m.cfg.Network {
+	switch m.cfg.NetworkMode {
 	case monolith.NetworkNone:
 		netBox = boxStyle.Render(
 			titleStyle.Render("  Network") + "\n" +
