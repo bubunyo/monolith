@@ -2,6 +2,8 @@ module github.com/bubunyo/monolith
 
 go 1.25.7
 
+replace github.com/Code-Hex/vz/v3 => github.com/norio-nomura/vz/v3 v3.7.1-0.20260210033012-e27a5fb55e59
+
 require (
 	github.com/Code-Hex/vz/v3 v3.7.1
 	github.com/charmbracelet/bubbles v1.0.0

@@ -7,14 +7,19 @@ make build   # builds to ./bin/monolith AND codesigns with entitlements.plist
 make run     # builds and runs: monolith vm run (auto-generated name)
 ```
 
-`go build` alone is not enough. The binary **must** be codesigned with `entitlements.plist` (grants `com.apple.security.virtualization`) or it will crash at runtime. Always use `make build`.
+`go build` alone is not enough. The binary **must** be codesigned with `entitlements.plist` (grants `com.apple.security.virtualization` and `com.apple.vm.networking`) or it will crash at runtime. Always use `make build`. Set `CODESIGN_IDENTITY` env var for Developer ID signing (defaults to `-` for ad-hoc).
 
 ## CLI
 
 ```bash
-monolith vm run [name]    # boot a VM (creates on first run, reuses if exists)
-monolith vm list          # list all VMs (name, disk size, created date, OS)
+monolith vm run [name]                   # boot a VM (creates on first run, reuses if exists)
+monolith vm run [name] --network shared  # boot with shared vmnet networking (macOS 26+)
+monolith vm run [name] --network host --host-interface en0  # bridge to physical NIC
+monolith vm run [name] --network isolated  # isolated network (macOS 26+)
+monolith vm run [name] --network none    # no network device (air-gapped)
+monolith vm list          # list all VMs (name, state, ip, net, cpus, mem, disk, uptime)
 monolith vm rm <name>     # delete a VM (prompts for confirmation)
+monolith vm top <name>    # live TUI dashboard for a running VM
 ```
 
 If no name is given to `run`, one is auto-generated as `lith-NNNNN` (random 5-digit number). VM names must be lowercase alphanumeric with hyphens, max 63 characters (valid hostnames).
@@ -30,7 +35,7 @@ go test -run TestRun ./   # single test
 
 ## Platform Constraint
 
-macOS + aarch64 only. The entire codebase depends on Apple Virtualization.framework via `github.com/Code-Hex/vz/v3`. No cross-platform build targets exist.
+macOS + aarch64 only. The entire codebase depends on Apple Virtualization.framework via `github.com/Code-Hex/vz/v3` (currently using norio-nomura's fork with `VZVmnetNetworkDeviceAttachment` support for macOS 26+, via `replace` directive in go.mod). No cross-platform build targets exist.
 
 ## Package Layout
 
@@ -47,9 +52,31 @@ monolith/
   runtime.go              — Run(name) orchestrates VM boot (boot loader, vCPUs, RAM, network, serial, entropy)
   kernel.go               — DefaultKernel() downloads Alpine ISO, extracts/decompresses kernel+initrd. DefaultRootFS() downloads minirootfs tarball. Shared assets cached under ~/.cache/monlith/alpine/.
   storage.go              — DefaultDisk(tarball, name) creates per-VM 1 GiB ext4 disk image under ~/.cache/monlith/vms/<name>/. Populates with Alpine minirootfs, configures user accounts, autologin, MOTD, hostname.
+  config.go               — VMConfig with CPUs, Memory, Network, HostInterface. Per-VM config at vms/<name>/config.json.
+  state.go                — VMState/VMStatus, IP discovery (DHCP leases + ARP fallback), per-VM network stats via vmenet.
   runtime_test.go         — test that boots a real VM
-  entitlements.plist      — codesigning entitlement for Virtualization.framework
+  entitlements.plist      — codesigning entitlements (com.apple.security.virtualization, com.apple.vm.networking)
 ```
+
+## Network Modes
+
+Five network modes are supported via the `--network` flag on `vm run`:
+
+| Mode | Flag | Implementation | Requires |
+|------|------|---------------|----------|
+| `nat` (default) | `--network nat` | `VZNATNetworkDeviceAttachment` | macOS 11+ |
+| `shared` | `--network shared` | `vmnet.SharedMode` + `VZVmnetNetworkDeviceAttachment` | macOS 26+ |
+| `host` | `--network host --host-interface en0` | `VZBridgedNetworkDeviceAttachment` | `com.apple.vm.networking` entitlement |
+| `isolated` | `--network isolated` | `vmnet.HostMode` + `VZVmnetNetworkDeviceAttachment` | macOS 26+ |
+| `none` | `--network none` | No network device | - |
+
+- **nat**: Standard NAT networking. VM gets IP from macOS DHCP server. No inter-VM communication.
+- **shared**: macOS 26 vmnet SharedMode. NAT + inter-VM communication (when sharing the same `vmnet.Network` instance). Configurable subnets, DHCP reservations, port forwarding.
+- **host**: Bridged directly to a physical NIC (e.g. en0). VM gets IP from the router. Per-VM network stats not available.
+- **isolated**: macOS 26 vmnet HostMode. VM can talk to host only, no NAT, no inter-VM communication.
+- **none**: Air-gapped. No network device attached to the VM.
+
+The network mode is persisted in `config.json` and reused on subsequent boots.
 
 ## Boot Flow
 

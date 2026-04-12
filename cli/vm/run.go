@@ -14,8 +14,10 @@ import (
 var namePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*[a-z0-9]$|^[a-z0-9]$`)
 
 var (
-	flagCPUs   uint
-	flagMemory string
+	flagCPUs          uint
+	flagMemory        string
+	flagNetwork       string
+	flagHostInterface string
 )
 
 var runCmd = &cobra.Command{
@@ -55,13 +57,31 @@ var runCmd = &cobra.Command{
 			}
 			cfg.Memory = mem
 		}
+		if cmd.Flags().Changed("network") {
+			if !isValidNetwork(flagNetwork) {
+				return fmt.Errorf("invalid network mode %q; must be one of: nat, shared, host, isolated, none", flagNetwork)
+			}
+			cfg.Network = flagNetwork
+		}
+		if cmd.Flags().Changed("host-interface") {
+			cfg.HostInterface = flagHostInterface
+		}
+
+		// Validate host-interface is set when using host mode.
+		if cfg.Network == monolith.NetworkHost && cfg.HostInterface == "" {
+			return fmt.Errorf("host network mode requires --host-interface (e.g. --host-interface en0)")
+		}
+		// Warn if host-interface is set but mode isn't host.
+		if cfg.HostInterface != "" && cfg.Network != monolith.NetworkHost {
+			return fmt.Errorf("--host-interface is only valid with --network host")
+		}
 
 		// Persist config so Run() and vm list can read it.
 		if err := monolith.WriteConfig(name, cfg); err != nil {
 			return fmt.Errorf("writing config: %w", err)
 		}
 
-		fmt.Printf("Booting VM %q (%d vCPU, %s RAM)...\n", name, cfg.CPUs, formatMemory(cfg.Memory))
+		fmt.Printf("Booting VM %q (%d vCPU, %s RAM, network: %s)...\n", name, cfg.CPUs, formatMemory(cfg.Memory), cfg.Network)
 		return monolith.Run(name)
 	},
 }
@@ -69,6 +89,18 @@ var runCmd = &cobra.Command{
 func init() {
 	runCmd.Flags().UintVar(&flagCPUs, "cpus", 0, "number of vCPUs (default: 1)")
 	runCmd.Flags().StringVar(&flagMemory, "memory", "", `RAM size, e.g. "512M", "1G", "2048M" (default: 512M)`)
+	runCmd.Flags().StringVar(&flagNetwork, "network", "", `network mode: nat, shared, host, isolated, none (default: nat)`)
+	runCmd.Flags().StringVar(&flagHostInterface, "host-interface", "", `physical NIC for host mode (e.g. "en0")`)
+}
+
+// isValidNetwork checks if the given string is a valid network mode.
+func isValidNetwork(mode string) bool {
+	for _, m := range monolith.ValidNetworkModes {
+		if m == mode {
+			return true
+		}
+	}
+	return false
 }
 
 // parseMemory parses a human-readable memory string like "512M", "1G", "2048M"

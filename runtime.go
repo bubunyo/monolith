@@ -1,12 +1,14 @@
 package monolith
 
 import (
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
 	"syscall"
 
 	"github.com/Code-Hex/vz/v3"
+	"github.com/Code-Hex/vz/v3/vmnet"
 	"github.com/pkg/errors"
 	"github.com/pkg/term/termios"
 	"golang.org/x/sys/unix"
@@ -85,21 +87,29 @@ func Run(name string) error {
 	}
 	config.SetStorageDevicesVirtualMachineConfiguration([]vz.StorageDeviceConfiguration{storageConfig})
 
-	// 4. Add Network (NAT)
-	networkConfig, err := vz.NewNATNetworkDeviceAttachment()
-	if err != nil {
-		return errors.Wrap(err, "vz.NewNATNetworkDeviceAttachment")
-	}
-	netConfig, err := vz.NewVirtioNetworkDeviceConfiguration(networkConfig)
-	if err != nil {
-		return errors.Wrap(err, "vz.NewVirtioNetworkDeviceConfiguration")
-	}
+	// 4. Add Network
 	mac, err := vz.NewRandomLocallyAdministeredMACAddress()
 	if err != nil {
 		return errors.Wrap(err, "vz.NewRandomLocallyAdministeredMACAddress")
 	}
-	netConfig.SetMACAddress(mac)
-	config.SetNetworkDevicesVirtualMachineConfiguration([]*vz.VirtioNetworkDeviceConfiguration{netConfig})
+
+	networkMode := cfg.Network
+	if networkMode == "" {
+		networkMode = NetworkNAT
+	}
+
+	if networkMode != NetworkNone {
+		attachment, netErr := createNetworkAttachment(networkMode, cfg.HostInterface)
+		if netErr != nil {
+			return errors.Wrap(netErr, "createNetworkAttachment")
+		}
+		netConfig, netErr := vz.NewVirtioNetworkDeviceConfiguration(attachment)
+		if netErr != nil {
+			return errors.Wrap(netErr, "vz.NewVirtioNetworkDeviceConfiguration")
+		}
+		netConfig.SetMACAddress(mac)
+		config.SetNetworkDevicesVirtualMachineConfiguration([]*vz.VirtioNetworkDeviceConfiguration{netConfig})
+	}
 
 	// 5. Setup Console (Required for interaction)
 	setRawMode(os.Stdin)
@@ -168,5 +178,55 @@ func Run(name string) error {
 		case err := <-errCh:
 			log.Println("in start:", err)
 		}
+	}
+}
+
+// createNetworkAttachment builds the appropriate vz.NetworkDeviceAttachment for the given mode.
+func createNetworkAttachment(mode, hostInterface string) (vz.NetworkDeviceAttachment, error) {
+	switch mode {
+	case NetworkNAT:
+		return vz.NewNATNetworkDeviceAttachment()
+
+	case NetworkShared:
+		config, err := vmnet.NewNetworkConfiguration(vmnet.SharedMode)
+		if err != nil {
+			return nil, fmt.Errorf("vmnet SharedMode config: %w", err)
+		}
+		network, err := vmnet.NewNetwork(config)
+		if err != nil {
+			return nil, fmt.Errorf("vmnet SharedMode network: %w", err)
+		}
+		return vz.NewVmnetNetworkDeviceAttachment(network)
+
+	case NetworkHost:
+		if hostInterface == "" {
+			return nil, fmt.Errorf("host mode requires --host-interface (e.g. en0)")
+		}
+		ifaces := vz.NetworkInterfaces()
+		for _, iface := range ifaces {
+			if iface.Identifier() == hostInterface {
+				return vz.NewBridgedNetworkDeviceAttachment(iface)
+			}
+		}
+		// Build list of available interfaces for the error message.
+		var available []string
+		for _, iface := range ifaces {
+			available = append(available, iface.Identifier())
+		}
+		return nil, fmt.Errorf("host interface %q not found; available: %v", hostInterface, available)
+
+	case NetworkIsolated:
+		config, err := vmnet.NewNetworkConfiguration(vmnet.HostMode)
+		if err != nil {
+			return nil, fmt.Errorf("vmnet HostMode config: %w", err)
+		}
+		network, err := vmnet.NewNetwork(config)
+		if err != nil {
+			return nil, fmt.Errorf("vmnet HostMode network: %w", err)
+		}
+		return vz.NewVmnetNetworkDeviceAttachment(network)
+
+	default:
+		return nil, fmt.Errorf("unknown network mode: %q", mode)
 	}
 }

@@ -92,7 +92,8 @@ func ReadState(name string) (*VMStatus, error) {
 	}
 
 	// Process is alive — look up IP and gather host-side stats.
-	ip := LookupIPByMAC(state.MAC)
+	cfg, _ := ReadConfig(name)
+	ip := lookupIPForMode(cfg.Network, state.MAC)
 	cpuPct, rssBytes := processStats(state.PID)
 
 	var startedAt time.Time
@@ -304,6 +305,64 @@ func NetworkStats(iface string) NetStats {
 		RxPkts:  oPkts,
 		TxPkts:  iPkts,
 	}
+}
+
+// lookupIPForMode picks the right IP discovery strategy based on network mode.
+// - nat/shared: DHCP leases file (macOS DHCP server assigns IPs)
+// - host: DHCP leases first (router assigns), ARP table fallback
+// - isolated/none: no IP expected
+func lookupIPForMode(mode, mac string) string {
+	switch mode {
+	case NetworkNAT, NetworkShared, "":
+		return LookupIPByMAC(mac)
+	case NetworkHost:
+		// Try DHCP leases first (in case the router's DHCP is visible),
+		// then fall back to ARP table.
+		if ip := LookupIPByMAC(mac); ip != "" {
+			return ip
+		}
+		return lookupIPByARP(mac)
+	case NetworkIsolated, NetworkNone:
+		return ""
+	default:
+		return LookupIPByMAC(mac)
+	}
+}
+
+// lookupIPByARP scans the ARP table for the given MAC address.
+// Used as a fallback for host mode where the router assigns IPs
+// and they may not appear in macOS DHCP leases.
+func lookupIPByARP(mac string) string {
+	if mac == "" {
+		return ""
+	}
+	targetNorm := normalizeMAC(mac)
+	if targetNorm == "" {
+		return ""
+	}
+
+	out, err := exec.Command("arp", "-an").Output()
+	if err != nil {
+		return ""
+	}
+
+	// Lines look like: ? (192.168.1.42) at 8:b4:b1:82:87:2b on en0 ifscope [ethernet]
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 4 || fields[1] == "(incomplete)" {
+			continue
+		}
+		if fields[2] != "at" {
+			continue
+		}
+		arpMAC := normalizeMAC(fields[3])
+		if arpMAC == targetNorm {
+			// Extract IP from parentheses: "(192.168.1.42)"
+			ip := strings.Trim(fields[1], "()")
+			return ip
+		}
+	}
+	return ""
 }
 
 // lookupIPByMAC reads the macOS DHCP server leases file to find the IP

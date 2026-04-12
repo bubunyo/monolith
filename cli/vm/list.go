@@ -44,6 +44,7 @@ var listCmd = &cobra.Command{
 			ip          string
 			cpus        uint
 			memory      uint64 // bytes
+			network     string
 			uptime      time.Duration
 			cpuPercent  float64
 			memoryRSS   int64 // bytes
@@ -89,6 +90,7 @@ var listCmd = &cobra.Command{
 				ip:          status.IP,
 				cpus:        cfg.CPUs,
 				memory:      cfg.Memory,
+				network:     cfg.Network,
 				uptime:      uptime,
 				cpuPercent:  status.CPUPercent,
 				memoryRSS:   status.MemoryRSS,
@@ -103,9 +105,9 @@ var listCmd = &cobra.Command{
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
 
 		if flagWide {
-			fmt.Fprintln(w, "NAME\tSTATE\tIP\tCPUS\tMEM\tDISK\tUPTIME\tCPU%\tRSS\tOS")
+			fmt.Fprintln(w, "NAME\tSTATE\tIP\tNET\tCPUS\tMEM\tDISK\tUPTIME\tCPU%\tRSS\tOS")
 		} else {
-			fmt.Fprintln(w, "NAME\tSTATE\tIP\tCPUS\tMEM\tDISK\tUPTIME")
+			fmt.Fprintln(w, "NAME\tSTATE\tIP\tNET\tCPUS\tMEM\tDISK\tUPTIME")
 		}
 
 		for _, vm := range vms {
@@ -116,6 +118,7 @@ var listCmd = &cobra.Command{
 			}
 
 			disk := formatDisk(vm.actualSize, vm.logicalSize)
+			net := dash(vm.network)
 
 			if flagWide {
 				cpuPct := dash("")
@@ -124,10 +127,11 @@ var listCmd = &cobra.Command{
 					cpuPct = fmt.Sprintf("%.1f%%", vm.cpuPercent)
 					rss = formatSize(vm.memoryRSS)
 				}
-				fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\n",
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\n",
 					vm.name,
 					vm.state,
 					ip,
+					net,
 					vm.cpus,
 					formatSize(int64(vm.memory)),
 					disk,
@@ -137,10 +141,11 @@ var listCmd = &cobra.Command{
 					"alpine",
 				)
 			} else {
-				fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s\t%s\t%s\n",
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\n",
 					vm.name,
 					vm.state,
 					ip,
+					net,
 					vm.cpus,
 					formatSize(int64(vm.memory)),
 					disk,

@@ -9,17 +9,32 @@ import (
 
 const configFileName = "config.json"
 
+// Network mode constants.
+const (
+	NetworkNAT      = "nat"
+	NetworkShared   = "shared"
+	NetworkHost     = "host"
+	NetworkIsolated = "isolated"
+	NetworkNone     = "none"
+)
+
+// ValidNetworkModes is the set of accepted --network values.
+var ValidNetworkModes = []string{NetworkNAT, NetworkShared, NetworkHost, NetworkIsolated, NetworkNone}
+
 // VMConfig holds the per-VM hardware configuration.
 type VMConfig struct {
-	CPUs   uint   `json:"cpus"`
-	Memory uint64 `json:"memory"` // bytes
+	CPUs          uint   `json:"cpus"`
+	Memory        uint64 `json:"memory"`                   // bytes
+	Network       string `json:"network"`                  // "nat", "shared", "host", "isolated", "none"
+	HostInterface string `json:"host_interface,omitempty"` // physical NIC for "host" mode (e.g. "en0")
 }
 
-// DefaultConfig returns the default VM configuration: 1 vCPU, 512 MiB RAM.
+// DefaultConfig returns the default VM configuration: 1 vCPU, 512 MiB RAM, NAT networking.
 func DefaultConfig() VMConfig {
 	return VMConfig{
-		CPUs:   1,
-		Memory: 512 * 1024 * 1024,
+		CPUs:    1,
+		Memory:  512 * 1024 * 1024,
+		Network: NetworkNAT,
 	}
 }
 
@@ -50,6 +65,9 @@ func ReadConfig(name string) (VMConfig, error) {
 	}
 	if cfg.Memory == 0 {
 		cfg.Memory = 512 * 1024 * 1024
+	}
+	if cfg.Network == "" {
+		cfg.Network = NetworkNAT
 	}
 
 	return cfg, nil

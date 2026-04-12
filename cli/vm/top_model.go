@@ -250,7 +250,7 @@ func (m *model) gatherStats() {
 	}
 
 	// IP and uptime.
-	m.ip = monolith.LookupIPByMAC(state.MAC)
+	m.ip = lookupIPForTop(m.cfg.Network, state.MAC)
 	if state.StartedAt > 0 {
 		m.uptime = time.Since(time.Unix(state.StartedAt, 0))
 	}
@@ -269,34 +269,39 @@ func (m *model) gatherStats() {
 	}
 
 	// Network stats.
-	if m.vmenet == "" {
-		m.vmenet = monolith.VmenetForMAC(state.MAC)
-	}
-	if m.vmenet != "" {
-		ns := monolith.NetworkStats(m.vmenet)
-		now := time.Now()
-		if m.hasPrev {
-			dt := now.Sub(m.prevTick).Seconds()
-			if dt > 0 {
-				m.rxRate = float64(ns.RxBytes-m.prevRx) / dt
-				m.txRate = float64(ns.TxBytes-m.prevTx) / dt
-				if m.rxRate < 0 {
-					m.rxRate = 0
-				}
-				if m.txRate < 0 {
-					m.txRate = 0
+	// For "none" mode there's no network device.
+	// For "host" mode the VM uses a bridged physical NIC; no per-VM vmenet exists.
+	hasVmenet := m.cfg.Network != monolith.NetworkNone && m.cfg.Network != monolith.NetworkHost
+	if hasVmenet {
+		if m.vmenet == "" {
+			m.vmenet = monolith.VmenetForMAC(state.MAC)
+		}
+		if m.vmenet != "" {
+			ns := monolith.NetworkStats(m.vmenet)
+			now := time.Now()
+			if m.hasPrev {
+				dt := now.Sub(m.prevTick).Seconds()
+				if dt > 0 {
+					m.rxRate = float64(ns.RxBytes-m.prevRx) / dt
+					m.txRate = float64(ns.TxBytes-m.prevTx) / dt
+					if m.rxRate < 0 {
+						m.rxRate = 0
+					}
+					if m.txRate < 0 {
+						m.txRate = 0
+					}
 				}
 			}
-		}
-		m.prevRx = ns.RxBytes
-		m.prevTx = ns.TxBytes
-		m.prevTick = now
-		m.hasPrev = true
-		m.rxTotal = ns.RxBytes
-		m.txTotal = ns.TxBytes
+			m.prevRx = ns.RxBytes
+			m.prevTx = ns.TxBytes
+			m.prevTick = now
+			m.hasPrev = true
+			m.rxTotal = ns.RxBytes
+			m.txTotal = ns.TxBytes
 
-		m.rxSpark.push(m.rxRate)
-		m.txSpark.push(m.txRate)
+			m.rxSpark.push(m.rxRate)
+			m.txSpark.push(m.txRate)
+		}
 	}
 }
 
@@ -429,25 +434,43 @@ func (m model) View() string {
 	)
 
 	// ── Network box ──
-	netBox := boxStyle.Render(
-		titleStyle.Render("  Network") + "\n" +
-			fmt.Sprintf("  %s %s  %s    %s %s  %s",
-				labelStyle.Render("RX:"),
-				valueStyle.Render(formatRate(m.rxRate)),
-				dimStyle.Render(fmt.Sprintf("(%s total)", formatBytes(m.rxTotal))),
-				labelStyle.Render("TX:"),
-				valueStyle.Render(formatRate(m.txRate)),
-				dimStyle.Render(fmt.Sprintf("(%s total)", formatBytes(m.txTotal))),
-			) + "\n" +
-			fmt.Sprintf("  %s %s",
-				labelStyle.Render("RX"),
-				sparkStyle.Render(renderSparkline(&m.rxSpark, sparkWidth-3, 0)),
-			) + "\n" +
-			fmt.Sprintf("  %s %s",
-				labelStyle.Render("TX"),
-				sparkStyleTx.Render(renderSparkline(&m.txSpark, sparkWidth-3, 0)),
-			),
-	)
+	var netBox string
+	switch m.cfg.Network {
+	case monolith.NetworkNone:
+		netBox = boxStyle.Render(
+			titleStyle.Render("  Network") + "\n" +
+				"  " + dimStyle.Render("No network (--network none)"),
+		)
+	case monolith.NetworkHost:
+		netBox = boxStyle.Render(
+			titleStyle.Render("  Network") + "\n" +
+				fmt.Sprintf("  %s %s  %s %s",
+					labelStyle.Render("Mode:"), valueStyle.Render("host"),
+					labelStyle.Render("Interface:"), valueStyle.Render(m.cfg.HostInterface),
+				) + "\n" +
+				"  " + dimStyle.Render("Per-VM stats not available in host mode"),
+		)
+	default:
+		netBox = boxStyle.Render(
+			titleStyle.Render("  Network") + "\n" +
+				fmt.Sprintf("  %s %s  %s    %s %s  %s",
+					labelStyle.Render("RX:"),
+					valueStyle.Render(formatRate(m.rxRate)),
+					dimStyle.Render(fmt.Sprintf("(%s total)", formatBytes(m.rxTotal))),
+					labelStyle.Render("TX:"),
+					valueStyle.Render(formatRate(m.txRate)),
+					dimStyle.Render(fmt.Sprintf("(%s total)", formatBytes(m.txTotal))),
+				) + "\n" +
+				fmt.Sprintf("  %s %s",
+					labelStyle.Render("RX"),
+					sparkStyle.Render(renderSparkline(&m.rxSpark, sparkWidth-3, 0)),
+				) + "\n" +
+				fmt.Sprintf("  %s %s",
+					labelStyle.Render("TX"),
+					sparkStyleTx.Render(renderSparkline(&m.txSpark, sparkWidth-3, 0)),
+				),
+		)
+	}
 
 	// ── Disk box ──
 	diskPercent := 0.0
@@ -499,4 +522,14 @@ func formatBytes(b int64) string {
 func formatRate(bytesPerSec float64) string {
 	b := int64(math.Round(bytesPerSec))
 	return formatBytes(b) + "/s"
+}
+
+// lookupIPForTop picks the right IP discovery strategy for the top view.
+func lookupIPForTop(network, mac string) string {
+	switch network {
+	case monolith.NetworkNone, monolith.NetworkIsolated:
+		return ""
+	default:
+		return monolith.LookupIPByMAC(mac)
+	}
 }
