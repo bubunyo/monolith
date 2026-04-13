@@ -3,6 +3,7 @@ package vm
 import (
 	"fmt"
 	"math/rand/v2"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -23,16 +24,23 @@ var (
 
 var runCmd = &cobra.Command{
 	Use:   "run [name]",
-	Short: "Boot a VM (creates on first run)",
-	Long:  "Start a virtual machine by name. If the name doesn't exist, a new VM is created. If no name is given, one is generated automatically.",
-	Args:  cobra.MaximumNArgs(1),
+	Short: "Boot a VM (creates on first run, reattaches if running)",
+	Long: `Start a virtual machine by name. If the VM is already running, attaches to its console.
+If the VM is suspended, restores from the suspend file. If no name is given, one is generated automatically.
+
+Detach from the console with Ctrl+C or Ctrl+] q. The VM keeps running in the background.`,
+	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name := ""
 		if len(args) > 0 {
 			name = args[0]
 		}
 		if name == "" {
-			name = fmt.Sprintf("lith-%05d", rand.IntN(100000))
+			var err error
+			name, err = generateUniqueName()
+			if err != nil {
+				return err
+			}
 		}
 		if len(name) > 63 {
 			return fmt.Errorf("VM name %q is too long (max 63 characters)", name)
@@ -41,7 +49,29 @@ var runCmd = &cobra.Command{
 			return fmt.Errorf("VM name %q is invalid (must be lowercase alphanumeric with hyphens, e.g. my-vm-01)", name)
 		}
 
-		// Read existing config or start with defaults.
+		// Check current state.
+		status, err := monolith.ReadState(name)
+		if err != nil {
+			return fmt.Errorf("reading VM state: %w", err)
+		}
+
+		switch status.State {
+		case monolith.StatusRunning, monolith.StatusPaused:
+			// Already running — just attach.
+			fmt.Printf("VM %q is already %s. Attaching to console...\n", name, status.State)
+			return attachAndHandle(name)
+
+		case monolith.StatusSuspended:
+			// Restore from suspend file.
+			fmt.Printf("Restoring VM %q from suspend file...\n", name)
+			if err := monolith.SpawnVMDaemon(name, true); err != nil {
+				return err
+			}
+			fmt.Printf("VM %q restored. Attaching to console...\n", name)
+			return attachAndHandle(name)
+		}
+
+		// Stopped — need to boot. Read/apply config.
 		cfg, err := monolith.ReadConfig(name)
 		if err != nil {
 			return err
@@ -84,14 +114,36 @@ var runCmd = &cobra.Command{
 			return fmt.Errorf("--network is only valid with --network-mode shared or --network-mode isolated")
 		}
 
-		// Persist config so Run() and vm list can read it.
+		// Persist config so the daemon can read it.
 		if err := monolith.WriteConfig(name, cfg); err != nil {
 			return fmt.Errorf("writing config: %w", err)
 		}
 
 		fmt.Printf("Booting VM %q (%d vCPU, %s RAM, network: %s)...\n", name, cfg.CPUs, formatMemory(cfg.Memory), cfg.NetworkMode)
-		return monolith.Run(name)
+
+		// Spawn the VM daemon.
+		if err := monolith.SpawnVMDaemon(name, false); err != nil {
+			return err
+		}
+
+		// Attach to the console.
+		return attachAndHandle(name)
 	},
+}
+
+// attachAndHandle attaches to the VM console and handles any escape commands.
+func attachAndHandle(name string) error {
+	escapeCmd, err := monolith.AttachConsole(name)
+	if err != nil {
+		return err
+	}
+
+	if escapeCmd != nil {
+		return executeEscapeCommand(name, *escapeCmd)
+	}
+
+	fmt.Printf("Detached from %s. VM is still running.\n", name)
+	return nil
 }
 
 func init() {
@@ -158,6 +210,23 @@ func parseMemory(s string) (uint64, error) {
 	}
 
 	return n * multiplier, nil
+}
+
+// generateUniqueName generates a unique VM name in the form "lith-NNNNN",
+// retrying up to 10 times if a VM with that name already exists.
+func generateUniqueName() (string, error) {
+	const maxAttempts = 10
+	for i := 0; i < maxAttempts; i++ {
+		name := fmt.Sprintf("lith-%05d", rand.IntN(100000))
+		dir, err := monolith.VMDir(name)
+		if err != nil {
+			return "", err
+		}
+		if _, err := os.Stat(dir); os.IsNotExist(err) {
+			return name, nil
+		}
+	}
+	return "", fmt.Errorf("failed to generate a unique VM name after %d attempts", maxAttempts)
 }
 
 // formatMemory converts bytes to a human-readable string.

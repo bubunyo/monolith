@@ -21,8 +21,8 @@ var topCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("reading VM state: %w", err)
 		}
-		if status.State != "running" {
-			return fmt.Errorf("VM %q is not running", name)
+		if status.State != monolith.StatusRunning && status.State != monolith.StatusPaused {
+			return fmt.Errorf("VM %q is not running (state: %s)", name, status.State)
 		}
 
 		p := tea.NewProgram(newModel(name), tea.WithAltScreen())

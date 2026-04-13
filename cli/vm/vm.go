@@ -12,6 +12,11 @@ var Cmd = &cobra.Command{
 
 func init() {
 	Cmd.AddCommand(runCmd)
+	Cmd.AddCommand(attachCmd)
+	Cmd.AddCommand(pauseCmd)
+	Cmd.AddCommand(resumeCmd)
+	Cmd.AddCommand(suspendCmd)
+	Cmd.AddCommand(stopCmd)
 	Cmd.AddCommand(listCmd)
 	Cmd.AddCommand(rmCmd)
 	Cmd.AddCommand(topCmd)

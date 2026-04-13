@@ -30,10 +30,20 @@ var rmCmd = &cobra.Command{
 			return fmt.Errorf("VM %q does not exist", name)
 		}
 
-		// Check if the VM is currently running.
+		// Check if the VM is currently running or paused — stop it first.
 		status, _ := monolith.ReadState(name)
-		if status != nil && status.State == "running" {
-			return fmt.Errorf("VM %q is currently running. Stop it before deleting", name)
+		if status != nil && (status.State == monolith.StatusRunning || status.State == monolith.StatusPaused) {
+			fmt.Printf("VM %q is %s. Stopping it first...\n", name, status.State)
+			resp, err := monolith.SendControlCommand(name, monolith.ControlRequest{
+				Cmd:   monolith.CmdStop,
+				Force: true,
+			})
+			if err != nil {
+				return fmt.Errorf("stopping VM %q: %w", name, err)
+			}
+			if !resp.OK {
+				return fmt.Errorf("stopping VM %q: %s", name, resp.Error)
+			}
 		}
 
 		fmt.Printf("Delete VM %q? This will remove all data. [y/N]: ", name)

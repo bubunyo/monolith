@@ -71,14 +71,14 @@ var listCmd = &cobra.Command{
 			// Read runtime state (running/stopped + IP + stats).
 			status, err := monolith.ReadState(e.Name())
 			if err != nil {
-				status = &monolith.VMStatus{State: "stopped"}
+				status = &monolith.VMStatus{State: monolith.StatusStopped}
 			}
 
 			// Read per-VM hardware config.
 			cfg, _ := monolith.ReadConfig(e.Name())
 
 			var uptime time.Duration
-			if status.State == "running" && !status.StartedAt.IsZero() {
+			if (status.State == monolith.StatusRunning || status.State == monolith.StatusPaused) && !status.StartedAt.IsZero() {
 				uptime = time.Since(status.StartedAt)
 			}
 
@@ -115,7 +115,7 @@ var listCmd = &cobra.Command{
 		for _, vm := range vms {
 			ip := dash(vm.ip)
 			uptime := dash("")
-			if vm.state == "running" && vm.uptime > 0 {
+			if (vm.state == monolith.StatusRunning || vm.state == monolith.StatusPaused) && vm.uptime > 0 {
 				uptime = formatUptime(vm.uptime)
 			}
 
@@ -128,7 +128,7 @@ var listCmd = &cobra.Command{
 			if flagWide {
 				cpuPct := dash("")
 				rss := dash("")
-				if vm.state == "running" {
+				if vm.state == monolith.StatusRunning || vm.state == monolith.StatusPaused {
 					cpuPct = fmt.Sprintf("%.1f%%", vm.cpuPercent)
 					rss = formatSize(vm.memoryRSS)
 				}

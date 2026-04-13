@@ -44,9 +44,9 @@ var pruneCmd = &cobra.Command{
 			}
 			name := e.Name()
 
-			// Skip running VMs.
+			// Skip VMs that are not stopped (running, paused, or suspended).
 			status, _ := monolith.ReadState(name)
-			if status != nil && status.State == "running" {
+			if status != nil && status.State != monolith.StatusStopped {
 				continue
 			}
 
@@ -66,7 +66,7 @@ var pruneCmd = &cobra.Command{
 			return nil
 		}
 
-		fmt.Println("The following stopped VMs will be deleted:\n")
+		fmt.Println("The following stopped VMs will be deleted:")
 		for _, vm := range stale {
 			fmt.Printf("  %-20s (%s)\n", vm.name, vm.diskSize)
 		}

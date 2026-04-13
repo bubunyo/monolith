@@ -14,16 +14,26 @@ import (
 
 const stateFileName = "state.json"
 
+// VM status constants — persisted in state.json and reported by `vm list`.
+const (
+	StatusStopped   = "stopped"   // No process, no resources. Initial and final state.
+	StatusRunning   = "running"   // Daemon alive, VM executing, guest clock ticking.
+	StatusPaused    = "paused"    // Daemon alive, VM frozen in memory, guest clock stopped.
+	StatusSuspended = "suspended" // Daemon exited, VM state saved to disk file.
+)
+
 // VMState represents the persisted runtime state of a VM.
 type VMState struct {
-	PID       int    `json:"pid"`
-	MAC       string `json:"mac"`
-	StartedAt int64  `json:"started_at"` // unix timestamp
+	PID         int    `json:"pid"`
+	MAC         string `json:"mac"`
+	StartedAt   int64  `json:"started_at"`             // unix timestamp
+	Status      string `json:"status,omitempty"`       // "running", "paused", "suspended"
+	SuspendFile string `json:"suspend_file,omitempty"` // path to .vmstate file when suspended
 }
 
 // VMStatus is the computed status of a VM for display purposes.
 type VMStatus struct {
-	State      string    // "running" or "stopped"
+	State      string    // "running", "paused", "suspended", or "stopped"
 	IP         string    // e.g. "192.168.64.3" or "" if unknown
 	StartedAt  time.Time // zero if stopped
 	CPUPercent float64   // host-side CPU% of the VM process
@@ -40,7 +50,7 @@ type NetStats struct {
 }
 
 // WriteState writes the VM state file into the VM's cache directory.
-func WriteState(name string, pid int, mac string) error {
+func WriteState(name string, pid int, mac, status string) error {
 	dir, err := vmDir(name)
 	if err != nil {
 		return err
@@ -50,6 +60,59 @@ func WriteState(name string, pid int, mac string) error {
 		PID:       pid,
 		MAC:       mac,
 		StartedAt: time.Now().Unix(),
+		Status:    status,
+	}
+	data, err := json.Marshal(state)
+	if err != nil {
+		return fmt.Errorf("marshaling state: %w", err)
+	}
+
+	return os.WriteFile(filepath.Join(dir, stateFileName), data, 0644)
+}
+
+// UpdateStateStatus updates only the status field of the state file.
+// Used by the daemon to transition between running/paused without rewriting everything.
+func UpdateStateStatus(name, status string) error {
+	dir, err := vmDir(name)
+	if err != nil {
+		return err
+	}
+
+	statePath := filepath.Join(dir, stateFileName)
+	data, err := os.ReadFile(statePath)
+	if err != nil {
+		return err
+	}
+
+	var state VMState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return err
+	}
+
+	state.Status = status
+	if status == StatusSuspended || status == StatusStopped {
+		state.PID = 0
+	}
+
+	out, err := json.Marshal(state)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(statePath, out, 0644)
+}
+
+// WriteSuspendState writes a suspended state (daemon has exited, state file on disk).
+func WriteSuspendState(name, mac, suspendFile string) error {
+	dir, err := vmDir(name)
+	if err != nil {
+		return err
+	}
+
+	state := VMState{
+		PID:         0,
+		MAC:         mac,
+		Status:      StatusSuspended,
+		SuspendFile: suspendFile,
 	}
 	data, err := json.Marshal(state)
 	if err != nil {
@@ -60,19 +123,20 @@ func WriteState(name string, pid int, mac string) error {
 }
 
 // ReadState reads and validates the VM state file. If the state file exists
-// but the process is no longer alive, the stale file is removed and a
-// "stopped" status is returned.
+// but the process is no longer alive, the status is checked:
+// - suspended: kept as-is (daemon intentionally exited)
+// - running/paused: stale — cleaned up and reported as stopped
 func ReadState(name string) (*VMStatus, error) {
 	dir, err := vmDir(name)
 	if err != nil {
-		return &VMStatus{State: "stopped"}, nil
+		return &VMStatus{State: StatusStopped}, nil
 	}
 
 	statePath := filepath.Join(dir, stateFileName)
 	data, err := os.ReadFile(statePath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return &VMStatus{State: "stopped"}, nil
+			return &VMStatus{State: StatusStopped}, nil
 		}
 		return nil, fmt.Errorf("reading state: %w", err)
 	}
@@ -81,14 +145,25 @@ func ReadState(name string) (*VMStatus, error) {
 	if err := json.Unmarshal(data, &state); err != nil {
 		// Corrupt state file — remove and report stopped.
 		os.Remove(statePath)
-		return &VMStatus{State: "stopped"}, nil
+		return &VMStatus{State: StatusStopped}, nil
 	}
 
-	// Verify the process is still alive.
+	// Suspended VMs have no daemon process — that's expected.
+	if state.Status == StatusSuspended {
+		return &VMStatus{State: StatusSuspended}, nil
+	}
+
+	// For running/paused, verify the daemon process is still alive.
 	if !processAlive(state.PID) {
-		// Stale state file from a crashed/killed process.
+		// Stale state file from a crashed/killed daemon.
 		os.Remove(statePath)
-		return &VMStatus{State: "stopped"}, nil
+		return &VMStatus{State: StatusStopped}, nil
+	}
+
+	// Determine display state from persisted status.
+	displayState := StatusRunning
+	if state.Status == StatusPaused {
+		displayState = StatusPaused
 	}
 
 	// Process is alive — look up IP and gather host-side stats.
@@ -102,7 +177,7 @@ func ReadState(name string) (*VMStatus, error) {
 	}
 
 	return &VMStatus{
-		State:      "running",
+		State:      displayState,
 		IP:         ip,
 		StartedAt:  startedAt,
 		CPUPercent: cpuPct,
@@ -154,6 +229,38 @@ func vmDir(name string) (string, error) {
 		return "", err
 	}
 	return filepath.Join(home, ".cache", "monolith", "vms", name), nil
+}
+
+// VMDir is the exported version of vmDir.
+func VMDir(name string) (string, error) {
+	return vmDir(name)
+}
+
+// VMSockPath returns the path to the VM daemon's Unix domain socket.
+func VMSockPath(name string) (string, error) {
+	dir, err := vmDir(name)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "daemon.sock"), nil
+}
+
+// VMSuspendPath returns the path where a VM's state is saved on suspend.
+func VMSuspendPath(name string) (string, error) {
+	dir, err := vmDir(name)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "suspend.vmstate"), nil
+}
+
+// VMLogPath returns the path to the VM daemon's log file.
+func VMLogPath(name string) (string, error) {
+	dir, err := vmDir(name)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "daemon.log"), nil
 }
 
 // processAlive checks if a process with the given PID is still running.
