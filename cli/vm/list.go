@@ -20,146 +20,151 @@ var listCmd = &cobra.Command{
 	Short:   "List all VMs",
 	Args:    cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		vmsDir, err := vmsDir()
-		if err != nil {
-			return err
-		}
+		return listVMs(flagWide)
+	},
+}
 
-		entries, err := os.ReadDir(vmsDir)
-		if err != nil {
-			if os.IsNotExist(err) {
-				fmt.Println("No VMs found.")
-				return nil
-			}
-			return err
-		}
+// listVMs lists all VMs with their current status, config, and resource usage.
+func listVMs(wide bool) error {
+	vmsPath, err := vmsDir()
+	if err != nil {
+		return err
+	}
 
-		// Filter to directories that contain a disk.img.
-		type vmInfo struct {
-			name        string
-			logicalSize int64
-			actualSize  int64
-			created     time.Time
-			state       string
-			ip          string
-			cpus        uint
-			memory      uint64 // bytes
-			network     string
-			networkName string
-			uptime      time.Duration
-			cpuPercent  float64
-			memoryRSS   int64 // bytes
-		}
-		var vms []vmInfo
-		for _, e := range entries {
-			if !e.IsDir() {
-				continue
-			}
-			diskPath := filepath.Join(vmsDir, e.Name(), "disk.img")
-			info, err := os.Stat(diskPath)
-			if err != nil {
-				continue // no disk.img, skip
-			}
-
-			// Get actual disk usage via syscall (sparse file awareness).
-			var actual int64
-			var st syscall.Stat_t
-			if err := syscall.Stat(diskPath, &st); err == nil {
-				actual = st.Blocks * 512
-			}
-
-			// Read runtime state (running/stopped + IP + stats).
-			status, err := monolith.ReadState(e.Name())
-			if err != nil {
-				status = &monolith.VMStatus{State: monolith.StatusStopped}
-			}
-
-			// Read per-VM hardware config.
-			cfg, _ := monolith.ReadConfig(e.Name())
-
-			var uptime time.Duration
-			if (status.State == monolith.StatusRunning || status.State == monolith.StatusPaused) && !status.StartedAt.IsZero() {
-				uptime = time.Since(status.StartedAt)
-			}
-
-			vms = append(vms, vmInfo{
-				name:        e.Name(),
-				logicalSize: info.Size(),
-				actualSize:  actual,
-				created:     info.ModTime(),
-				state:       status.State,
-				ip:          status.IP,
-				cpus:        cfg.CPUs,
-				memory:      cfg.Memory,
-				network:     cfg.NetworkMode,
-				networkName: cfg.NetworkName,
-				uptime:      uptime,
-				cpuPercent:  status.CPUPercent,
-				memoryRSS:   status.MemoryRSS,
-			})
-		}
-
-		if len(vms) == 0 {
+	entries, err := os.ReadDir(vmsPath)
+	if err != nil {
+		if os.IsNotExist(err) {
 			fmt.Println("No VMs found.")
 			return nil
 		}
+		return err
+	}
 
-		w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
+	// Filter to directories that contain a disk.img.
+	type vmInfo struct {
+		name        string
+		logicalSize int64
+		actualSize  int64
+		created     time.Time
+		state       string
+		ip          string
+		cpus        uint
+		memory      uint64 // bytes
+		network     string
+		networkName string
+		uptime      time.Duration
+		cpuPercent  float64
+		memoryRSS   int64 // bytes
+	}
+	var vms []vmInfo
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		diskPath := filepath.Join(vmsPath, e.Name(), "disk.img")
+		info, err := os.Stat(diskPath)
+		if err != nil {
+			continue // no disk.img, skip
+		}
 
-		if flagWide {
-			fmt.Fprintln(w, "NAME\tSTATE\tIP\tNET\tCPUS\tMEM\tDISK\tUPTIME\tCPU%\tRSS\tOS")
+		// Get actual disk usage via syscall (sparse file awareness).
+		var actual int64
+		var st syscall.Stat_t
+		if err := syscall.Stat(diskPath, &st); err == nil {
+			actual = st.Blocks * 512
+		}
+
+		// Read runtime state (running/stopped + IP + stats).
+		status, err := monolith.ReadState(e.Name())
+		if err != nil {
+			status = &monolith.VMStatus{State: monolith.StatusStopped}
+		}
+
+		// Read per-VM hardware config.
+		cfg, _ := monolith.ReadConfig(e.Name())
+
+		var uptime time.Duration
+		if (status.State == monolith.StatusRunning || status.State == monolith.StatusPaused) && !status.StartedAt.IsZero() {
+			uptime = time.Since(status.StartedAt)
+		}
+
+		vms = append(vms, vmInfo{
+			name:        e.Name(),
+			logicalSize: info.Size(),
+			actualSize:  actual,
+			created:     info.ModTime(),
+			state:       status.State,
+			ip:          status.IP,
+			cpus:        cfg.CPUs,
+			memory:      cfg.Memory,
+			network:     cfg.NetworkMode,
+			networkName: cfg.NetworkName,
+			uptime:      uptime,
+			cpuPercent:  status.CPUPercent,
+			memoryRSS:   status.MemoryRSS,
+		})
+	}
+
+	if len(vms) == 0 {
+		fmt.Println("No VMs found.")
+		return nil
+	}
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
+
+	if wide {
+		fmt.Fprintln(w, "NAME\tSTATE\tIP\tNET\tCPUS\tMEM\tDISK\tUPTIME\tCPU%\tRSS\tOS")
+	} else {
+		fmt.Fprintln(w, "NAME\tSTATE\tIP\tNET\tCPUS\tMEM\tDISK\tUPTIME")
+	}
+
+	for _, vm := range vms {
+		ip := dash(vm.ip)
+		uptime := dash("")
+		if (vm.state == monolith.StatusRunning || vm.state == monolith.StatusPaused) && vm.uptime > 0 {
+			uptime = formatUptime(vm.uptime)
+		}
+
+		disk := formatDisk(vm.actualSize, vm.logicalSize)
+		net := dash(vm.network)
+		if vm.networkName != "" {
+			net = fmt.Sprintf("%s:%s", vm.network, vm.networkName)
+		}
+
+		if wide {
+			cpuPct := dash("")
+			rss := dash("")
+			if vm.state == monolith.StatusRunning || vm.state == monolith.StatusPaused {
+				cpuPct = fmt.Sprintf("%.1f%%", vm.cpuPercent)
+				rss = formatSize(vm.memoryRSS)
+			}
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\n",
+				vm.name,
+				vm.state,
+				ip,
+				net,
+				vm.cpus,
+				formatSize(int64(vm.memory)),
+				disk,
+				uptime,
+				cpuPct,
+				rss,
+				"alpine",
+			)
 		} else {
-			fmt.Fprintln(w, "NAME\tSTATE\tIP\tNET\tCPUS\tMEM\tDISK\tUPTIME")
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\n",
+				vm.name,
+				vm.state,
+				ip,
+				net,
+				vm.cpus,
+				formatSize(int64(vm.memory)),
+				disk,
+				uptime,
+			)
 		}
-
-		for _, vm := range vms {
-			ip := dash(vm.ip)
-			uptime := dash("")
-			if (vm.state == monolith.StatusRunning || vm.state == monolith.StatusPaused) && vm.uptime > 0 {
-				uptime = formatUptime(vm.uptime)
-			}
-
-			disk := formatDisk(vm.actualSize, vm.logicalSize)
-			net := dash(vm.network)
-			if vm.networkName != "" {
-				net = fmt.Sprintf("%s:%s", vm.network, vm.networkName)
-			}
-
-			if flagWide {
-				cpuPct := dash("")
-				rss := dash("")
-				if vm.state == monolith.StatusRunning || vm.state == monolith.StatusPaused {
-					cpuPct = fmt.Sprintf("%.1f%%", vm.cpuPercent)
-					rss = formatSize(vm.memoryRSS)
-				}
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\n",
-					vm.name,
-					vm.state,
-					ip,
-					net,
-					vm.cpus,
-					formatSize(int64(vm.memory)),
-					disk,
-					uptime,
-					cpuPct,
-					rss,
-					"alpine",
-				)
-			} else {
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\n",
-					vm.name,
-					vm.state,
-					ip,
-					net,
-					vm.cpus,
-					formatSize(int64(vm.memory)),
-					disk,
-					uptime,
-				)
-			}
-		}
-		return w.Flush()
-	},
+	}
+	return w.Flush()
 }
 
 func init() {

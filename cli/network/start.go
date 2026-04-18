@@ -19,37 +19,40 @@ var startCmd = &cobra.Command{
 	Long:  "Start the background daemon for an existing named network. The network must have been previously created with 'network create'.",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		name := args[0]
-
-		dir, err := monolith.NetworkDir(name)
-		if err != nil {
-			return err
-		}
-		if _, err := os.Stat(dir); os.IsNotExist(err) {
-			return fmt.Errorf("network %q does not exist (use 'network create' first)", name)
-		}
-
-		if monolith.IsNetworkDaemonAlive(name) {
-			return fmt.Errorf("network %q daemon is already running", name)
-		}
-
-		cfg, err := monolith.ReadNetworkConfig(name)
-		if err != nil {
-			return fmt.Errorf("reading network config: %w", err)
-		}
-
-		if err := spawnDaemon(name, cfg.Mode, flagStartVerbose); err != nil {
-			return err
-		}
-
-		cfg, err = monolith.ReadNetworkConfig(name)
-		if err != nil {
-			fmt.Printf("Network %q started (mode: %s)\n", name, cfg.Mode)
-		} else {
-			fmt.Printf("Network %q started (mode: %s, subnet: %s)\n", name, cfg.Mode, cfg.Subnet)
-		}
-		return nil
+		return startNetwork(args[0], flagStartVerbose)
 	},
+}
+
+// startNetwork starts the daemon for an existing named network.
+func startNetwork(name string, verbose bool) error {
+	dir, err := monolith.NetworkDir(name)
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		return fmt.Errorf("network %q does not exist (use 'network create' first)", name)
+	}
+
+	if monolith.IsNetworkDaemonAlive(name) {
+		return fmt.Errorf("network %q daemon is already running", name)
+	}
+
+	cfg, err := monolith.ReadNetworkConfig(name)
+	if err != nil {
+		return fmt.Errorf("reading network config: %w", err)
+	}
+
+	if err := spawnDaemon(name, cfg.Mode, verbose); err != nil {
+		return err
+	}
+
+	cfg, err = monolith.ReadNetworkConfig(name)
+	if err != nil {
+		fmt.Printf("Network %q started (mode: %s)\n", name, cfg.Mode)
+	} else {
+		fmt.Printf("Network %q started (mode: %s, subnet: %s)\n", name, cfg.Mode, cfg.Subnet)
+	}
+	return nil
 }
 
 func init() {

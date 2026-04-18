@@ -15,92 +15,92 @@ var listCmd = &cobra.Command{
 	Short:   "List all named networks",
 	Args:    cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		dir, err := monolith.NetworksDir()
-		if err != nil {
-			return err
-		}
+		return listNetworks()
+	},
+}
 
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			if os.IsNotExist(err) {
-				fmt.Println("No networks found.")
-				return nil
-			}
-			return err
-		}
+// listNetworks lists all named networks with their status and attached VMs.
+func listNetworks() error {
+	dir, err := monolith.NetworksDir()
+	if err != nil {
+		return err
+	}
 
-		type netInfo struct {
-			name   string
-			mode   string
-			subnet string
-			state  string
-			vms    []string
-		}
-		var networks []netInfo
-
-		for _, e := range entries {
-			if !e.IsDir() {
-				continue
-			}
-			name := e.Name()
-
-			cfg, err := monolith.ReadNetworkConfig(name)
-			if err != nil {
-				continue // skip directories without config
-			}
-
-			state := "stopped"
-			if monolith.IsNetworkDaemonAlive(name) {
-				state = "running"
-			}
-
-			// Find VMs that reference this network.
-			vms := findVMsOnNetwork(name)
-
-			networks = append(networks, netInfo{
-				name:   name,
-				mode:   cfg.Mode,
-				subnet: cfg.Subnet,
-				state:  state,
-				vms:    vms,
-			})
-		}
-
-		if len(networks) == 0 {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
 			fmt.Println("No networks found.")
 			return nil
 		}
+		return err
+	}
 
-		w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-		fmt.Fprintln(w, "NAME\tMODE\tSUBNET\tSTATE\tVMS")
+	type netInfo struct {
+		name   string
+		mode   string
+		subnet string
+		state  string
+		vms    []string
+	}
+	var networks []netInfo
 
-		for _, n := range networks {
-			vmList := "-"
-			if len(n.vms) > 0 {
-				vmList = ""
-				for i, vm := range n.vms {
-					if i > 0 {
-						vmList += ","
-					}
-					vmList += vm
-				}
-			}
-			subnet := n.subnet
-			if subnet == "" {
-				subnet = "-"
-			}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		name := e.Name()
 
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
-				n.name,
-				n.mode,
-				subnet,
-				n.state,
-				vmList,
-			)
+		cfg, err := monolith.ReadNetworkConfig(name)
+		if err != nil {
+			continue
 		}
 
-		return w.Flush()
-	},
+		state := "stopped"
+		if monolith.IsNetworkDaemonAlive(name) {
+			state = "running"
+		}
+
+		vms := findVMsOnNetwork(name)
+
+		networks = append(networks, netInfo{
+			name:   name,
+			mode:   cfg.Mode,
+			subnet: cfg.Subnet,
+			state:  state,
+			vms:    vms,
+		})
+	}
+
+	if len(networks) == 0 {
+		fmt.Println("No networks found.")
+		return nil
+	}
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
+	fmt.Fprintln(w, "NAME\tMODE\tSUBNET\tSTATE\tVMS")
+
+	for _, n := range networks {
+		vmList := "-"
+		if len(n.vms) > 0 {
+			vmList = ""
+			for i, vm := range n.vms {
+				if i > 0 {
+					vmList += ","
+				}
+				vmList += vm
+			}
+		}
+		subnet := n.subnet
+		if subnet == "" {
+			subnet = "-"
+		}
+
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
+			n.name, n.mode, subnet, n.state, vmList,
+		)
+	}
+
+	return w.Flush()
 }
 
 // findVMsOnNetwork scans all VMs and returns the names of those

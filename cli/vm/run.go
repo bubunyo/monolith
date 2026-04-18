@@ -22,6 +22,17 @@ var (
 	flagHostInterface string
 )
 
+// vmCfg holds optional overrides for VM configuration, set via CLI flags.
+// Nil pointers indicate the flag was not explicitly set, so the saved
+// config.json value (or default) should be used.
+type vmCfg struct {
+	CPUs          *uint
+	Memory        *uint64
+	NetworkMode   *string
+	NetworkName   *string
+	HostInterface *string
+}
+
 var runCmd = &cobra.Command{
 	Use:   "run [name]",
 	Short: "Boot a VM (creates on first run, reattaches if running)",
@@ -35,100 +46,113 @@ Detach from the console with Ctrl+C or Ctrl+] q. The VM keeps running in the bac
 		if len(args) > 0 {
 			name = args[0]
 		}
-		if name == "" {
-			var err error
-			name, err = generateUniqueName()
-			if err != nil {
-				return err
-			}
-		}
-		if len(name) > 63 {
-			return fmt.Errorf("VM name %q is too long (max 63 characters)", name)
-		}
-		if !namePattern.MatchString(name) {
-			return fmt.Errorf("VM name %q is invalid (must be lowercase alphanumeric with hyphens, e.g. my-vm-01)", name)
-		}
 
-		// Check current state.
-		status, err := monolith.ReadState(name)
-		if err != nil {
-			return fmt.Errorf("reading VM state: %w", err)
-		}
-
-		switch status.State {
-		case monolith.StatusRunning, monolith.StatusPaused:
-			// Already running — just attach.
-			fmt.Printf("VM %q is already %s. Attaching to console...\n", name, status.State)
-			return attachAndHandle(name)
-
-		case monolith.StatusSuspended:
-			// Restore from suspend file.
-			fmt.Printf("Restoring VM %q from suspend file...\n", name)
-			if err := monolith.SpawnVMDaemon(name, true); err != nil {
-				return err
-			}
-			fmt.Printf("VM %q restored. Attaching to console...\n", name)
-			return attachAndHandle(name)
-		}
-
-		// Stopped — need to boot. Read/apply config.
-		cfg, err := monolith.ReadConfig(name)
-		if err != nil {
-			return err
-		}
-
-		// Override with flags if explicitly set.
+		var cfg vmCfg
 		if cmd.Flags().Changed("cpus") {
-			cfg.CPUs = flagCPUs
+			cfg.CPUs = &flagCPUs
 		}
 		if cmd.Flags().Changed("memory") {
 			mem, err := parseMemory(flagMemory)
 			if err != nil {
 				return err
 			}
-			cfg.Memory = mem
+			cfg.Memory = &mem
 		}
 		if cmd.Flags().Changed("network-mode") {
-			if !isValidNetwork(flagNetworkMode) {
-				return fmt.Errorf("invalid network mode %q; must be one of: nat, shared, host, isolated, none", flagNetworkMode)
-			}
-			cfg.NetworkMode = flagNetworkMode
+			cfg.NetworkMode = &flagNetworkMode
 		}
 		if cmd.Flags().Changed("network") {
-			cfg.NetworkName = flagNetwork
+			cfg.NetworkName = &flagNetwork
 		}
 		if cmd.Flags().Changed("host-interface") {
-			cfg.HostInterface = flagHostInterface
+			cfg.HostInterface = &flagHostInterface
 		}
 
-		// Validate host-interface is set when using host mode.
-		if cfg.NetworkMode == monolith.NetworkHost && cfg.HostInterface == "" {
-			return fmt.Errorf("host network mode requires --host-interface (e.g. --host-interface en0)")
-		}
-		// Warn if host-interface is set but mode isn't host.
-		if cfg.HostInterface != "" && cfg.NetworkMode != monolith.NetworkHost {
-			return fmt.Errorf("--host-interface is only valid with --network-mode host")
-		}
-		// Validate --network is only used with shared/isolated modes.
-		if cfg.NetworkName != "" && cfg.NetworkMode != monolith.NetworkShared && cfg.NetworkMode != monolith.NetworkIsolated {
-			return fmt.Errorf("--network is only valid with --network-mode shared or --network-mode isolated")
-		}
+		return runVM(name, cfg)
+	},
+}
 
-		// Persist config so the daemon can read it.
-		if err := monolith.WriteConfig(name, cfg); err != nil {
-			return fmt.Errorf("writing config: %w", err)
-		}
-
-		fmt.Printf("Booting VM %q (%d vCPU, %s RAM, network: %s)...\n", name, cfg.CPUs, formatMemory(cfg.Memory), cfg.NetworkMode)
-
-		// Spawn the VM daemon.
-		if err := monolith.SpawnVMDaemon(name, false); err != nil {
+// runVM boots a VM (or reattaches/restores depending on state).
+// If name is empty, a unique name is auto-generated.
+// The vmCfg overrides are applied on top of the saved config for fresh boots.
+func runVM(name string, cfg vmCfg) error {
+	if name == "" {
+		var err error
+		name, err = generateUniqueName()
+		if err != nil {
 			return err
 		}
+	}
+	if len(name) > 63 {
+		return fmt.Errorf("VM name %q is too long (max 63 characters)", name)
+	}
+	if !namePattern.MatchString(name) {
+		return fmt.Errorf("VM name %q is invalid (must be lowercase alphanumeric with hyphens, e.g. my-vm-01)", name)
+	}
 
-		// Attach to the console.
+	// Check current state.
+	status, err := monolith.ReadState(name)
+	if err != nil {
+		return fmt.Errorf("reading VM state: %w", err)
+	}
+
+	switch status.State {
+	case monolith.StatusRunning, monolith.StatusPaused:
+		// Already running — just attach.
+		fmt.Printf("VM %q is already %s. Attaching to console...\n", name, status.State)
 		return attachAndHandle(name)
-	},
+
+	case monolith.StatusSuspended:
+		// Restore from suspend file.
+		fmt.Printf("Restoring VM %q from suspend file...\n", name)
+		if err := monolith.SpawnVMDaemon(name, true); err != nil {
+			return err
+		}
+		fmt.Printf("VM %q restored. Attaching to console...\n", name)
+		return attachAndHandle(name)
+	}
+
+	// Stopped — need to boot. Read/apply config.
+	savedCfg, err := monolith.ReadConfig(name)
+	if err != nil {
+		return err
+	}
+
+	// Apply overrides from CLI flags.
+	if cfg.CPUs != nil {
+		savedCfg.CPUs = *cfg.CPUs
+	}
+	if cfg.Memory != nil {
+		savedCfg.Memory = *cfg.Memory
+	}
+	if cfg.NetworkMode != nil {
+		savedCfg.NetworkMode = *cfg.NetworkMode
+	}
+	if cfg.NetworkName != nil {
+		savedCfg.NetworkName = *cfg.NetworkName
+	}
+	if cfg.HostInterface != nil {
+		savedCfg.HostInterface = *cfg.HostInterface
+	}
+
+	if err := validateNetwork(savedCfg); err != nil {
+		return err
+	}
+
+	// Persist config so the daemon can read it.
+	if err := monolith.WriteConfig(name, savedCfg); err != nil {
+		return fmt.Errorf("writing config: %w", err)
+	}
+
+	fmt.Printf("Booting VM %q (%d vCPU, %s RAM, network: %s)...\n", name, savedCfg.CPUs, formatMemory(savedCfg.Memory), savedCfg.NetworkMode)
+
+	// Spawn the VM daemon.
+	if err := monolith.SpawnVMDaemon(name, false); err != nil {
+		return err
+	}
+
+	// Attach to the console.
+	return attachAndHandle(name)
 }
 
 // attachAndHandle attaches to the VM console and handles any escape commands.
@@ -162,6 +186,26 @@ func isValidNetwork(mode string) bool {
 		}
 	}
 	return false
+}
+
+// validateNetwork validates the network-related fields of a VMConfig.
+// It checks that the network mode is recognized and that flag combinations
+// are consistent (e.g. --host-interface requires host mode, --network
+// requires shared or isolated mode).
+func validateNetwork(cfg monolith.VMConfig) error {
+	if !isValidNetwork(cfg.NetworkMode) {
+		return fmt.Errorf("invalid network mode %q; must be one of: nat, shared, host, isolated, none", cfg.NetworkMode)
+	}
+	if cfg.NetworkMode == monolith.NetworkHost && cfg.HostInterface == "" {
+		return fmt.Errorf("host network mode requires --host-interface (e.g. --host-interface en0)")
+	}
+	if cfg.HostInterface != "" && cfg.NetworkMode != monolith.NetworkHost {
+		return fmt.Errorf("--host-interface is only valid with --network-mode host")
+	}
+	if cfg.NetworkName != "" && cfg.NetworkMode != monolith.NetworkShared && cfg.NetworkMode != monolith.NetworkIsolated {
+		return fmt.Errorf("--network is only valid with --network-mode shared or --network-mode isolated")
+	}
+	return nil
 }
 
 // parseMemory parses a human-readable memory string like "512M", "1G", "2048M"

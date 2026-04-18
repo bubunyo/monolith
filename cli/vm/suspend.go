@@ -19,17 +19,20 @@ Requires macOS 14+. The suspend file is encrypted and tied to this host machine.
 The disk image must not be modified between suspend and resume.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		name := args[0]
-
-		resp, err := monolith.SendControlCommand(name, monolith.ControlRequest{Cmd: monolith.CmdSuspend})
-		if err != nil {
-			return err
-		}
-		if !resp.OK {
-			return fmt.Errorf("%s", resp.Error)
-		}
-
-		fmt.Printf("VM %q suspended to disk. Resume with 'monolith vm resume %s'.\n", name, name)
-		return nil
+		return suspendVM(args[0])
 	},
+}
+
+// suspendVM saves the VM's full state to disk and stops the daemon.
+func suspendVM(name string) error {
+	resp, err := monolith.SendControlCommand(name, monolith.ControlRequest{Cmd: monolith.CmdSuspend})
+	if err != nil {
+		return err
+	}
+	if !resp.OK {
+		return fmt.Errorf("%s", resp.Error)
+	}
+
+	fmt.Printf("VM %q suspended to disk. Resume with 'monolith vm resume %s'.\n", name, name)
+	return nil
 }

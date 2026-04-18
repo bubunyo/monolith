@@ -15,18 +15,22 @@ var stopCmd = &cobra.Command{
 	Long:  "Stop the background daemon for a named network. The network configuration is preserved and can be restarted with 'network start'.",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		name := args[0]
-		stopped, err := stopDaemon(name)
-		if err != nil {
-			return err
-		}
-		if !stopped {
-			fmt.Printf("Network %q daemon is not running.\n", name)
-			return nil
-		}
-		fmt.Printf("Network %q daemon stopped.\n", name)
-		return nil
+		return stopNetwork(args[0])
 	},
+}
+
+// stopNetwork stops the daemon for a named network.
+func stopNetwork(name string) error {
+	stopped, err := stopDaemon(name)
+	if err != nil {
+		return err
+	}
+	if !stopped {
+		fmt.Printf("Network %q daemon is not running.\n", name)
+		return nil
+	}
+	fmt.Printf("Network %q daemon stopped.\n", name)
+	return nil
 }
 
 // stopDaemon sends SIGTERM to the daemon for the named network.
