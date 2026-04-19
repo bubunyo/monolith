@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"syscall"
 	"time"
 
@@ -76,7 +77,8 @@ func spawnDaemon(name, mode string, verbose bool) error {
 	if err != nil {
 		return err
 	}
-	logFile, err := os.OpenFile(dir+"/daemon.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	logPath := dir + "/daemon.log"
+	logFile, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		return fmt.Errorf("opening daemon log: %w", err)
 	}
@@ -96,8 +98,25 @@ func spawnDaemon(name, mode string, verbose bool) error {
 	time.Sleep(500 * time.Millisecond)
 
 	if !monolith.IsNetworkDaemonAlive(name) {
-		return fmt.Errorf("daemon for network %q failed to start (check %s/daemon.log)", name, dir)
+		tail := tailLog(logPath, 10)
+		if tail != "" {
+			return fmt.Errorf("daemon for network %q failed to start. Last log lines:\n%s", name, tail)
+		}
+		return fmt.Errorf("daemon for network %q failed to start (check %s)", name, logPath)
 	}
 
 	return nil
+}
+
+// tailLog reads the last n lines of a log file. Returns "" on any failure.
+func tailLog(path string, n int) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return "  " + strings.Join(lines, "\n  ")
 }

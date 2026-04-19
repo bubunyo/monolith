@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -36,8 +37,9 @@ func NetworkLogPath(name string) (string, error) {
 
 // NetworkConfig holds the persisted configuration for a named network.
 type NetworkConfig struct {
-	Mode   string `json:"mode"`   // "shared" or "isolated"
-	Subnet string `json:"subnet"` // IPv4 subnet (e.g. "192.168.64.0/24"), filled after creation
+	Mode       string `json:"mode"`                  // "shared" or "isolated"
+	Subnet     string `json:"subnet"`                // actual IPv4 subnet allocated by vmnet (e.g. "192.168.64.0/24"), filled after creation
+	UserSubnet string `json:"user_subnet,omitempty"` // caller-requested IPv4 subnet (CIDR); empty means vmnet picks
 }
 
 // NetworkDir returns the path to the named network's directory.
@@ -171,10 +173,25 @@ func RunNetworkDaemon(name, mode string, verbose bool) error {
 		return fmt.Errorf("named networks only support shared or isolated modes, got %q", mode)
 	}
 
+	// Read any existing config so we can honour a previously-set
+	// UserSubnet on restart.
+	existing, _ := ReadNetworkConfig(name)
+
 	// Create the vmnet network.
 	config, err := vmnet.NewNetworkConfiguration(vmnetMode)
 	if err != nil {
 		return fmt.Errorf("creating vmnet configuration: %w", err)
+	}
+
+	if existing.UserSubnet != "" {
+		prefix, err := netip.ParsePrefix(existing.UserSubnet)
+		if err != nil {
+			return fmt.Errorf("parsing user_subnet %q: %w", existing.UserSubnet, err)
+		}
+		if err := config.SetIPv4Subnet(prefix); err != nil {
+			return fmt.Errorf("applying user_subnet %s: %w (common cause: overlap with another active vmnet network, or out-of-range CIDR)", existing.UserSubnet, err)
+		}
+		logger.Info("applied user-requested subnet %s", existing.UserSubnet)
 	}
 
 	network, err := vmnet.NewNetwork(config)
@@ -188,10 +205,11 @@ func RunNetworkDaemon(name, mode string, verbose bool) error {
 		logger.Warn("could not get IPv4 subnet: %v", err)
 	}
 
-	// Update config with actual subnet.
+	// Update config with actual subnet, preserving UserSubnet.
 	netCfg := NetworkConfig{
-		Mode:   mode,
-		Subnet: subnet.String(),
+		Mode:       mode,
+		Subnet:     subnet.String(),
+		UserSubnet: existing.UserSubnet,
 	}
 	if err := WriteNetworkConfig(name, netCfg); err != nil {
 		return fmt.Errorf("writing network config: %w", err)

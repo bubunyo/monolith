@@ -221,6 +221,7 @@ resource, enabling inter-VM communication for `shared` and `isolated` modes.
 ```bash
 monolith network create <name>                    # create (default: shared mode)
 monolith network create <name> --mode isolated    # create in isolated mode
+monolith network create <name> --subnet 192.168.77.0/24  # custom IPv4 subnet
 monolith network list                             # list all networks with status
 monolith network rm <name>                        # stop daemon and delete network
 ```
@@ -233,6 +234,38 @@ NAME      MODE     SUBNET              STATE     VMS
 my-net    shared   192.168.64.0/24     running   web,db
 lab-net   isolated 192.168.65.0/24     running   -
 ```
+
+### Custom subnets
+
+By default, vmnet picks a subnet from its internal pool (typically
+`192.168.64.0/24`, `192.168.65.0/24`, ...). You can pin a network to a
+specific subnet with `--subnet`:
+
+```bash
+monolith network create dev --subnet 192.168.77.0/24
+```
+
+**Rules:**
+
+- IPv4 only. Must be a valid CIDR.
+- Prefix length must be between `/16` and `/28` (inclusive).
+- Currently restricted to `192.168.0.0/16`. The vendored vmnet wrapper
+  (`Code-Hex/vz`) hardcodes this guard; an upstream change to relax it to
+  all RFC 1918 ranges (`10.0.0.0/8`, `172.16.0.0/12`) is pending. Once
+  merged, monolith will widen the allowed list automatically.
+- Must not overlap any existing named network's subnet (running or stopped).
+  The check uses `netip.Prefix.Overlaps`, so e.g. `192.168.77.128/25` is
+  rejected if any other network owns `192.168.77.0/24`.
+- Inside the chosen subnet, vmnet reserves `.0` (network), `.1` (host
+  gateway), and `.255` (broadcast). Everything else is available for VMs
+  via DHCP.
+
+The requested CIDR is persisted as `user_subnet` in `config.json` and
+re-applied on every daemon start (`network start`), so a custom subnet
+survives restarts.
+
+If you omit `--subnet`, vmnet chooses for you and the chosen subnet is
+recorded in `config.json` under `subnet` after the daemon comes up.
 
 ### Topology view
 
@@ -381,7 +414,7 @@ network serialization.
 ```
 ~/.cache/monolith/networks/
   my-net/
-    config.json          # {"mode":"shared","subnet":"192.168.64.0/24"}
+    config.json          # {"mode":"shared","subnet":"192.168.77.0/24","user_subnet":"192.168.77.0/24"}
     pid                  # daemon PID (plain text)
     daemon.sock          # unix domain socket
     daemon.log           # daemon stdout/stderr
@@ -588,6 +621,19 @@ Common causes:
 - macOS version too old (shared/isolated require macOS 26+)
 - Another daemon is already running for this network name
 - Insufficient permissions
+
+### `network create --subnet` rejected as out-of-range
+
+The vendored vmnet wrapper currently only accepts subnets within
+`192.168.0.0/16`. Other RFC 1918 ranges (`10.0.0.0/8`, `172.16.0.0/12`)
+will be supported once the upstream guard in `Code-Hex/vz` is relaxed.
+For now, pick a subnet inside `192.168.x.x`.
+
+### `network create --subnet` rejected as overlapping
+
+The requested CIDR overlaps an existing named network (running or stopped).
+The error message names the conflicting network. Either choose a
+non-overlapping subnet, or `monolith network rm <conflict>` first.
 
 ### Inter-VM communication doesn't work
 
