@@ -14,6 +14,7 @@ import (
 	"github.com/Code-Hex/vz/v3"
 	"github.com/pkg/errors"
 	"github.com/pkg/term/termios"
+	"golang.org/x/sys/unix"
 )
 
 // RunDaemon is the main entry point for the VM daemon process.
@@ -28,7 +29,6 @@ func RunDaemon(name string, restore bool) error {
 	signal.Ignore(syscall.SIGPIPE)
 
 	logger := NewLogger(os.Stderr)
-	logger.AddSink(os.Stdout, LvlInfo)
 
 	cfg, err := ReadConfig(name)
 	if err != nil {
@@ -58,6 +58,19 @@ func RunDaemon(name string, restore bool) error {
 	}
 	defer ptm.Close()
 	defer pts.Close()
+
+	// Set the PTY slave to raw mode so the line discipline doesn't
+	// echo characters or interpret special bytes. Without this, the
+	// default cooked mode causes duplicate/garbled output.
+	var ptsAttrs unix.Termios
+	termios.Tcgetattr(pts.Fd(), &ptsAttrs)
+	ptsAttrs.Iflag &^= syscall.ICRNL | syscall.IXON | syscall.IXOFF | syscall.ISTRIP | syscall.INLCR | syscall.IGNCR
+	ptsAttrs.Oflag &^= syscall.OPOST
+	ptsAttrs.Lflag &^= syscall.ICANON | syscall.ECHO | syscall.ECHOE | syscall.ECHOK | syscall.ECHONL | syscall.ISIG | syscall.IEXTEN
+	ptsAttrs.Cflag |= syscall.CS8
+	ptsAttrs.Cc[syscall.VMIN] = 1
+	ptsAttrs.Cc[syscall.VTIME] = 0
+	termios.Tcsetattr(pts.Fd(), termios.TCSANOW, &ptsAttrs)
 
 	// Boot loader.
 	bootLoader, err := vz.NewLinuxBootLoader(

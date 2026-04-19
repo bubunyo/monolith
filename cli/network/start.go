@@ -2,7 +2,6 @@ package network
 
 import (
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"syscall"
@@ -81,17 +80,11 @@ func spawnDaemon(name, mode string, verbose bool) error {
 	if err != nil {
 		return fmt.Errorf("opening daemon log: %w", err)
 	}
+	daemonCmd.Stdout = logFile
 	daemonCmd.Stderr = logFile
 
 	daemonCmd.SysProcAttr = &syscall.SysProcAttr{
 		Setpgid: true,
-	}
-
-	// Pipe daemon stdout to the terminal so boot logs (INF+) are visible.
-	stdoutPipe, err := daemonCmd.StdoutPipe()
-	if err != nil {
-		logFile.Close()
-		return fmt.Errorf("creating stdout pipe: %w", err)
 	}
 
 	if err := daemonCmd.Start(); err != nil {
@@ -100,18 +93,7 @@ func spawnDaemon(name, mode string, verbose bool) error {
 	}
 	logFile.Close()
 
-	// Copy daemon stdout to terminal in background.
-	done := make(chan struct{})
-	go func() {
-		io.Copy(os.Stdout, stdoutPipe)
-		close(done)
-	}()
-
 	time.Sleep(500 * time.Millisecond)
-
-	// Stop relaying daemon logs to terminal.
-	stdoutPipe.Close()
-	<-done
 
 	if !monolith.IsNetworkDaemonAlive(name) {
 		return fmt.Errorf("daemon for network %q failed to start (check %s/daemon.log)", name, dir)

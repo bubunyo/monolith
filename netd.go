@@ -149,7 +149,6 @@ func RunNetworkDaemon(name, mode string, verbose bool) error {
 	signal.Ignore(syscall.SIGPIPE)
 
 	logger := NewLogger(os.Stderr)
-	logger.AddSink(os.Stdout, LvlInfo)
 
 	// Map monolith mode to vmnet mode.
 	var vmnetMode vmnet.Mode
