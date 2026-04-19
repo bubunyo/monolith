@@ -104,10 +104,51 @@ bridge to (e.g. `en0` for Wi-Fi, `en6` for USB Ethernet).
 monolith vm run my-vm --network-mode host --host-interface en0
 ```
 
-> **Entitlement restriction:** The `com.apple.vm.networking` entitlement is
-> restricted by Apple and requires either a provisioning profile from the
-> Apple Developer portal or SIP disabled. The default `entitlements.plist`
-> does not include it. See [docs/codesigning.md](codesigning.md) for details.
+> **Entitlement restriction (read this before trying host mode):**
+>
+> Using `VZBridgedNetworkDeviceAttachment` requires the
+> `com.apple.vm.networking` entitlement. This is a **restricted entitlement**
+> in Apple's terminology — simply adding it to `entitlements.plist` is not
+> enough. macOS validates at runtime that the binary's signature was produced
+> with a provisioning profile that authorizes the entitlement; otherwise the
+> VM fails to start with:
+>
+> ```
+> Error Domain=VZErrorDomain Code=2
+> Using VZBridgedNetworkDeviceAttachment in a process that lacks the
+> "com.apple.vm.networking" entitlement.
+> ```
+>
+> There are exactly two ways to satisfy this requirement:
+>
+> 1. **Provisioning profile from Apple.** Register an App ID in the Apple
+>    Developer portal with the Virtualization → Bridged Networking capability,
+>    download the provisioning profile, and embed it during signing. As of
+>    this writing Apple does not grant this capability automatically — you
+>    must request it from Apple, and approval is uncommon for personal
+>    accounts. Organization accounts with documented use cases have a better
+>    chance.
+>
+> 2. **Disable System Integrity Protection (SIP).** With SIP off, macOS skips
+>    the provisioning-profile check and accepts the entitlement based purely
+>    on the signature (ad-hoc or Developer ID). Run `csrutil disable` from
+>    Recovery Mode to do this. **Strongly discouraged on any machine you care
+>    about**, and explicitly forbidden on most managed/MDM-enrolled Macs
+>    (the org's MDM profile prevents Recovery Mode changes, and EDR tools
+>    like CrowdStrike will flag/refuse to run with SIP disabled).
+>
+> The default `entitlements.plist` does not include
+> `com.apple.vm.networking` because shipping it would be misleading: the
+> entitlement is silently ignored at runtime without one of the two
+> conditions above. The CLI checks for the entitlement before spawning the
+> VM daemon and fails with a clear error message rather than letting the
+> daemon crash. See [docs/codesigning.md](codesigning.md) for the signing
+> mechanics.
+>
+> **If you're on a managed Mac, host mode is effectively unavailable. Use
+> `nat` (default), `shared`, or `isolated` instead.** All three give the VM
+> internet access (except `isolated`) and work without any restricted
+> entitlements.
 
 ### `isolated` (macOS 26+)
 
@@ -420,10 +461,12 @@ starts, so `vm list` always reflects the active configuration.
 | Entitlement | Modes | Signing |
 |-------------|-------|---------|
 | `com.apple.security.virtualization` | nat, shared, isolated, none | Apple Development certificate |
-| `com.apple.vm.networking` | host (bridged) | Provisioning profile or SIP disabled |
+| `com.apple.vm.networking` | host (bridged) | **Restricted** — provisioning profile from Apple, **or** SIP disabled. See the host-mode section above. |
 
 The default build only includes `com.apple.security.virtualization`. Host
-mode requires additional setup — see [docs/codesigning.md](codesigning.md).
+mode requires additional setup that is generally not feasible on
+managed/MDM-enrolled Macs — see the host-mode section above and
+[docs/codesigning.md](codesigning.md).
 
 ## Troubleshooting
 
@@ -440,6 +483,32 @@ monolith vm run my-vm --network-mode nat
 
 Shared and isolated modes require macOS 26+. On older macOS versions, the
 vmnet APIs are not available and the VM will fail to start.
+
+### `vm run --network-mode host` fails immediately
+
+The CLI refuses to start a host-mode VM if the binary is missing the
+`com.apple.vm.networking` entitlement, with a clear error message pointing
+here. See the [host mode section above](#host-bridged) for the two ways to
+satisfy the entitlement requirement and why neither is realistic on a
+managed Mac. Use `nat` (default), `shared`, or `isolated` instead.
+
+### Ping (ICMP) doesn't work but TCP/HTTP does
+
+This is almost always a host-side firewall or EDR (endpoint detection &
+response) tool dropping ICMP from the vmnet NAT subnet (`192.168.64.0/24`
+by default). Common culprits on managed Macs: CrowdStrike Falcon, Cisco
+Umbrella, Zscaler, Netskope, the macOS Application Firewall.
+
+Diagnose by trying TCP from inside the VM:
+
+```sh
+wget -qO- https://1.1.1.1 >/dev/null && echo OK
+```
+
+If TCP works, networking is fine — your host security stack is just
+filtering ICMP. There is nothing monolith can do about this; either
+request an exception from your IT team, or use TCP-based reachability
+tests (`nc -zv`, `wget`, `curl`) instead of `ping`.
 
 ### `vm list` shows no IP for a running VM
 

@@ -199,6 +199,17 @@ func validateNetwork(cfg monolith.VMConfig) error {
 	if cfg.NetworkMode == monolith.NetworkHost && cfg.HostInterface == "" {
 		return fmt.Errorf("host network mode requires --host-interface (e.g. --host-interface en0)")
 	}
+	if cfg.NetworkMode == monolith.NetworkHost && !monolith.HasEntitlement(monolith.EntitlementHostNetworking) {
+		return fmt.Errorf(`host network mode requires the %q entitlement, which is not present on this binary.
+
+Apple guards this entitlement tightly: it must be granted via a provisioning
+profile from your Apple Developer account, OR System Integrity Protection
+(SIP) must be disabled. Most users on managed/MDM-enrolled Macs cannot use
+host mode for either reason. See docs/networking.md and docs/codesigning.md
+for details.
+
+Workaround: use --network-mode nat (default), shared, or isolated.`, monolith.EntitlementHostNetworking)
+	}
 	if cfg.HostInterface != "" && cfg.NetworkMode != monolith.NetworkHost {
 		return fmt.Errorf("--host-interface is only valid with --network-mode host")
 	}
