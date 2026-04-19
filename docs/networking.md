@@ -234,6 +234,65 @@ my-net    shared   192.168.64.0/24     running   web,db
 lab-net   isolated 192.168.65.0/24     running   -
 ```
 
+### Topology view
+
+`network list --topology` (`-t`) renders a unified tree showing every VM
+and every network grouped by **reachability** rather than just listing
+named networks. It's the fastest way to answer "what can talk to what?"
+
+```bash
+monolith network list -t
+monolith network ls -t
+```
+
+The tree has up to three top-level sections — **Internet**, **Host-only**,
+and **Airgapped** — and only includes sections that contain something:
+
+```
+Internet
+├── Bridged (physical NICs)
+│   └── en0
+│       └── lith-41530       stopped       -
+├── NAT
+│   ├── my-vm                running       192.168.64.26
+│   └── my-vm-2              stopped       -
+└── Shared networks
+    ├── debug                stopped       192.168.71.1/24
+    ├── shared-net-1         running       192.168.66.1/24
+    │   ├── lith-20584       running       192.168.66.11
+    │   ├── lith-24485       running       192.168.66.10
+    │   └── lith-48756       running       192.168.66.9
+    ├── test-3               stopped       192.168.64.1/24
+    ├── test-network-2       stopped       192.168.65.1/24
+    └── (anonymous)
+        └── lith-69278       running       192.168.65.2
+
+Host-only
+└── Isolated networks
+    └── (anonymous)
+        └── lith-30507       running       -
+
+Airgapped
+└── lith-42593               running       -
+```
+
+Grouping rules:
+
+- **Internet** contains everything that can reach the outside world: bridged
+  (`host` mode) VMs grouped by physical NIC, anonymous `nat` VMs, and
+  shared networks (named + an `(anonymous)` pseudo-group for `shared` VMs
+  started without `--network`).
+- **Host-only** contains `isolated` mode networks/VMs (host can reach them,
+  no internet, no inter-VM communication unless they share a named network).
+- **Airgapped** contains VMs started with `--network-mode none`.
+- VMs grouped under the same named network are real layer-2 peers (sharing
+  one `vmnet.Network` instance via the daemon). VMs in `(anonymous)` groups
+  each have their own private vmnet instance and cannot see each other.
+- Stopped VMs and unused named networks both appear in their assigned slots
+  so the tree reflects the configured topology, not just live state.
+- A VM that references a named network that has been deleted appears under
+  a `(missing: <name>)` pseudo-network so it's not silently dropped.
+
 ### Architecture
 
 Named networks use a **daemon process** architecture. The vmnet kernel

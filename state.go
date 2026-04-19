@@ -236,6 +236,15 @@ func VMDir(name string) (string, error) {
 	return vmDir(name)
 }
 
+// VMsDir returns the parent directory containing all per-VM directories.
+func VMsDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".cache", "monolith", "vms"), nil
+}
+
 // VMSockPath returns the path to the VM daemon's Unix domain socket.
 func VMSockPath(name string) (string, error) {
 	dir, err := vmDir(name)

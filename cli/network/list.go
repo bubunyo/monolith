@@ -9,14 +9,27 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var flagTopology bool
+
 var listCmd = &cobra.Command{
 	Use:     "list",
 	Aliases: []string{"ls"},
 	Short:   "List all named networks",
 	Args:    cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if flagTopology {
+			td, err := collectTopology()
+			if err != nil {
+				return err
+			}
+			return printTopology(os.Stdout, td)
+		}
 		return listNetworks()
 	},
+}
+
+func init() {
+	listCmd.Flags().BoolVarP(&flagTopology, "topology", "t", false, "render a tree of all VMs grouped by reachability and network")
 }
 
 // listNetworks lists all named networks with their status and attached VMs.
@@ -106,11 +119,10 @@ func listNetworks() error {
 // findVMsOnNetwork scans all VMs and returns the names of those
 // whose config references the given network name.
 func findVMsOnNetwork(networkName string) []string {
-	home, err := os.UserHomeDir()
+	vmsDir, err := monolith.VMsDir()
 	if err != nil {
 		return nil
 	}
-	vmsDir := home + "/.cache/monolith/vms"
 
 	entries, err := os.ReadDir(vmsDir)
 	if err != nil {
