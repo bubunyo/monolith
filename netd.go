@@ -22,7 +22,17 @@ const (
 	networkConfigFileName = "config.json"
 	networkPidFileName    = "pid"
 	networkSockFileName   = "daemon.sock"
+	networkLogFileName    = "daemon.log"
 )
+
+// NetworkLogPath returns the path to the network daemon's log file.
+func NetworkLogPath(name string) (string, error) {
+	dir, err := NetworkDir(name)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, networkLogFileName), nil
+}
 
 // NetworkConfig holds the persisted configuration for a named network.
 type NetworkConfig struct {
