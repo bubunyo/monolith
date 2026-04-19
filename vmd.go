@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"os"
 	"os/signal"
@@ -23,6 +22,9 @@ import (
 // commands. It blocks until the VM stops or a fatal error occurs.
 func RunDaemon(name string, restore bool) error {
 	defer CleanState(name)
+
+	logger := NewLogger(os.Stderr)
+	logger.AddSink(os.Stdout, LvlInfo)
 
 	cfg, err := ReadConfig(name)
 	if err != nil {
@@ -124,7 +126,7 @@ func RunDaemon(name string, restore bool) error {
 		if _, err := os.Stat(suspendPath); err != nil {
 			return fmt.Errorf("suspend file not found: %s", suspendPath)
 		}
-		log.Printf("restoring VM %q from %s", name, suspendPath)
+		logger.Info("restoring VM %q from %s", name, suspendPath)
 		if err := vm.RestoreMachineStateFromURL(suspendPath); err != nil {
 			return errors.Wrap(err, "RestoreMachineStateFromURL")
 		}
@@ -134,7 +136,7 @@ func RunDaemon(name string, restore bool) error {
 		}
 		// Clean up the suspend file now that we've successfully restored.
 		os.Remove(suspendPath)
-		log.Printf("VM %q restored and running", name)
+		logger.Info("VM %q restored and running", name)
 	} else {
 		if err := vm.Start(); err != nil {
 			return errors.Wrap(err, "vz.Start")
@@ -143,7 +145,7 @@ func RunDaemon(name string, restore bool) error {
 
 	// Write state.
 	if err := WriteState(name, os.Getpid(), macStr, StatusRunning); err != nil {
-		log.Printf("warning: failed to write state file: %v", err)
+		logger.Warn("failed to write state file: %v", err)
 	}
 
 	// Set up Unix socket for client connections.
@@ -159,7 +161,7 @@ func RunDaemon(name string, restore bool) error {
 	defer listener.Close()
 	defer os.Remove(sockPath)
 
-	log.Printf("VM daemon %q started (pid=%d, sock=%s)", name, os.Getpid(), sockPath)
+	logger.Info("VM daemon %q started (pid=%d, sock=%s)", name, os.Getpid(), sockPath)
 
 	// Daemon state — tracks the current console client and VM status.
 	d := &vmDaemon{
@@ -169,6 +171,7 @@ func RunDaemon(name string, restore bool) error {
 		pts:      pts,
 		mac:      macStr,
 		listener: listener,
+		logger:   logger,
 	}
 
 	// Accept connections in background.
@@ -191,7 +194,7 @@ func RunDaemon(name string, restore bool) error {
 	for {
 		select {
 		case <-sigCh:
-			log.Printf("VM daemon %q received signal, stopping", name)
+			logger.Info("VM daemon %q received signal, stopping", name)
 			d.stopVM(false)
 			return nil
 
@@ -199,10 +202,10 @@ func RunDaemon(name string, restore bool) error {
 			d.handleConnection(conn)
 
 		case newState := <-vm.StateChangedNotify():
-			log.Printf("VM %q state changed: %v", name, newState)
+			logger.Info("VM %q state changed: %v", name, newState)
 			switch newState {
 			case vz.VirtualMachineStateStopped:
-				log.Printf("VM %q stopped", name)
+				logger.Info("VM %q stopped", name)
 				return nil
 			case vz.VirtualMachineStateError:
 				return fmt.Errorf("VM %q entered error state", name)
@@ -224,6 +227,7 @@ type vmDaemon struct {
 	pts      *os.File // PTY slave for console relay
 	mac      string
 	listener net.Listener
+	logger   *Logger
 
 	consoleMu     sync.Mutex
 	consoleClient net.Conn      // currently attached console client (nil if none)
@@ -266,7 +270,7 @@ func (d *vmDaemon) handleConsoleAttach(conn net.Conn) {
 
 	// ACK the attachment.
 	conn.Write([]byte{MsgConsoleAttach})
-	log.Printf("console client attached to %q", d.name)
+	d.logger.Info("console client attached to %q", d.name)
 
 	// Bidirectional relay: conn ↔ PTY slave.
 	// PTY slave → conn (VM output to client).
@@ -314,7 +318,7 @@ func (d *vmDaemon) handleConsoleAttach(conn net.Conn) {
 		}
 		d.consoleMu.Unlock()
 		conn.Close()
-		log.Printf("console client detached from %q", d.name)
+		d.logger.Info("console client detached from %q", d.name)
 	}()
 }
 
@@ -354,7 +358,7 @@ func (d *vmDaemon) handleControl(conn net.Conn) {
 		return
 	}
 
-	log.Printf("control command %q for %q", req.Cmd, d.name)
+	d.logger.Info("control command %q for %q", req.Cmd, d.name)
 
 	switch req.Cmd {
 	case CmdPause:
@@ -424,7 +428,7 @@ func (d *vmDaemon) handleSuspend(conn net.Conn) {
 		return
 	}
 
-	log.Printf("saving VM %q state to %s", d.name, suspendPath)
+	d.logger.Info("saving VM %q state to %s", d.name, suspendPath)
 	if err := d.vm.SaveMachineStateToPath(suspendPath); err != nil {
 		d.vm.Resume()
 		d.sendControlResponse(conn, ControlResponse{OK: false, Error: fmt.Sprintf("save failed: %v", err)})

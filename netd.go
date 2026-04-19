@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"os"
 	"os/signal"
@@ -145,6 +144,9 @@ func IsNetworkDaemonAlive(name string) bool {
 //
 // This function blocks until the daemon receives SIGTERM or SIGINT.
 func RunNetworkDaemon(name, mode string, verbose bool) error {
+	logger := NewLogger(os.Stderr)
+	logger.AddSink(os.Stdout, LvlInfo)
+
 	// Map monolith mode to vmnet mode.
 	var vmnetMode vmnet.Mode
 	switch mode {
@@ -170,7 +172,7 @@ func RunNetworkDaemon(name, mode string, verbose bool) error {
 	// Get the subnet for display and persistence.
 	subnet, err := network.IPv4Subnet()
 	if err != nil {
-		log.Printf("warning: could not get IPv4 subnet: %v", err)
+		logger.Warn("could not get IPv4 subnet: %v", err)
 	}
 
 	// Update config with actual subnet.
@@ -222,19 +224,19 @@ func RunNetworkDaemon(name, mode string, verbose bool) error {
 	defer listener.Close()
 	defer os.Remove(sockPath)
 
-	log.Printf("network daemon %q started (mode=%s, subnet=%s, pid=%d, verbose=%t)", name, mode, subnet.String(), os.Getpid(), verbose)
-	log.Printf("serialization: %d bytes", len(serData))
+	logger.Info("network daemon %q started (mode=%s, subnet=%s, pid=%d, verbose=%t)", name, mode, subnet.String(), os.Getpid(), verbose)
+	logger.Info("serialization: %d bytes", len(serData))
 
 	// Start a monitor interface on the network to observe all traffic.
 	// Only active in verbose mode — logs DHCP, ARP, and other packets.
 	if verbose {
 		monIface, err := startMonitorInterface(network)
 		if err != nil {
-			log.Printf("warning: could not start monitor interface: %v", err)
+			logger.Warn("could not start monitor interface: %v", err)
 		} else {
-			log.Printf("monitor interface started (mac=%s, max_pkt=%d, max_read=%d)",
+			logger.Info("monitor interface started (mac=%s, max_pkt=%d, max_read=%d)",
 				formatMACFromParam(monIface.Param), monIface.MaxPacketSize, monIface.MaxReadPacketCount)
-			go monitorPackets(name, monIface)
+			go monitorPackets(logger, name, monIface)
 		}
 	}
 
@@ -259,18 +261,18 @@ func RunNetworkDaemon(name, mode string, verbose bool) error {
 	for {
 		select {
 		case sig := <-sigCh:
-			log.Printf("network daemon %q received %v, shutting down", name, sig)
+			logger.Info("network daemon %q received %v, shutting down", name, sig)
 			return nil
 
 		case conn := <-connCh:
 			// Serve the serialization bytes to the client.
 			// Protocol: 4-byte big-endian length prefix + raw bytes.
-			log.Printf("client connected from %s", conn.RemoteAddr())
-			go serveClient(conn, serData)
+			logger.Info("client connected from %s", conn.RemoteAddr())
+			go serveClient(logger, conn, serData)
 
 		case err := <-errCh:
 			// Accept error — likely listener closed.
-			log.Printf("network daemon %q accept error: %v", name, err)
+			logger.Error("network daemon %q accept error: %v", name, err)
 			return nil
 		}
 	}
@@ -278,23 +280,23 @@ func RunNetworkDaemon(name, mode string, verbose bool) error {
 
 // serveClient sends the serialized network bytes to a connected client.
 // Protocol: 4-byte big-endian length prefix + raw bytes.
-func serveClient(conn net.Conn, data []byte) {
+func serveClient(logger *Logger, conn net.Conn, data []byte) {
 	defer conn.Close()
 
 	// Write length prefix.
 	lenBuf := make([]byte, 4)
 	binary.BigEndian.PutUint32(lenBuf, uint32(len(data)))
 	if _, err := conn.Write(lenBuf); err != nil {
-		log.Printf("error writing length to client %s: %v", conn.RemoteAddr(), err)
+		logger.Error("writing length to client %s: %v", conn.RemoteAddr(), err)
 		return
 	}
 
 	// Write data.
 	if _, err := conn.Write(data); err != nil {
-		log.Printf("error writing data to client %s: %v", conn.RemoteAddr(), err)
+		logger.Error("writing data to client %s: %v", conn.RemoteAddr(), err)
 		return
 	}
-	log.Printf("served %d bytes to client %s", len(data), conn.RemoteAddr())
+	logger.Info("served %d bytes to client %s", len(data), conn.RemoteAddr())
 }
 
 // FetchNetworkSerialization connects to a network daemon's unix socket
@@ -354,7 +356,7 @@ func formatMACFromParam(param *xpc.Dictionary) string {
 }
 
 // monitorPackets reads all packets from the vmnet interface and logs them.
-func monitorPackets(networkName string, iface *vmnet.Interface) {
+func monitorPackets(logger *Logger, networkName string, iface *vmnet.Interface) {
 	mgr := vmnet.NewPktDescsManager(iface.MaxReadPacketCount, iface.MaxPacketSize)
 
 	// Use event callback for efficient packet notification.
@@ -362,7 +364,7 @@ func monitorPackets(networkName string, iface *vmnet.Interface) {
 		for {
 			count, err := iface.ReadPackets(mgr.PktDescs, iface.MaxReadPacketCount)
 			if err != nil {
-				log.Printf("[%s] monitor read error: %v", networkName, err)
+				logger.Error("[%s] monitor read error: %v", networkName, err)
 				return
 			}
 			if count == 0 {
@@ -380,8 +382,8 @@ func monitorPackets(networkName string, iface *vmnet.Interface) {
 				iovPtr := pkt.GetVmPktIov()
 				iov_base := *(*unsafe.Pointer)(iovPtr)
 				frame := unsafe.Slice((*byte)(iov_base), size)
-				log.Printf("[%s] pkt size=%d", networkName, size)
-				logEthernetFrame(networkName, frame)
+				logger.Trace("[%s] pkt size=%d", networkName, size)
+				logEthernetFrame(logger, networkName, frame)
 			}
 			mgr.Reset()
 		}
@@ -389,7 +391,7 @@ func monitorPackets(networkName string, iface *vmnet.Interface) {
 }
 
 // logEthernetFrame parses and logs an Ethernet frame.
-func logEthernetFrame(networkName string, frame []byte) {
+func logEthernetFrame(logger *Logger, networkName string, frame []byte) {
 	if len(frame) < 14 {
 		return
 	}
@@ -401,28 +403,28 @@ func logEthernetFrame(networkName string, frame []byte) {
 
 	switch etherType {
 	case 0x0806: // ARP
-		logARP(networkName, srcMAC, dstMAC, payload)
+		logARP(logger, networkName, srcMAC, dstMAC, payload)
 	case 0x0800: // IPv4
-		logIPv4(networkName, srcMAC, dstMAC, payload)
+		logIPv4(logger, networkName, srcMAC, dstMAC, payload)
 	case 0x86DD: // IPv6
 		if len(payload) >= 40 {
 			srcIP := formatIPv6(payload[8:24])
 			dstIP := formatIPv6(payload[24:40])
 			nextHdr := payload[6]
 			proto := ipv6ProtoName(nextHdr)
-			log.Printf("[%s] IPv6 %s -> %s  %s > %s  proto=%s  len=%d",
+			logger.Trace("[%s] IPv6 %s -> %s  %s > %s  proto=%s  len=%d",
 				networkName, srcMAC, dstMAC, srcIP, dstIP, proto, len(frame))
 		}
 	default:
-		log.Printf("[%s] ETH %s -> %s  type=0x%04x  len=%d",
+		logger.Trace("[%s] ETH %s -> %s  type=0x%04x  len=%d",
 			networkName, srcMAC, dstMAC, etherType, len(frame))
 	}
 }
 
 // logARP parses and logs an ARP packet.
-func logARP(networkName, srcMAC, dstMAC string, payload []byte) {
+func logARP(logger *Logger, networkName, srcMAC, dstMAC string, payload []byte) {
 	if len(payload) < 28 {
-		log.Printf("[%s] ARP %s -> %s  (truncated)", networkName, srcMAC, dstMAC)
+		logger.Trace("[%s] ARP %s -> %s  (truncated)", networkName, srcMAC, dstMAC)
 		return
 	}
 	op := binary.BigEndian.Uint16(payload[6:8])
@@ -437,12 +439,12 @@ func logARP(networkName, srcMAC, dstMAC string, payload []byte) {
 	case 2:
 		opStr = "reply"
 	}
-	log.Printf("[%s] ARP %s  %s (%s) -> %s  who-has %s",
+	logger.Trace("[%s] ARP %s  %s (%s) -> %s  who-has %s",
 		networkName, opStr, senderIP, senderMAC, targetIP, targetIP)
 }
 
 // logIPv4 parses and logs an IPv4 packet, with special handling for DHCP/UDP.
-func logIPv4(networkName, srcMAC, dstMAC string, payload []byte) {
+func logIPv4(logger *Logger, networkName, srcMAC, dstMAC string, payload []byte) {
 	if len(payload) < 20 {
 		return
 	}
@@ -459,16 +461,16 @@ func logIPv4(networkName, srcMAC, dstMAC string, payload []byte) {
 
 		// DHCP: client port 68, server port 67
 		if (srcPort == 68 && dstPort == 67) || (srcPort == 67 && dstPort == 68) {
-			logDHCP(networkName, srcMAC, dstMAC, srcIP, dstIP, srcPort, udpPayload)
+			logDHCP(logger, networkName, srcMAC, dstMAC, srcIP, dstIP, srcPort, udpPayload)
 			return
 		}
 		// DNS
 		if srcPort == 53 || dstPort == 53 {
-			log.Printf("[%s] DNS %s -> %s  %s:%d > %s:%d  len=%d",
+			logger.Trace("[%s] DNS %s -> %s  %s:%d > %s:%d  len=%d",
 				networkName, srcMAC, dstMAC, srcIP, srcPort, dstIP, dstPort, len(udpPayload))
 			return
 		}
-		log.Printf("[%s] UDP %s -> %s  %s:%d > %s:%d  len=%d",
+		logger.Trace("[%s] UDP %s -> %s  %s:%d > %s:%d  len=%d",
 			networkName, srcMAC, dstMAC, srcIP, srcPort, dstIP, dstPort, len(udpPayload))
 		return
 	}
@@ -478,14 +480,14 @@ func logIPv4(networkName, srcMAC, dstMAC string, payload []byte) {
 			tcp := payload[ihl:]
 			srcPort := binary.BigEndian.Uint16(tcp[0:2])
 			dstPort := binary.BigEndian.Uint16(tcp[2:4])
-			log.Printf("[%s] TCP %s -> %s  %s:%d > %s:%d  len=%d",
+			logger.Trace("[%s] TCP %s -> %s  %s:%d > %s:%d  len=%d",
 				networkName, srcMAC, dstMAC, srcIP, srcPort, dstIP, dstPort, len(payload)-ihl)
 			return
 		}
 	}
 
 	if proto == 1 { // ICMP
-		log.Printf("[%s] ICMP %s -> %s  %s > %s  len=%d",
+		logger.Trace("[%s] ICMP %s -> %s  %s > %s  len=%d",
 			networkName, srcMAC, dstMAC, srcIP, dstIP, len(payload)-ihl)
 		return
 	}
@@ -501,14 +503,14 @@ func logIPv4(networkName, srcMAC, dstMAC string, payload []byte) {
 	case 2:
 		protoName = "IGMP"
 	}
-	log.Printf("[%s] IPv4 %s -> %s  %s > %s  proto=%s  len=%d",
+	logger.Trace("[%s] IPv4 %s -> %s  %s > %s  proto=%s  len=%d",
 		networkName, srcMAC, dstMAC, srcIP, dstIP, protoName, len(payload))
 }
 
 // logDHCP parses and logs a DHCP packet.
-func logDHCP(networkName, srcMAC, dstMAC, srcIP, dstIP string, srcPort uint16, payload []byte) {
+func logDHCP(logger *Logger, networkName, srcMAC, dstMAC, srcIP, dstIP string, srcPort uint16, payload []byte) {
 	if len(payload) < 240 {
-		log.Printf("[%s] DHCP %s -> %s  %s > %s  (truncated, %d bytes)",
+		logger.Trace("[%s] DHCP %s -> %s  %s > %s  (truncated, %d bytes)",
 			networkName, srcMAC, dstMAC, srcIP, dstIP, len(payload))
 		return
 	}
@@ -568,7 +570,7 @@ func logDHCP(networkName, srcMAC, dstMAC, srcIP, dstIP string, srcPort uint16, p
 		}
 	}
 
-	log.Printf("[%s] DHCP %s (%s)  xid=0x%08x  client=%s  your-ip=%s  server-ip=%s  %s > %s  src-mac=%s",
+	logger.Trace("[%s] DHCP %s (%s)  xid=0x%08x  client=%s  your-ip=%s  server-ip=%s  %s > %s  src-mac=%s",
 		networkName, msgType, opStr, xid, clientMAC, yourIP, serverIP, srcIP, dstIP, srcMAC)
 }
 

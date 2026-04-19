@@ -265,9 +265,9 @@ func SpawnVMDaemon(name string, restore bool) error {
 		return err
 	}
 
-	logFile, err := os.Create(logPath)
+	logFile, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
-		return fmt.Errorf("creating daemon log: %w", err)
+		return fmt.Errorf("opening daemon log: %w", err)
 	}
 
 	args := []string{"__vmd", name}
@@ -276,10 +276,17 @@ func SpawnVMDaemon(name string, restore bool) error {
 	}
 
 	cmd := exec.Command(exe, args...)
-	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Setpgid: true,
+	}
+
+	// Pipe daemon stdout to the terminal so boot logs (INF+) are visible.
+	// The daemon writes all levels to stderr (→ log file) and INF+ to stdout.
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		logFile.Close()
+		return fmt.Errorf("creating stdout pipe: %w", err)
 	}
 
 	if err := cmd.Start(); err != nil {
@@ -288,24 +295,41 @@ func SpawnVMDaemon(name string, restore bool) error {
 	}
 	logFile.Close()
 
+	// Copy daemon stdout to terminal in background.
+	// When we close stdoutPipe after boot, the goroutine exits.
+	done := make(chan struct{})
+	go func() {
+		io.Copy(os.Stdout, stdoutPipe)
+		close(done)
+	}()
+
 	// Wait for the daemon's socket to become available.
 	sockPath, err := VMSockPath(name)
 	if err != nil {
+		stdoutPipe.Close()
+		<-done
 		return err
 	}
 
 	for i := 0; i < 100; i++ { // up to 10 seconds
 		time.Sleep(100 * time.Millisecond)
 		if _, err := os.Stat(sockPath); err == nil {
+			// Socket ready — stop relaying daemon logs to terminal.
+			stdoutPipe.Close()
+			<-done
 			return nil
 		}
 		// Check if the daemon process died.
 		if cmd.Process != nil {
 			if err := cmd.Process.Signal(syscall.Signal(0)); err != nil {
+				stdoutPipe.Close()
+				<-done
 				return fmt.Errorf("VM daemon exited unexpectedly (check %s)", logPath)
 			}
 		}
 	}
 
+	stdoutPipe.Close()
+	<-done
 	return fmt.Errorf("VM daemon socket not ready after 10s (check %s)", logPath)
 }
