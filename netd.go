@@ -144,6 +144,10 @@ func IsNetworkDaemonAlive(name string) bool {
 //
 // This function blocks until the daemon receives SIGTERM or SIGINT.
 func RunNetworkDaemon(name, mode string, verbose bool) error {
+	// Ignore SIGPIPE — the parent closes our stdout pipe after boot,
+	// and we must not die when subsequent log writes fail.
+	signal.Ignore(syscall.SIGPIPE)
+
 	logger := NewLogger(os.Stderr)
 	logger.AddSink(os.Stdout, LvlInfo)
 
