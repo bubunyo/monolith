@@ -26,28 +26,37 @@ func AttachConsole(name string) (*ControlRequest, error) {
 		return nil, err
 	}
 
+	fmt.Println(">>>>>>>>>>>>>>>>>>>>>>>")
+
 	conn, err := net.Dial("unix", sockPath)
 	if err != nil {
 		return nil, fmt.Errorf("connecting to VM daemon %q: %w (is the VM running?)", name, err)
 	}
 	defer conn.Close()
+	fmt.Println(" 4 >>>>>>>>>>>>>>>>>>>>>>>")
 
 	// Send console attach request.
 	if _, err := conn.Write([]byte{MsgConsoleAttach}); err != nil {
 		return nil, fmt.Errorf("sending attach request: %w", err)
 	}
+	fmt.Println(" 5 >>>>>>>>>>>>>>>>>>>>>>>")
 
 	// Read ACK.
 	ack := make([]byte, 1)
 	if _, err := io.ReadFull(conn, ack); err != nil {
 		return nil, fmt.Errorf("reading attach ACK: %w", err)
 	}
+
+	fmt.Println(" 6 >>>>>>>>>>>>>>>>>>>>>>>")
 	if ack[0] == 0xFF {
 		return nil, fmt.Errorf("another client is already attached to %q", name)
 	}
+
+	fmt.Println(" 7 >>>>>>>>>>>>>>>>>>>>>>>")
 	if ack[0] != MsgConsoleAttach {
 		return nil, fmt.Errorf("unexpected ACK byte: 0x%02x", ack[0])
 	}
+	fmt.Println(" 8 >>>>>>>>>>>>>>>>>>>>>>>")
 
 	// Save and set terminal to raw mode.
 	var origAttrs unix.Termios
@@ -61,6 +70,7 @@ func AttachConsole(name string) (*ControlRequest, error) {
 	raw.Cc[syscall.VMIN] = 1
 	raw.Cc[syscall.VTIME] = 0
 	termios.Tcsetattr(os.Stdin.Fd(), termios.TCSANOW, &raw)
+	fmt.Println(" 9 >>>>>>>>>>>>>>>>>>>>>>>")
 
 	// Bidirectional relay with escape sequence detection.
 	doneCh := make(chan error, 2)
@@ -69,6 +79,7 @@ func AttachConsole(name string) (*ControlRequest, error) {
 	// conn → stdout (VM output to terminal).
 	go func() {
 		_, err := io.Copy(os.Stdout, conn)
+		fmt.Println(" 9  out >>>>>>>>>>>>>>>>>>>>>>>")
 		doneCh <- err
 	}()
 
@@ -81,6 +92,7 @@ func AttachConsole(name string) (*ControlRequest, error) {
 				doneCh <- err
 				return
 			}
+			fmt.Println(" 67 >>>>>>>>>>>>>>>>>>>>>>>")
 
 			b := buf[0]
 

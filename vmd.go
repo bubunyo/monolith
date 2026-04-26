@@ -196,6 +196,7 @@ func RunDaemon(name string, restore bool) error {
 	go func() {
 		for {
 			conn, err := listener.Accept()
+			fmt.Println("new connection <<<<<<<<<<<<<<<<<<<,,,")
 			if err != nil {
 				return // listener closed
 			}

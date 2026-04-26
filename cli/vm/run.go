@@ -151,20 +151,26 @@ func runVM(name string, cfg vmCfg) error {
 		return err
 	}
 
+	fmt.Println(">>>>>>>>>>>. is it being atta attached")
+
 	// Attach to the console.
 	return attachAndHandle(name)
 }
 
 // attachAndHandle attaches to the VM console and handles any escape commands.
 func attachAndHandle(name string) error {
+	fmt.Println(">>>>>>>>>>>. 2 is it being atta attached")
+
 	escapeCmd, err := monolith.AttachConsole(name)
 	if err != nil {
 		return err
 	}
+	fmt.Println(">>>>>>>>>>>. 3 is it being atta attached")
 
 	if escapeCmd != nil {
 		return executeEscapeCommand(name, *escapeCmd)
 	}
+	fmt.Println(">>>>>>>>>>>. 4 is it being atta attached")
 
 	fmt.Printf("Detached from %s. VM is still running.\n", name)
 	return nil
