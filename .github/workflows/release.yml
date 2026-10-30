@@ -2,8 +2,9 @@ name: Release
 
 # Push a tag like v0.1.0 (or v0.2.0-rc.1 for a prerelease) to publish a
 # GitHub release with a darwin/arm64 archive, its checksum and a build
-# provenance attestation. Signing and notarization are optional; see
-# docs/releasing.md for the secrets.
+# provenance attestation. A release created in GitHub's UI works too: its
+# tag starts this workflow, which attaches the assets to it. Signing and
+# notarization are optional; see docs/releasing.md for the secrets.
 
 on:
   push:
@@ -88,6 +89,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # A release created in GitHub's UI pushes its tag and starts this
+          # workflow; attach the assets to it and keep its title and notes.
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/*.tar.gz dist/checksums.txt --clobber
+            exit 0
+          fi
           prerelease=()
           if [[ "$GITHUB_REF_NAME" == *-* ]]; then prerelease=(--prerelease); fi
           gh release create "$GITHUB_REF_NAME" dist/*.tar.gz dist/checksums.txt \

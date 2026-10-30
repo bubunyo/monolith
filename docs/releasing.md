@@ -26,6 +26,12 @@ git push origin v0.1.0
 ```
 
 A tag with a `-` (for example `v0.2.0-rc.1`) is published as a prerelease.
+
+You can also create the release in GitHub's UI (Releases → Draft a new release,
+with a new tag). Publishing it creates the tag, which starts the workflow; the
+workflow then attaches the archive and checksums to that release and keeps the
+title, notes and prerelease setting you chose. The release has no assets for
+the few minutes the workflow takes, so `install.sh` fails for that window.
 The workflow runs lint and the unit tests again before building, and fails
 without publishing if they fail.
 
