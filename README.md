@@ -13,6 +13,9 @@ hosts.
   with docker contexts, localhost port forwarding (TCP and UDP), `/Users`
   bind mounts with file-change events, pause/resume to disk, optional Rosetta
   for amd64 images, and optional Kubernetes (k3s).
+- `monolith sandbox`: run a repo you don't trust in a lith, like a virtualenv:
+  only the repo is visible (read-only, changes reviewed with `diff`/`apply`),
+  and the code can reach the internet but not your Mac or local network.
 - `monolith network`: named networks shared between VMs.
 
 ## Install
@@ -65,6 +68,7 @@ kubectl get nodes
 ## Documentation
 
 - [docs/vm.md](docs/vm.md): VMs, Docker hosts, containerd, Kubernetes
+- [docs/sandbox.md](docs/sandbox.md): sandboxes for untrusted repos
 - [docs/networking.md](docs/networking.md): network modes and named networks
 - [docs/codesigning.md](docs/codesigning.md): signing local builds
 - [docs/releasing.md](docs/releasing.md): CI, releases, signing and notarization

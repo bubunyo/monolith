@@ -22,6 +22,8 @@
 #               gpiomon watches the line instead.
 #   shutdown:   run by init on poweroff, before it kills everything: stops
 #               k3s and the engine so containers exit cleanly, then syncs.
+#   listening:  answers TCP port 2380 with /proc/net/tcp{,6}, so the host
+#               can forward whatever sandbox processes listen on
 #   fsnotify:   answers TCP port 2379 with a loop that touches each path
 #               sent to it, so files changed on the Mac raise inotify events
 #               for watchers in the VM and its containers.
@@ -140,7 +142,21 @@ shutdown)
 fsnotify)
 	exec socat TCP-LISTEN:2379,bind=$GUEST,range=$GATEWAY,reuseaddr,fork "EXEC:/usr/local/bin/docker-serve touch-paths"
 	;;
+listening)
+	exec socat TCP-LISTEN:2380,bind=$GUEST,range=$GATEWAY,reuseaddr,fork "EXEC:cat /proc/net/tcp /proc/net/tcp6"
+	;;
 touch-paths)
+	if grep -q 'monolith\.sandbox=' /proc/cmdline; then
+		# A sandbox's repo is an overlay on the Mac's copy, which caches
+		# the Mac's files. Touching would copy them into the writable layer
+		# for good; drop the caches instead (once per burst of changes) so
+		# the overlay reads the Mac's new content.
+		while IFS= read -r path; do
+			while IFS= read -r -t 1 path; do :; done
+			echo 2 >/proc/sys/vm/drop_caches
+		done
+		exit 0
+	fi
 	# Touch in place: the times stay as the Mac set them, the inotify
 	# IN_ATTRIB event is what watchers need.
 	while IFS= read -r path; do
@@ -157,7 +173,7 @@ clock)
 	done
 	;;
 *)
-	echo "usage: docker-serve dockerd|relay|containerd|buildkitd|sshd|ports|k3s|k8s-info|power|shutdown|fsnotify|clock" >&2
+	echo "usage: docker-serve dockerd|relay|containerd|buildkitd|sshd|ports|k3s|k8s-info|power|shutdown|fsnotify|listening|clock" >&2
 	exit 2
 	;;
 esac

@@ -1,0 +1,29 @@
+#!/bin/sh
+# sandbox-mount — mounts a sandbox's repo: the Mac's copy, read-only over
+# virtio-fs (tag repo), under a writable overlay at the same path as on the
+# Mac. Everything the sandbox writes lands in the overlay's upper layer on
+# the data disk; the Mac's files never change.
+#
+#   sandbox-mount        mount (run by docker-setup at boot)
+#   sandbox-mount reset  discard the writable layer and mount again
+#
+# The repo path comes base64-encoded from the kernel command line
+# (monolith.sandbox=...), since it may contain spaces.
+
+set -e
+
+encoded=$(tr ' ' '\n' </proc/cmdline | sed -n 's/^monolith\.sandbox=//p')
+[ -n "$encoded" ] || exit 0
+repo=$(printf '%s' "$encoded" | base64 -d)
+lower=/mnt/repo-lower
+state=/var/lib/docker/.monolith/sandbox
+
+if [ "$1" = reset ]; then
+	umount "$repo" 2>/dev/null || true
+	rm -rf "$state/upper" "$state/work"
+fi
+
+mkdir -p "$lower" "$state/upper" "$state/work" "$repo"
+mountpoint -q "$lower" || mount -t virtiofs -o ro repo "$lower"
+mountpoint -q "$repo" || mount -t overlay overlay \
+	-o "lowerdir=$lower,upperdir=$state/upper,workdir=$state/work" "$repo"

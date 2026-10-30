@@ -38,7 +38,12 @@ const forwardedFlags = fsevents.ItemCreated | fsevents.ItemModified | fsevents.I
 // this, watchers in containers (hot reload, test runners) never fire for
 // edits made on the Mac. It runs until ctx is done; errors are logged once
 // and retried, since older guests have no relay.
-func (s *dockerServices) relayFileEvents(ctx context.Context, root string) {
+//
+// For a sandbox, root is the repo and every change counts, removals
+// included: the guest doesn't touch the paths (that would copy them into the
+// overlay's writable layer) but drops its caches, so the overlay sees the
+// Mac's new content instead of stale sizes or ESTALE.
+func (s *dockerServices) relayFileEvents(ctx context.Context, root string, sandbox bool) {
 	skip := skippedPrefixes()
 	stream := &fsevents.EventStream{
 		Paths:   []string{root},
@@ -72,7 +77,11 @@ func (s *dockerServices) relayFileEvents(ctx context.Context, root string) {
 				if !strings.HasPrefix(path, "/") {
 					path = "/" + path
 				}
-				if ev.Flags&forwardedFlags == 0 || ev.Flags&fsevents.ItemRemoved != 0 || skipped(path, skip) || strings.ContainsRune(path, '\n') {
+				relevant := ev.Flags&forwardedFlags != 0 && ev.Flags&fsevents.ItemRemoved == 0
+				if sandbox {
+					relevant = ev.Flags&(forwardedFlags|fsevents.ItemRemoved|fsevents.ItemInodeMetaMod) != 0
+				}
+				if !relevant || skipped(path, skip) || strings.ContainsRune(path, '\n') {
 					continue
 				}
 				if t, ok := recent[path]; ok && now.Sub(t) < echoWindow {
