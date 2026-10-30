@@ -83,15 +83,39 @@ func (dockerImage) Prepare(name string) (*BootSpec, error) {
 		// The guest installs it as root's authorized key on every boot.
 		commandLine += " " + sshPubKeyCmdlineArg + "=" + pub
 	}
-	disk, err := DefaultDisk(rootfs, kernel.ModloopPath, name, overlays...)
-	if err != nil {
-		return nil, err
-	}
-
 	vmDir, err := VMDir(name)
 	if err != nil {
 		return nil, err
 	}
+	// A disk created now gets the current guest files.
+	newDisk := !exists(filepath.Join(vmDir, alpineDiskName))
+	if newDisk {
+		cfg.GuestLayout = GuestLayout
+	}
+
+	shares := []Share{{Tag: "users", HostPath: "/Users"}}
+	if cfg.Kubernetes {
+		if cfg.GuestLayout < GuestLayout {
+			return nil, fmt.Errorf("VM %q was created before Kubernetes support; recreate it to use --kubernetes", name)
+		}
+		dir, err := ensureK3s(K3sVersionOf(cfg))
+		if err != nil {
+			return nil, err
+		}
+		shares = append(shares, Share{Tag: k3sShareTag, HostPath: dir, ReadOnly: true})
+		commandLine += " " + k3sCmdlineArg + "=1"
+	}
+
+	disk, err := DefaultDisk(rootfs, kernel.ModloopPath, name, overlays...)
+	if err != nil {
+		return nil, err
+	}
+	if newDisk {
+		if err := WriteConfig(name, cfg); err != nil {
+			return nil, err
+		}
+	}
+
 	dataDisk := filepath.Join(vmDir, dockerDataDiskName)
 	if !exists(dataDisk) {
 		// Left unformatted; docker-setup runs mkfs.ext4 on first boot.
@@ -106,7 +130,7 @@ func (dockerImage) Prepare(name string) (*BootSpec, error) {
 		CommandLine:  commandLine,
 		DiskPath:     disk,
 		DataDiskPath: dataDisk,
-		Shares:       []Share{{Tag: "users", HostPath: "/Users"}},
+		Shares:       shares,
 	}, nil
 }
 

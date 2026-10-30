@@ -36,6 +36,7 @@ type BootSpec struct {
 type Share struct {
 	Tag      string
 	HostPath string
+	ReadOnly bool
 }
 
 // Image is a guest base image: where the kernel comes from, how the root

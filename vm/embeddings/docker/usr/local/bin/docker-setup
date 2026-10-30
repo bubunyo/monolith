@@ -5,6 +5,10 @@
 
 ENGINE=$(cat /etc/monolith-engine 2>/dev/null || echo docker)
 DATA_DISK=/dev/vdb
+# Kubernetes is on when the host passes monolith.k3s=1 and shares the k3s
+# binary (virtio-fs tag k3s).
+K8S=$(tr ' ' '\n' </proc/cmdline | grep -cx 'monolith\.k3s=1')
+K3S_DIR=/opt/monolith/k3s
 
 case "$ENGINE" in
 containerd)
@@ -66,6 +70,40 @@ if [ "$ENGINE" = containerd ]; then
 	# sshd only admits root@gateway with the key; keep containers from even
 	# reaching it.
 	iptables -I INPUT -p tcp -d 192.168.127.2 --dport 22 ! -s 192.168.127.1 -j REJECT
+fi
+
+if [ "$ENGINE" = containerd ]; then
+	# nerdctl and BuildKit use containerd's k8s.io namespace when Kubernetes
+	# is on, so images they build are visible to pods.
+	echo 'cni_path = "/usr/libexec/cni"' >/etc/nerdctl/nerdctl.toml
+	[ "$K8S" = 1 ] && echo 'namespace = "k8s.io"' >>/etc/nerdctl/nerdctl.toml
+	# containerd's CRI takes pod networking from k3s (flannel) when
+	# Kubernetes is on, else from the stock CNI setup.
+	if [ "$K8S" = 1 ]; then
+		sed -i -e "s|bin_dir = '/usr/libexec/cni'|bin_dir = '/var/lib/rancher/k3s/data/current/bin'|" \
+			-e "s|conf_dir = '/etc/cni/net.d'|conf_dir = '/var/lib/rancher/k3s/agent/etc/cni/net.d'|" /etc/containerd/config.toml
+	else
+		sed -i -e "s|bin_dir = '/var/lib/rancher/k3s/data/current/bin'|bin_dir = '/usr/libexec/cni'|" \
+			-e "s|conf_dir = '/var/lib/rancher/k3s/agent/etc/cni/net.d'|conf_dir = '/etc/cni/net.d'|" /etc/containerd/config.toml
+	fi
+fi
+
+if [ "$K8S" = 1 ]; then
+	echo "docker-setup: preparing Kubernetes (k3s)"
+	modprobe -a vxlan 2>/dev/null
+	mount --make-rshared /
+	mkdir -p "$K3S_DIR"
+	mount -t virtiofs -o ro k3s "$K3S_DIR" || echo "docker-setup: mounting k3s failed"
+	# k3s and kubelet state go on the data disk.
+	if [ "$ENGINE" = containerd ]; then
+		base=/data
+	else
+		base=/var/lib/docker/.monolith
+	fi
+	for dir in rancher kubelet; do
+		mkdir -p "$base/$dir" "/var/lib/$dir"
+		mount --bind "$base/$dir" "/var/lib/$dir"
+	done
 fi
 
 # The Mac's /Users, at the same path, so bind mounts like -v ~/src:/src work.

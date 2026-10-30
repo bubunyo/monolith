@@ -125,3 +125,14 @@ func TestParseNerdctlPorts(t *testing.T) {
 	_, err = parseNerdctlPorts([]byte("not json\n"))
 	require.Error(t, err)
 }
+
+func TestParseKubeServicePorts(t *testing.T) {
+	out := `{"items":[
+ {"spec":{"type":"ClusterIP","ports":[{"protocol":"TCP","port":443}]}},
+ {"spec":{"type":"LoadBalancer","ports":[{"protocol":"TCP","port":8080,"nodePort":31000},{"protocol":"UDP","port":53,"nodePort":31001}]}},
+ {"spec":{"type":"NodePort","ports":[{"protocol":"TCP","port":80,"nodePort":30080}]}}
+]}`
+	ports, err := parseKubeServicePorts([]byte(out))
+	require.NoError(t, err)
+	require.Equal(t, map[int]bool{8080: true, 31000: true, 30080: true}, ports)
+}

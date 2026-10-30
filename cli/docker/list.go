@@ -56,7 +56,7 @@ func list() error {
 
 	current := currentContext()
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-	fmt.Fprintln(w, "NAME\tSTATE\tENGINE\tCONTEXT\tCPUS\tMEM\tDATA\tPORTS")
+	fmt.Fprintln(w, "NAME\tSTATE\tENGINE\tK8S\tCONTEXT\tCPUS\tMEM\tDATA\tPORTS")
 	for _, name := range names {
 		cfg, _ := vm.ReadConfig(name)
 		state := vm.StatusStopped
@@ -78,7 +78,11 @@ func list() error {
 		if state == vm.StatusRunning {
 			ports = forwardedPorts(name)
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\n", name, state, engine, ctx, cfg.CPUs, clivm.FormatMemory(cfg.Memory), dataUsage(name), ports)
+		k8s := "-"
+		if cfg.Kubernetes {
+			k8s = vm.K3sVersionOf(cfg)
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\n", name, state, engine, k8s, ctx, cfg.CPUs, clivm.FormatMemory(cfg.Memory), dataUsage(name), ports)
 	}
 	return w.Flush()
 }

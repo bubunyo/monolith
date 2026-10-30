@@ -11,6 +11,9 @@
 #   buildkitd:  BuildKit on containerd, for `nerdctl build`
 #   sshd:       internal sshd the host runs nerdctl through
 #   ports:      answers TCP port 2377 with `nerdctl ps --format json`
+# both, when Kubernetes is on (otherwise they sleep):
+#   k3s:        single-node k3s server on the VM's engine
+#   k8s-info:   answers TCP port 2378 with k3s's kubeconfig or services
 # both:
 #   clock:      keeps the system clock in step with the RTC, which follows
 #               the Mac's clock. After a restore from `monolith docker pause`
@@ -19,6 +22,8 @@
 SOCK=/var/run/docker.sock
 GUEST=192.168.127.2
 GATEWAY=192.168.127.1/32
+K3S=/opt/monolith/k3s/k3s
+ENGINE=$(cat /etc/monolith-engine 2>/dev/null || echo docker)
 
 # need exits (to be respawned after a pause) if the engine isn't installed,
 # so init doesn't spin.
@@ -27,6 +32,11 @@ need() {
 		sleep 5
 		exit 1
 	fi
+}
+
+# k8s_or_idle parks a Kubernetes service for good when k3s isn't shared in.
+k8s_or_idle() {
+	[ -x "$K3S" ] || exec sleep 2147483647
 }
 
 case "$1" in
@@ -48,7 +58,9 @@ containerd)
 	;;
 buildkitd)
 	need buildkitd
-	exec buildkitd --oci-worker=false --containerd-worker=true >>/var/log/buildkitd.log 2>&1
+	ns=default
+	[ -x "$K3S" ] && ns=k8s.io # images built for pods
+	exec buildkitd --oci-worker=false --containerd-worker=true --containerd-worker-namespace=$ns >>/var/log/buildkitd.log 2>&1
 	;;
 sshd)
 	need sshd
@@ -61,6 +73,29 @@ ports)
 ports-list)
 	exec nerdctl ps --format json 2>/dev/null
 	;;
+k3s)
+	k8s_or_idle
+	if [ "$ENGINE" = containerd ]; then
+		while [ ! -S /run/containerd/containerd.sock ]; do sleep 1; done
+		runtime=--container-runtime-endpoint=unix:///run/containerd/containerd.sock
+	else
+		while [ ! -S "$SOCK" ]; do sleep 1; done
+		runtime=--docker
+	fi
+	exec "$K3S" server $runtime --disable=traefik --node-name="$(hostname)" \
+		--write-kubeconfig-mode=600 >>/var/log/k3s.log 2>&1
+	;;
+k8s-info)
+	k8s_or_idle
+	exec socat TCP-LISTEN:2378,bind=$GUEST,range=$GATEWAY,reuseaddr,fork "EXEC:/usr/local/bin/docker-serve k8s-info-reply"
+	;;
+k8s-info-reply)
+	read -r what
+	case "$what" in
+	kubeconfig) exec cat /etc/rancher/k3s/k3s.yaml ;;
+	services) exec "$K3S" kubectl get svc -A -o json ;;
+	esac
+	;;
 clock)
 	while sleep 2; do
 		rtc=$(cat /sys/class/rtc/rtc0/since_epoch) || exit 1
@@ -71,7 +106,7 @@ clock)
 	done
 	;;
 *)
-	echo "usage: docker-serve dockerd|relay|containerd|buildkitd|sshd|ports|clock" >&2
+	echo "usage: docker-serve dockerd|relay|containerd|buildkitd|sshd|ports|k3s|k8s-info|clock" >&2
 	exit 2
 	;;
 esac

@@ -30,6 +30,9 @@
 ::respawn:/usr/local/bin/docker-serve sshd
 ::respawn:/usr/local/bin/docker-serve ports
 ::respawn:/usr/local/bin/docker-serve clock
+# Kubernetes (k3s); idle unless the host enables it.
+::respawn:/usr/local/bin/docker-serve k3s
+::respawn:/usr/local/bin/docker-serve k8s-info
 
 hvc0::respawn:/sbin/getty -n -l /usr/local/bin/autologin 0 hvc0
 

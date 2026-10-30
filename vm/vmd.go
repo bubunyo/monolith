@@ -161,7 +161,7 @@ func RunDaemon(name string, restore bool, consoleLogPath string) error {
 	// Shared directories (virtio-fs).
 	var shareDevices []vz.DirectorySharingDeviceConfiguration
 	for _, sh := range spec.Shares {
-		dir, err := vz.NewSharedDirectory(sh.HostPath, false)
+		dir, err := vz.NewSharedDirectory(sh.HostPath, sh.ReadOnly)
 		if err != nil {
 			return errors.Wrapf(err, "shared directory %s", sh.HostPath)
 		}
@@ -271,7 +271,7 @@ func RunDaemon(name string, restore bool, consoleLogPath string) error {
 
 	var services *dockerServices
 	if cfg.Image == ImageDocker {
-		services, err = startDockerServices(name, EngineOf(cfg), userNet, logger)
+		services, err = startDockerServices(name, cfg, userNet, logger)
 		if err != nil {
 			return errors.Wrap(err, "docker services")
 		}
@@ -300,15 +300,16 @@ func RunDaemon(name string, restore bool, consoleLogPath string) error {
 
 	// Daemon state — tracks the current console client and VM status.
 	d = &vmDaemon{
-		name:     name,
-		vm:       vm,
-		vmCfg:    vmCfg,
-		pts:      pts,
-		mac:      macStr,
-		listener: listener,
-		logger:   logger,
-		bus:      bus,
-		docker:   services,
+		name:       name,
+		vm:         vm,
+		vmCfg:      vmCfg,
+		pts:        pts,
+		mac:        macStr,
+		listener:   listener,
+		logger:     logger,
+		bus:        bus,
+		docker:     services,
+		kubernetes: cfg.Kubernetes,
 	}
 
 	// Accept connections in background.
@@ -374,15 +375,16 @@ func RunDaemon(name string, restore bool, consoleLogPath string) error {
 
 // vmDaemon holds the daemon's runtime state.
 type vmDaemon struct {
-	name     string
-	vm       *vz.VirtualMachine
-	vmCfg    *vz.VirtualMachineConfiguration
-	pts      *os.File // PTY slave for console relay
-	mac      string
-	listener net.Listener
-	logger   *monolith.Logger
-	bus      *consoleBus
-	docker   *dockerServices // nil unless the VM uses the docker image
+	name       string
+	vm         *vz.VirtualMachine
+	vmCfg      *vz.VirtualMachineConfiguration
+	pts        *os.File // PTY slave for console relay
+	mac        string
+	listener   net.Listener
+	logger     *monolith.Logger
+	bus        *consoleBus
+	docker     *dockerServices // nil unless the VM uses the docker image
+	kubernetes bool            // k3s runs in the guest
 
 	suspended atomic.Bool    // set while suspending; keeps state.json on exit
 	controlWG sync.WaitGroup // in-flight control requests
@@ -549,6 +551,8 @@ func (d *vmDaemon) handleControl(conn net.Conn) {
 		d.handleStatus(conn)
 	case CmdResize:
 		d.handleResize(conn, req.Rows, req.Cols)
+	case CmdKubeconfig:
+		d.handleKubeconfig(conn)
 	default:
 		d.sendControlResponse(conn, ControlResponse{OK: false, Error: fmt.Sprintf("unknown command: %s", req.Cmd)})
 	}
@@ -709,6 +713,20 @@ func (d *vmDaemon) handleStatus(conn net.Conn) {
 		resp.Ports = d.docker.forwards()
 	}
 	d.sendControlResponse(conn, resp)
+}
+
+// handleKubeconfig fetches k3s's kubeconfig from the guest.
+func (d *vmDaemon) handleKubeconfig(conn net.Conn) {
+	if d.docker == nil || !d.kubernetes {
+		d.sendControlResponse(conn, ControlResponse{OK: false, Error: "Kubernetes is not enabled on this VM"})
+		return
+	}
+	data, err := d.docker.kubeconfig()
+	if err != nil {
+		d.sendControlResponse(conn, ControlResponse{OK: false, Error: err.Error()})
+		return
+	}
+	d.sendControlResponse(conn, ControlResponse{OK: true, Data: string(data)})
 }
 
 // handleResize records the client's terminal size on the console PTY.

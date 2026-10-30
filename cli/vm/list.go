@@ -253,7 +253,11 @@ func formatUptime(d time.Duration) string {
 // in brackets for docker image VMs, e.g. "docker (containerd)".
 func imageLabel(cfg vm.VMConfig) string {
 	if cfg.Image == vm.ImageDocker {
-		return fmt.Sprintf("%s (%s)", cfg.Image, vm.EngineOf(cfg))
+		engine := vm.EngineOf(cfg)
+		if cfg.Kubernetes {
+			engine += "+k3s"
+		}
+		return fmt.Sprintf("%s (%s)", cfg.Image, engine)
 	}
 	return cfg.Image
 }
