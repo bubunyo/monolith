@@ -17,4 +17,5 @@ func init() {
 	Cmd.AddCommand(stopCmd)
 	Cmd.AddCommand(listCmd)
 	Cmd.AddCommand(rmCmd)
+	Cmd.AddCommand(logsCmd)
 }

@@ -53,7 +53,7 @@ for per-VM network statistics in `vm top` and `vm list --wide`.
 
 ### `shared` (macOS 26+)
 
-Uses `VZVmnetNetworkDeviceAttachment` with `vmnet.SharedMode`. Similar to NAT
+Uses `vz.NewVMNetNetworkDeviceAttachment` with `vmnet.ModeShared`. Similar to NAT
 but with the ability for VMs sharing the same `vmnet.Network` instance to
 communicate with each other.
 
@@ -104,14 +104,55 @@ bridge to (e.g. `en0` for Wi-Fi, `en6` for USB Ethernet).
 monolith vm run my-vm --network-mode host --host-interface en0
 ```
 
-> **Entitlement restriction:** The `com.apple.vm.networking` entitlement is
-> restricted by Apple and requires either a provisioning profile from the
-> Apple Developer portal or SIP disabled. The default `entitlements.plist`
-> does not include it. See [docs/codesigning.md](codesigning.md) for details.
+> **Entitlement restriction (read this before trying host mode):**
+>
+> Using `VZBridgedNetworkDeviceAttachment` requires the
+> `com.apple.vm.networking` entitlement. This is a **restricted entitlement**
+> in Apple's terminology — simply adding it to `entitlements.plist` is not
+> enough. macOS validates at runtime that the binary's signature was produced
+> with a provisioning profile that authorizes the entitlement; otherwise the
+> VM fails to start with:
+>
+> ```
+> Error Domain=VZErrorDomain Code=2
+> Using VZBridgedNetworkDeviceAttachment in a process that lacks the
+> "com.apple.vm.networking" entitlement.
+> ```
+>
+> There are exactly two ways to satisfy this requirement:
+>
+> 1. **Provisioning profile from Apple.** Register an App ID in the Apple
+>    Developer portal with the Virtualization → Bridged Networking capability,
+>    download the provisioning profile, and embed it during signing. As of
+>    this writing Apple does not grant this capability automatically — you
+>    must request it from Apple, and approval is uncommon for personal
+>    accounts. Organization accounts with documented use cases have a better
+>    chance.
+>
+> 2. **Disable System Integrity Protection (SIP).** With SIP off, macOS skips
+>    the provisioning-profile check and accepts the entitlement based purely
+>    on the signature (ad-hoc or Developer ID). Run `csrutil disable` from
+>    Recovery Mode to do this. **Strongly discouraged on any machine you care
+>    about**, and explicitly forbidden on most managed/MDM-enrolled Macs
+>    (the org's MDM profile prevents Recovery Mode changes, and EDR tools
+>    like CrowdStrike will flag/refuse to run with SIP disabled).
+>
+> The default `entitlements.plist` does not include
+> `com.apple.vm.networking` because shipping it would be misleading: the
+> entitlement is silently ignored at runtime without one of the two
+> conditions above. The CLI checks for the entitlement before spawning the
+> VM daemon and fails with a clear error message rather than letting the
+> daemon crash. See [docs/codesigning.md](codesigning.md) for the signing
+> mechanics.
+>
+> **If you're on a managed Mac, host mode is effectively unavailable. Use
+> `nat` (default), `shared`, or `isolated` instead.** All three give the VM
+> internet access (except `isolated`) and work without any restricted
+> entitlements.
 
 ### `isolated` (macOS 26+)
 
-Uses `VZVmnetNetworkDeviceAttachment` with `vmnet.HostMode`. The VM can
+Uses `vz.NewVMNetNetworkDeviceAttachment` with `vmnet.ModeHost`. The VM can
 communicate with the host but has no NAT and no internet access.
 
 | Property | Value |
@@ -180,6 +221,7 @@ resource, enabling inter-VM communication for `shared` and `isolated` modes.
 ```bash
 monolith network create <name>                    # create (default: shared mode)
 monolith network create <name> --mode isolated    # create in isolated mode
+monolith network create <name> --subnet 192.168.77.0/24  # custom IPv4 subnet
 monolith network list                             # list all networks with status
 monolith network rm <name>                        # stop daemon and delete network
 ```
@@ -193,97 +235,184 @@ my-net    shared   192.168.64.0/24     running   web,db
 lab-net   isolated 192.168.65.0/24     running   -
 ```
 
-### Architecture
+### Custom subnets
 
-Named networks use a **daemon process** architecture. The vmnet kernel
-resource must be kept alive by a process for as long as the network exists.
+By default, vmnet picks a subnet from its internal pool (typically
+`192.168.64.0/24`, `192.168.65.0/24`, ...). You can pin a network to a
+specific subnet with `--subnet`:
+
+```bash
+monolith network create dev --subnet 192.168.77.0/24
+```
+
+**Rules:**
+
+- IPv4 only. Must be a valid CIDR.
+- Prefix length must be between `/16` and `/28` (inclusive).
+- Currently restricted to `192.168.0.0/16`. vz v4 no longer enforces this,
+  but the other RFC 1918 ranges (`10.0.0.0/8`, `172.16.0.0/12`) haven't been
+  verified against vmnet yet; `validateSubnet` in `cli/network/create.go`
+  holds the allow list.
+- Must not overlap any existing named network's subnet (running or stopped).
+  The check uses `netip.Prefix.Overlaps`, so e.g. `192.168.77.128/25` is
+  rejected if any other network owns `192.168.77.0/24`.
+- Inside the chosen subnet, vmnet reserves `.0` (network), `.1` (host
+  gateway), and `.255` (broadcast). Everything else is available for VMs
+  via DHCP.
+
+The requested CIDR is persisted as `user_subnet` in `config.json` and
+re-applied on every daemon start (`network start`), so a custom subnet
+survives restarts.
+
+If you omit `--subnet`, vmnet chooses for you and the chosen subnet is
+recorded in `config.json` under `subnet` after the daemon comes up.
+
+### Topology view
+
+`network list --topology` (`-t`) renders a unified tree showing every VM
+and every network grouped by **reachability** rather than just listing
+named networks. It's the fastest way to answer "what can talk to what?"
+
+```bash
+monolith network list -t
+monolith network ls -t
+```
+
+The tree has up to three top-level sections — **Internet**, **Host-only**,
+and **Airgapped** — and only includes sections that contain something:
 
 ```
-                ┌─────────────────────────────────────────┐
-                │  monolith network create my-net         │
-                │    └─ spawns background daemon          │
-                └────────────┬────────────────────────────┘
-                             │ os/exec
-                             ▼
-        ┌─────────────────────────────────────────────┐
-        │  monolith __netd my-net shared              │
-        │    1. vmnet.NewNetwork(SharedMode)           │
-        │    2. network.CopySerialization() → bytes    │
-        │    3. Listen on unix socket                  │
-        │    4. Serve serialization to clients         │
-        │    5. Block until SIGTERM                    │
-        └────────┬────────────────────────────────────┘
-                 │ unix socket
-                 ▼
-        ┌─────────────────────────────────────────────┐
-        │  monolith vm run web --network my-net       │
-        │    1. Connect to daemon socket              │
-        │    2. Receive serialized network bytes      │
-        │    3. vmnet.NewNetworkWithSerialization()    │
-        │    4. vz.NewVmnetNetworkDeviceAttachment()  │
-        └─────────────────────────────────────────────┘
+Internet
+├── Bridged (physical NICs)
+│   └── en0
+│       └── lith-41530       stopped       -
+├── NAT
+│   ├── my-vm                running       192.168.64.26
+│   └── my-vm-2              stopped       -
+└── Shared networks
+    ├── debug                stopped       192.168.71.1/24
+    ├── shared-net-1         running       192.168.66.1/24
+    │   ├── lith-20584       running       192.168.66.11
+    │   ├── lith-24485       running       192.168.66.10
+    │   └── lith-48756       running       192.168.66.9
+    ├── test-3               stopped       192.168.64.1/24
+    ├── test-network-2       stopped       192.168.65.1/24
+    └── (anonymous)
+        └── lith-69278       running       192.168.65.2
+
+Host-only
+└── Isolated networks
+    └── (anonymous)
+        └── lith-30507       running       -
+
+Airgapped
+└── lith-42593               running       -
+```
+
+Grouping rules:
+
+- **Internet** contains everything that can reach the outside world: bridged
+  (`host` mode) VMs grouped by physical NIC, anonymous `nat` VMs, and
+  shared networks (named + an `(anonymous)` pseudo-group for `shared` VMs
+  started without `--network`).
+- **Host-only** contains `isolated` mode networks/VMs (host can reach them,
+  no internet, no inter-VM communication unless they share a named network).
+- **Airgapped** contains VMs started with `--network-mode none`.
+- VMs grouped under the same named network are real layer-2 peers (sharing
+  one `vmnet.Network` instance via the daemon). VMs in `(anonymous)` groups
+  each have their own private vmnet instance and cannot see each other.
+- Stopped VMs and unused named networks both appear in their assigned slots
+  so the tree reflects the configured topology, not just live state.
+- A VM that references a named network that has been deleted appears under
+  a `(missing: <name>)` pseudo-network so it's not silently dropped.
+
+### Architecture
+
+The vmnet network must be kept alive by a process for as long as it exists,
+and vz v4 can only hand a network to another process through a **launchd
+Mach service** (`vmnet.ShareNetwork` / `vmnet.ReceiveNetwork`). The
+serialization is an opaque XPC object with no byte encoding, so it can't be
+sent over a plain socket. Each named network therefore runs as a per-user
+launchd job.
+
+```
+        ┌──────────────────────────────────────────────┐
+        │  monolith network create|start my-net        │
+        │    1. write networks/my-net/launchd.plist    │
+        │    2. launchctl bootstrap gui/<uid> <plist>  │
+        └────────────┬─────────────────────────────────┘
+                     │ launchd runs the job
+                     ▼
+        ┌──────────────────────────────────────────────┐
+        │  monolith __netd my-net shared               │
+        │    1. vmnet.NewNetwork(ModeShared, subnet)   │
+        │    2. vmnet.ShareNetwork(                    │
+        │         "dev.monolith.network.my-net", ...)  │
+        │    3. write pid file                         │
+        │    4. block until SIGTERM                    │
+        └────────────┬─────────────────────────────────┘
+                     │ XPC (Mach service)
+                     ▼
+        ┌──────────────────────────────────────────────┐
+        │  monolith __vmd web   (--network my-net)     │
+        │    1. vmnet.ReceiveNetwork(service, 5s)      │
+        │    2. vz.NewVMNetNetworkDeviceAttachment()   │
+        └──────────────────────────────────────────────┘
 ```
 
 #### Daemon Details
 
-The `monolith network create` command:
+`monolith network create` validates the name, mode and subnet, writes an
+initial `config.json`, then calls `monolith.StartNetworkDaemon` (`launchd.go`),
+which:
 
-1. Validates the name and mode.
-2. Writes an initial `config.json` to `~/.cache/monolith/networks/<name>/`.
-3. Spawns a detached background process: `monolith __netd <name> <mode>`.
-4. Waits 500ms, then verifies the daemon is alive.
+1. Writes `launchd.plist` in the network directory: label and Mach service
+   `dev.monolith.network.<name>`, `ProgramArguments` = this binary +
+   `__netd <name> <mode> [--verbose]`, `RunAtLoad`, `HOME`, and stdout/stderr
+   to `daemon.log`.
+2. Boots out any stale job with that label, then runs
+   `launchctl bootstrap gui/<uid> <plist>`.
 
-The hidden `__netd` command (defined in `cli/netd.go`) calls
-`monolith.RunNetworkDaemon(name, mode)`, which:
+The CLI then waits up to 10s for the daemon's PID file. Nothing is
+installed in `~/Library/LaunchAgents`, so jobs don't survive logout.
 
-1. Creates a `vmnet.Network` with the requested mode.
-2. Queries the assigned IPv4 subnet and updates `config.json`.
-3. Serializes the network via `network.CopySerialization()`.
-4. Extracts the raw bytes from the XPC dictionary.
-5. Writes a PID file.
-6. Listens on a unix domain socket at `~/.cache/monolith/networks/<name>/daemon.sock`.
-7. Serves the serialization bytes to each connecting VM.
-8. Blocks until `SIGTERM` or `SIGINT`.
+The hidden `__netd` command calls `monolith.RunNetworkDaemon`, which:
 
-#### Serialization Protocol
+1. Creates a `vmnet.Network`, applying `user_subnet` with `vmnet.WithIPv4Subnet`.
+2. Writes the assigned IPv4 subnet to `config.json`.
+3. Publishes the network with `vmnet.ShareNetwork` on its Mach service.
+4. Writes a PID file (what `IsNetworkDaemonAlive` checks).
+5. With `--verbose`, starts a monitor interface on the network and logs
+   decoded frames at TRC level.
+6. Blocks until `SIGTERM` or `SIGINT`.
 
-The daemon communicates with VMs over a unix socket using a simple
-length-prefixed binary protocol:
+`network stop` and `network rm` call `monolith.StopNetworkDaemon`, which runs
+`launchctl bootout gui/<uid>/dev.monolith.network.<name>`. That SIGTERMs the
+daemon and unregisters the service. Killing the daemon process directly
+leaves the job loaded until the next `network start` boots it out.
 
+#### Peer Authentication
+
+`ShareNetwork` and `ReceiveNetwork` each require an Apple code signing
+requirement for the peer. monolith uses `cdhash H"<hash>"` of its own binary
+(`OwnCodeRequirement()` in `entitlements.go`), so the network daemon only
+serves VMs from the exact same build, and VMs only trust that daemon.
+
+**Rebuilding or re-signing the binary changes its hash.** After `make build`,
+restart running networks, or VMs will time out joining them:
+
+```bash
+monolith network stop my-net && monolith network start my-net
 ```
-┌──────────────┬──────────────────────────────┐
-│ 4 bytes      │ N bytes                      │
-│ uint32 BE    │ raw serialization data       │
-│ (length = N) │                              │
-└──────────────┴──────────────────────────────┘
-```
-
-- **4 bytes:** Big-endian `uint32` — length of the serialization payload.
-- **N bytes:** Raw bytes extracted from the XPC dictionary's
-  `"networkSerialization"` key.
-
-On the client side (VM process), the bytes are reconstructed into an XPC
-dictionary and passed to `vmnet.NewNetworkWithSerialization()`.
-
-#### Same-Executable Constraint
-
-The macOS `vmnet_network_create_with_serialization` API requires the
-deserializing process to be **the same executable** as the serializing
-process. On macOS <26.2 this is enforced by CDHash comparison; on macOS
-26.2+ it's enforced by executable path comparison.
-
-This is why both the daemon (`monolith __netd`) and the VM (`monolith vm run`)
-use the same `monolith` binary. Building a separate daemon binary would break
-network serialization.
 
 ### Filesystem Layout
 
 ```
 ~/.cache/monolith/networks/
   my-net/
-    config.json          # {"mode":"shared","subnet":"192.168.64.0/24"}
+    config.json          # {"mode":"shared","subnet":"192.168.77.0/24","user_subnet":"192.168.77.0/24"}
     pid                  # daemon PID (plain text)
-    daemon.sock          # unix domain socket
+    launchd.plist        # launchd job definition
     daemon.log           # daemon stdout/stderr
 ```
 
@@ -291,10 +420,11 @@ network serialization.
 
 | Action | What Happens |
 |--------|-------------|
-| `network create` | Daemon starts, vmnet resource allocated, socket created |
-| `vm run --network` | VM connects to socket, receives serialization, joins network |
+| `network create` | launchd job loaded, daemon starts, vmnet resource allocated and shared |
+| `vm run --network` | VM receives the network over XPC and attaches to it |
 | `vm stop` / VM shutdown | VM disconnects, daemon keeps running |
-| `network rm` | Sends SIGTERM to daemon, removes directory |
+| `network stop` | `launchctl bootout`: daemon stopped, config kept |
+| `network rm` | `launchctl bootout`, then removes the directory |
 | Host reboot | Daemon dies, stale PID file cleaned up on next `network list` |
 
 ## Guest-Side Networking
@@ -420,10 +550,12 @@ starts, so `vm list` always reflects the active configuration.
 | Entitlement | Modes | Signing |
 |-------------|-------|---------|
 | `com.apple.security.virtualization` | nat, shared, isolated, none | Apple Development certificate |
-| `com.apple.vm.networking` | host (bridged) | Provisioning profile or SIP disabled |
+| `com.apple.vm.networking` | host (bridged) | **Restricted** — provisioning profile from Apple, **or** SIP disabled. See the host-mode section above. |
 
 The default build only includes `com.apple.security.virtualization`. Host
-mode requires additional setup — see [docs/codesigning.md](codesigning.md).
+mode requires additional setup that is generally not feasible on
+managed/MDM-enrolled Macs — see the host-mode section above and
+[docs/codesigning.md](codesigning.md).
 
 ## Troubleshooting
 
@@ -440,6 +572,32 @@ monolith vm run my-vm --network-mode nat
 
 Shared and isolated modes require macOS 26+. On older macOS versions, the
 vmnet APIs are not available and the VM will fail to start.
+
+### `vm run --network-mode host` fails immediately
+
+The CLI refuses to start a host-mode VM if the binary is missing the
+`com.apple.vm.networking` entitlement, with a clear error message pointing
+here. See the [host mode section above](#host-bridged) for the two ways to
+satisfy the entitlement requirement and why neither is realistic on a
+managed Mac. Use `nat` (default), `shared`, or `isolated` instead.
+
+### Ping (ICMP) doesn't work but TCP/HTTP does
+
+This is almost always a host-side firewall or EDR (endpoint detection &
+response) tool dropping ICMP from the vmnet NAT subnet (`192.168.64.0/24`
+by default). Common culprits on managed Macs: CrowdStrike Falcon, Cisco
+Umbrella, Zscaler, Netskope, the macOS Application Firewall.
+
+Diagnose by trying TCP from inside the VM:
+
+```sh
+wget -qO- https://1.1.1.1 >/dev/null && echo OK
+```
+
+If TCP works, networking is fine — your host security stack is just
+filtering ICMP. There is nothing monolith can do about this; either
+request an exception from your IT team, or use TCP-based reachability
+tests (`nc -zv`, `wget`, `curl`) instead of `ping`.
 
 ### `vm list` shows no IP for a running VM
 
@@ -460,6 +618,18 @@ Common causes:
 - macOS version too old (shared/isolated require macOS 26+)
 - Another daemon is already running for this network name
 - Insufficient permissions
+
+### `network create --subnet` rejected as out-of-range
+
+monolith currently only accepts subnets within `192.168.0.0/16`. Other
+RFC 1918 ranges (`10.0.0.0/8`, `172.16.0.0/12`) haven't been verified with
+vmnet yet. For now, pick a subnet inside `192.168.x.x`.
+
+### `network create --subnet` rejected as overlapping
+
+The requested CIDR overlaps an existing named network (running or stopped).
+The error message names the conflicting network. Either choose a
+non-overlapping subnet, or `monolith network rm <conflict>` first.
 
 ### Inter-VM communication doesn't work
 
@@ -506,12 +676,14 @@ See [docs/codesigning.md](codesigning.md) for instructions.
 | File | Purpose |
 |------|---------|
 | `config.go` | `VMConfig` struct, network mode constants, read/write config |
-| `network.go` | `configureNetwork()`, `createNetworkAttachment()`, `joinNamedNetwork()` |
-| `netd.go` | `RunNetworkDaemon()`, `FetchNetworkSerialization()`, network persistence helpers |
+| `network.go` | `configureNetwork()`, `createNetworkAttachment()` |
+| `netd.go` | `RunNetworkDaemon()` (ShareNetwork), `joinNamedNetwork()` (ReceiveNetwork), persistence helpers, packet monitor |
+| `launchd.go` | `StartNetworkDaemon()`, `StopNetworkDaemon()`, plist rendering, service naming |
 | `state.go` | `lookupIPForMode()`, `LookupIPByMAC()`, `VmenetForMAC()`, `NetworkStats()` |
 | `cli/vm/run.go` | `--network-mode`, `--network`, `--host-interface` flags and validation |
 | `cli/vm/list.go` | NET column display (`mode` or `mode:name`) |
-| `cli/network/create.go` | Daemon spawning logic |
+| `cli/network/create.go` | Subnet validation, network creation |
+| `cli/network/start.go` | `spawnDaemon()`: load launchd job, wait for daemon |
 | `cli/network/list.go` | Network listing with VM cross-reference |
 | `cli/network/rm.go` | Daemon termination and cleanup |
 | `cli/netd.go` | Hidden `__netd` command for daemon process |

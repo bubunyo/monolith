@@ -3,9 +3,8 @@ package monolith
 import (
 	"fmt"
 
-	"github.com/Code-Hex/vz/v3"
-	"github.com/Code-Hex/vz/v3/vmnet"
-	"github.com/Code-Hex/vz/v3/xpc"
+	"github.com/Code-Hex/vz/v4"
+	"github.com/Code-Hex/vz/v4/vmnet"
 )
 
 // configureNetwork sets up the VM's network device based on the config.
@@ -30,9 +29,13 @@ func configureNetwork(vmConfig *vz.VirtualMachineConfiguration, cfg VMConfig) (s
 
 	// If a named network is specified, join it via the daemon.
 	if cfg.NetworkName != "" {
-		attachment, err = joinNamedNetwork(cfg.NetworkName)
+		network, err := joinNamedNetwork(cfg.NetworkName)
 		if err != nil {
 			return "", fmt.Errorf("joining named network %q: %w", cfg.NetworkName, err)
+		}
+		attachment, err = vz.NewVMNetNetworkDeviceAttachment(network)
+		if err != nil {
+			return "", fmt.Errorf("attaching to named network %q: %w", cfg.NetworkName, err)
 		}
 	} else {
 		attachment, err = createNetworkAttachment(mode, cfg.HostInterface)
@@ -51,29 +54,6 @@ func configureNetwork(vmConfig *vz.VirtualMachineConfiguration, cfg VMConfig) (s
 	return mac.String(), nil
 }
 
-// joinNamedNetwork connects to a network daemon's unix socket, receives
-// the serialized vmnet.Network, reconstructs it, and returns the attachment.
-func joinNamedNetwork(name string) (vz.NetworkDeviceAttachment, error) {
-	// Fetch the raw serialization bytes from the daemon.
-	data, err := FetchNetworkSerialization(name)
-	if err != nil {
-		return nil, err
-	}
-
-	// Reconstruct the XPC dictionary from the raw bytes.
-	dict := xpc.NewDictionary(
-		xpc.KeyValue("networkSerialization", xpc.NewData(data)),
-	)
-
-	// Recreate the vmnet.Network from the serialization.
-	network, err := vmnet.NewNetworkWithSerialization(dict)
-	if err != nil {
-		return nil, fmt.Errorf("deserializing network: %w", err)
-	}
-
-	return vz.NewVmnetNetworkDeviceAttachment(network)
-}
-
 // createNetworkAttachment builds the appropriate vz.NetworkDeviceAttachment for the given mode.
 func createNetworkAttachment(mode, hostInterface string) (vz.NetworkDeviceAttachment, error) {
 	switch mode {
@@ -81,15 +61,7 @@ func createNetworkAttachment(mode, hostInterface string) (vz.NetworkDeviceAttach
 		return vz.NewNATNetworkDeviceAttachment()
 
 	case NetworkShared:
-		config, err := vmnet.NewNetworkConfiguration(vmnet.SharedMode)
-		if err != nil {
-			return nil, fmt.Errorf("vmnet SharedMode config: %w", err)
-		}
-		network, err := vmnet.NewNetwork(config)
-		if err != nil {
-			return nil, fmt.Errorf("vmnet SharedMode network: %w", err)
-		}
-		return vz.NewVmnetNetworkDeviceAttachment(network)
+		return newVMNetAttachment(vmnet.ModeShared)
 
 	case NetworkHost:
 		if hostInterface == "" {
@@ -109,17 +81,23 @@ func createNetworkAttachment(mode, hostInterface string) (vz.NetworkDeviceAttach
 		return nil, fmt.Errorf("host interface %q not found; available: %v", hostInterface, available)
 
 	case NetworkIsolated:
-		config, err := vmnet.NewNetworkConfiguration(vmnet.HostMode)
-		if err != nil {
-			return nil, fmt.Errorf("vmnet HostMode config: %w", err)
-		}
-		network, err := vmnet.NewNetwork(config)
-		if err != nil {
-			return nil, fmt.Errorf("vmnet HostMode network: %w", err)
-		}
-		return vz.NewVmnetNetworkDeviceAttachment(network)
+		return newVMNetAttachment(vmnet.ModeHost)
 
 	default:
 		return nil, fmt.Errorf("unknown network mode: %q", mode)
 	}
+}
+
+// newVMNetAttachment creates a private vmnet network in the given mode for a
+// single VM (no named network) and returns an attachment to it.
+func newVMNetAttachment(mode vmnet.Mode) (vz.NetworkDeviceAttachment, error) {
+	config, err := vmnet.NewNetworkConfiguration(mode)
+	if err != nil {
+		return nil, fmt.Errorf("vmnet configuration: %w", err)
+	}
+	network, err := vmnet.NewNetwork(config)
+	if err != nil {
+		return nil, fmt.Errorf("vmnet network: %w", err)
+	}
+	return vz.NewVMNetNetworkDeviceAttachment(network)
 }

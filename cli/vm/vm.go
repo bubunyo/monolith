@@ -21,4 +21,5 @@ func init() {
 	Cmd.AddCommand(rmCmd)
 	Cmd.AddCommand(topCmd)
 	Cmd.AddCommand(pruneCmd)
+	Cmd.AddCommand(logsCmd)
 }

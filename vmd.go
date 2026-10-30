@@ -5,24 +5,42 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"os"
 	"os/signal"
 	"sync"
+	"sync/atomic"
 	"syscall"
+	"time"
 
-	"github.com/Code-Hex/vz/v3"
+	"github.com/Code-Hex/vz/v4"
 	"github.com/pkg/errors"
 	"github.com/pkg/term/termios"
+	"golang.org/x/sys/unix"
 )
 
 // RunDaemon is the main entry point for the VM daemon process.
 // It boots (or restores) a VM, connects its serial console to a PTY,
 // and listens on a Unix domain socket for console attachment and control
 // commands. It blocks until the VM stops or a fatal error occurs.
-func RunDaemon(name string, restore bool) error {
-	defer CleanState(name)
+//
+// If consoleLogPath is non-empty, all guest console output is appended to
+// that file from boot onward, independent of any attached client.
+func RunDaemon(name string, restore bool, consoleLogPath string) error {
+	var d *vmDaemon
+	defer func() {
+		// A suspended VM keeps its state file so the next run/resume
+		// restores from the snapshot instead of booting fresh.
+		if d == nil || !d.suspended.Load() {
+			CleanState(name)
+		}
+	}()
+
+	// Ignore SIGPIPE — the parent closes our stdout pipe after boot,
+	// and we must not die when subsequent log writes fail.
+	signal.Ignore(syscall.SIGPIPE)
+
+	logger := NewLogger(os.Stderr)
 
 	cfg, err := ReadConfig(name)
 	if err != nil {
@@ -52,6 +70,41 @@ func RunDaemon(name string, restore bool) error {
 	}
 	defer ptm.Close()
 	defer pts.Close()
+
+	// Set the PTY slave to raw mode so the line discipline doesn't
+	// echo characters or interpret special bytes. Without this, the
+	// default cooked mode causes duplicate/garbled output.
+	var ptsAttrs unix.Termios
+	termios.Tcgetattr(pts.Fd(), &ptsAttrs)
+	ptsAttrs.Iflag &^= syscall.ICRNL | syscall.IXON | syscall.IXOFF | syscall.ISTRIP | syscall.INLCR | syscall.IGNCR
+	ptsAttrs.Oflag &^= syscall.OPOST
+	ptsAttrs.Lflag &^= syscall.ICANON | syscall.ECHO | syscall.ECHOE | syscall.ECHOK | syscall.ECHONL | syscall.ISIG | syscall.IEXTEN
+	ptsAttrs.Cflag |= syscall.CS8
+	ptsAttrs.Cc[syscall.VMIN] = 1
+	ptsAttrs.Cc[syscall.VTIME] = 0
+	termios.Tcsetattr(pts.Fd(), termios.TCSANOW, &ptsAttrs)
+
+	// Start draining the PTY slave immediately. We must do this BEFORE
+	// vm.Start() so that early kernel/init output (which the framework
+	// writes to ptm as soon as the VM boots) is read out of the slave's
+	// input buffer rather than being lost or backpressuring the framework.
+	// The bus keeps a ring buffer of recent output and broadcasts live
+	// bytes to any attached console client (replaying the buffer on attach).
+	var consoleLog *os.File
+	if consoleLogPath != "" {
+		consoleLog, err = os.OpenFile(consoleLogPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+		if err != nil {
+			return errors.Wrap(err, "opening console log")
+		}
+		defer consoleLog.Close()
+		logger.Info("tee'ing console for %q to %s", name, consoleLogPath)
+	}
+	var tee io.Writer
+	if consoleLog != nil {
+		tee = consoleLog
+	}
+	bus := newConsoleBus(tee)
+	go bus.drain(pts, NewLogger(os.Stderr))
 
 	// Boot loader.
 	bootLoader, err := vz.NewLinuxBootLoader(
@@ -115,6 +168,15 @@ func RunDaemon(name string, restore bool) error {
 		return errors.Wrap(err, "vz.NewVirtualMachine")
 	}
 
+	// Subscribe before starting: notifications are not replayed, so a
+	// subscription made after Start could miss an early Stopped/Error.
+	stateCh := make(chan vz.VirtualMachineState, 8)
+	stopStateNotify, err := vm.StateChangedNotify(stateCh)
+	if err != nil {
+		return errors.Wrap(err, "StateChangedNotify")
+	}
+	defer stopStateNotify()
+
 	// Start or restore the VM.
 	if restore {
 		suspendPath, err := VMSuspendPath(name)
@@ -124,7 +186,7 @@ func RunDaemon(name string, restore bool) error {
 		if _, err := os.Stat(suspendPath); err != nil {
 			return fmt.Errorf("suspend file not found: %s", suspendPath)
 		}
-		log.Printf("restoring VM %q from %s", name, suspendPath)
+		logger.Info("restoring VM %q from %s", name, suspendPath)
 		if err := vm.RestoreMachineStateFromURL(suspendPath); err != nil {
 			return errors.Wrap(err, "RestoreMachineStateFromURL")
 		}
@@ -134,7 +196,7 @@ func RunDaemon(name string, restore bool) error {
 		}
 		// Clean up the suspend file now that we've successfully restored.
 		os.Remove(suspendPath)
-		log.Printf("VM %q restored and running", name)
+		logger.Info("VM %q restored and running", name)
 	} else {
 		if err := vm.Start(); err != nil {
 			return errors.Wrap(err, "vz.Start")
@@ -143,7 +205,7 @@ func RunDaemon(name string, restore bool) error {
 
 	// Write state.
 	if err := WriteState(name, os.Getpid(), macStr, StatusRunning); err != nil {
-		log.Printf("warning: failed to write state file: %v", err)
+		logger.Warn("failed to write state file: %v", err)
 	}
 
 	// Set up Unix socket for client connections.
@@ -159,16 +221,18 @@ func RunDaemon(name string, restore bool) error {
 	defer listener.Close()
 	defer os.Remove(sockPath)
 
-	log.Printf("VM daemon %q started (pid=%d, sock=%s)", name, os.Getpid(), sockPath)
+	logger.Info("VM daemon %q started (pid=%d, sock=%s)", name, os.Getpid(), sockPath)
 
 	// Daemon state — tracks the current console client and VM status.
-	d := &vmDaemon{
+	d = &vmDaemon{
 		name:     name,
 		vm:       vm,
 		vmCfg:    vmCfg,
 		pts:      pts,
 		mac:      macStr,
 		listener: listener,
+		logger:   logger,
+		bus:      bus,
 	}
 
 	// Accept connections in background.
@@ -187,27 +251,43 @@ func RunDaemon(name string, restore bool) error {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 
+	// Commands like stop reply after acting, so let in-flight replies reach
+	// the client before the process exits.
+	defer d.waitForControl(2 * time.Second)
+
 	// Main event loop.
+	lastState := vm.State()
 	for {
 		select {
 		case <-sigCh:
-			log.Printf("VM daemon %q received signal, stopping", name)
+			logger.Info("VM daemon %q received signal, stopping", name)
 			d.stopVM(false)
 			return nil
 
 		case conn := <-connCh:
-			d.handleConnection(conn)
+			go d.handleConnection(conn)
 
-		case newState := <-vm.StateChangedNotify():
-			log.Printf("VM %q state changed: %v", name, newState)
+		case <-stateCh:
+			// The delivered value may be stale and intermediate states can
+			// be skipped, so act on the current state.
+			newState := vm.State()
+			if newState == lastState {
+				continue
+			}
+			lastState = newState
+			logger.Info("VM %q state changed: %v", name, newState)
 			switch newState {
 			case vz.VirtualMachineStateStopped:
-				log.Printf("VM %q stopped", name)
+				logger.Info("VM %q stopped", name)
 				return nil
 			case vz.VirtualMachineStateError:
 				return fmt.Errorf("VM %q entered error state", name)
 			case vz.VirtualMachineStatePaused:
-				UpdateStateStatus(name, StatusPaused)
+				// Suspend pauses before saving; don't clobber the
+				// suspended status it writes.
+				if !d.suspended.Load() {
+					UpdateStateStatus(name, StatusPaused)
+				}
 				d.detachConsoleClient()
 			case vz.VirtualMachineStateRunning:
 				UpdateStateStatus(name, StatusRunning)
@@ -224,6 +304,11 @@ type vmDaemon struct {
 	pts      *os.File // PTY slave for console relay
 	mac      string
 	listener net.Listener
+	logger   *Logger
+	bus      *consoleBus
+
+	suspended atomic.Bool    // set while suspending; keeps state.json on exit
+	controlWG sync.WaitGroup // in-flight control requests
 
 	consoleMu     sync.Mutex
 	consoleClient net.Conn      // currently attached console client (nil if none)
@@ -242,6 +327,8 @@ func (d *vmDaemon) handleConnection(conn net.Conn) {
 	case MsgConsoleAttach:
 		d.handleConsoleAttach(conn)
 	case MsgControl:
+		d.controlWG.Add(1)
+		defer d.controlWG.Done()
 		d.handleControl(conn)
 	default:
 		conn.Close()
@@ -266,30 +353,46 @@ func (d *vmDaemon) handleConsoleAttach(conn net.Conn) {
 
 	// ACK the attachment.
 	conn.Write([]byte{MsgConsoleAttach})
-	log.Printf("console client attached to %q", d.name)
+	d.logger.Info("console client attached to %q", d.name)
 
-	// Bidirectional relay: conn ↔ PTY slave.
-	// PTY slave → conn (VM output to client).
+	// Subscribe to the console bus. The subscribe call atomically:
+	//   1. Captures the current ring buffer contents (boot replay).
+	//   2. Returns a channel that receives all subsequent live bytes.
+	// This guarantees no bytes are lost between replay and live stream.
+	replay, liveCh, unsubscribe := d.bus.subscribe()
+
+	// Send the boot replay first so the user sees the kernel/init log.
+	if len(replay) > 0 {
+		if _, err := conn.Write(replay); err != nil {
+			unsubscribe()
+			d.consoleMu.Lock()
+			d.consoleClient = nil
+			close(d.consoleCancel)
+			d.consoleMu.Unlock()
+			conn.Close()
+			return
+		}
+	}
+
+	// Live PTY → conn relay (via bus).
 	go func() {
-		buf := make([]byte, 4096)
+		defer unsubscribe()
 		for {
 			select {
 			case <-cancel:
 				return
-			default:
-			}
-			n, err := d.pts.Read(buf)
-			if err != nil {
-				return
-			}
-			if _, err := conn.Write(buf[:n]); err != nil {
-				return
+			case chunk, ok := <-liveCh:
+				if !ok {
+					return
+				}
+				if _, err := conn.Write(chunk); err != nil {
+					return
+				}
 			}
 		}
 	}()
 
 	// conn → PTY slave (client input to VM).
-	// This runs in the current goroutine — blocks until client disconnects.
 	go func() {
 		buf := make([]byte, 4096)
 		for {
@@ -314,7 +417,7 @@ func (d *vmDaemon) handleConsoleAttach(conn net.Conn) {
 		}
 		d.consoleMu.Unlock()
 		conn.Close()
-		log.Printf("console client detached from %q", d.name)
+		d.logger.Info("console client detached from %q", d.name)
 	}()
 }
 
@@ -354,7 +457,7 @@ func (d *vmDaemon) handleControl(conn net.Conn) {
 		return
 	}
 
-	log.Printf("control command %q for %q", req.Cmd, d.name)
+	d.logger.Info("control command %q for %q", req.Cmd, d.name)
 
 	switch req.Cmd {
 	case CmdPause:
@@ -367,6 +470,8 @@ func (d *vmDaemon) handleControl(conn net.Conn) {
 		d.handleStop(conn, req.Force)
 	case CmdStatus:
 		d.handleStatus(conn)
+	case CmdResize:
+		d.handleResize(conn, req.Rows, req.Cols)
 	default:
 		d.sendControlResponse(conn, ControlResponse{OK: false, Error: fmt.Sprintf("unknown command: %s", req.Cmd)})
 	}
@@ -397,10 +502,21 @@ func (d *vmDaemon) handleResume(conn net.Conn) {
 }
 
 func (d *vmDaemon) handleSuspend(conn net.Conn) {
+	// Mark suspended before pausing so the main loop's Paused handler never
+	// overwrites the suspended status. Every failure path clears it.
+	d.suspended.Store(true)
+	fail := func(resume bool, msg string) {
+		d.suspended.Store(false)
+		if resume {
+			d.vm.Resume()
+		}
+		d.sendControlResponse(conn, ControlResponse{OK: false, Error: msg})
+	}
+
 	// Pause first if running.
 	if d.vm.CanPause() {
 		if err := d.vm.Pause(); err != nil {
-			d.sendControlResponse(conn, ControlResponse{OK: false, Error: fmt.Sprintf("pause before suspend failed: %v", err)})
+			fail(false, fmt.Sprintf("pause before suspend failed: %v", err))
 			return
 		}
 	}
@@ -411,28 +527,28 @@ func (d *vmDaemon) handleSuspend(conn net.Conn) {
 		if err != nil {
 			errMsg = fmt.Sprintf("save/restore validation failed: %v", err)
 		}
-		// Resume the VM since we paused it but can't save.
-		d.vm.Resume()
-		d.sendControlResponse(conn, ControlResponse{OK: false, Error: errMsg})
+		fail(true, errMsg)
 		return
 	}
 
 	suspendPath, err := VMSuspendPath(d.name)
 	if err != nil {
-		d.vm.Resume()
-		d.sendControlResponse(conn, ControlResponse{OK: false, Error: fmt.Sprintf("getting suspend path: %v", err)})
+		fail(true, fmt.Sprintf("getting suspend path: %v", err))
 		return
 	}
 
-	log.Printf("saving VM %q state to %s", d.name, suspendPath)
+	d.logger.Info("saving VM %q state to %s", d.name, suspendPath)
 	if err := d.vm.SaveMachineStateToPath(suspendPath); err != nil {
-		d.vm.Resume()
-		d.sendControlResponse(conn, ControlResponse{OK: false, Error: fmt.Sprintf("save failed: %v", err)})
+		fail(true, fmt.Sprintf("save failed: %v", err))
 		return
 	}
 
-	// Write the suspended state before stopping.
-	WriteSuspendState(d.name, d.mac, suspendPath)
+	if err := WriteSuspendState(d.name, d.mac, suspendPath); err != nil {
+		// Without a state file the snapshot is unreachable; keep running.
+		os.Remove(suspendPath)
+		fail(true, fmt.Sprintf("writing suspend state: %v", err))
+		return
+	}
 
 	d.sendControlResponse(conn, ControlResponse{OK: true, Status: StatusSuspended})
 
@@ -485,6 +601,34 @@ func (d *vmDaemon) handleStatus(conn net.Conn) {
 		status = fmt.Sprintf("vz:%d", int(state))
 	}
 	d.sendControlResponse(conn, ControlResponse{OK: true, Status: status})
+}
+
+// handleResize records the client's terminal size on the console PTY.
+func (d *vmDaemon) handleResize(conn net.Conn, rows, cols uint16) {
+	if rows == 0 || cols == 0 {
+		d.sendControlResponse(conn, ControlResponse{OK: false, Error: "resize requires non-zero rows and cols"})
+		return
+	}
+	ws := &unix.Winsize{Row: rows, Col: cols}
+	if err := unix.IoctlSetWinsize(int(d.pts.Fd()), unix.TIOCSWINSZ, ws); err != nil {
+		d.sendControlResponse(conn, ControlResponse{OK: false, Error: fmt.Sprintf("resize failed: %v", err)})
+		return
+	}
+	d.sendControlResponse(conn, ControlResponse{OK: true})
+}
+
+// waitForControl waits up to timeout for in-flight control requests to
+// finish writing their responses.
+func (d *vmDaemon) waitForControl(timeout time.Duration) {
+	done := make(chan struct{})
+	go func() {
+		d.controlWG.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(timeout):
+	}
 }
 
 // stopVM stops the VM, optionally forcefully.
