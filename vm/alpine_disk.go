@@ -180,7 +180,7 @@ func populateRootFS(ext4fs filesystem.FileSystem, tarball, modloopPath, name str
 				return fmt.Errorf("chown %s: %w", name, err)
 			}
 
-		case tar.TypeReg, tar.TypeRegA:
+		case tar.TypeReg: // tar.Reader reports old-style ('\x00') regular files as TypeReg
 			data, err := writeFile(ext4fs, name, tr, hdr)
 			if err != nil {
 				return err

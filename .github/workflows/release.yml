@@ -1,0 +1,98 @@
+name: Release
+
+# Push a tag like v0.1.0 (or v0.2.0-rc.1 for a prerelease) to publish a
+# GitHub release with a darwin/arm64 archive, its checksum and a build
+# provenance attestation. Signing and notarization are optional; see
+# docs/releasing.md for the secrets.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write     # create the release
+  id-token: write     # build provenance attestation
+  attestations: write
+
+concurrency:
+  group: release-${{ github.ref }}
+
+jobs:
+  release:
+    name: Release
+    runs-on: macos-15
+    env:
+      MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+      MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+      CODESIGN_IDENTITY_NAME: ${{ secrets.CODESIGN_IDENTITY }}
+      NOTARY_KEY: ${{ secrets.NOTARY_KEY }}
+      NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+      NOTARY_ISSUER: ${{ secrets.NOTARY_ISSUER }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Lint and test
+        run: make lint test
+
+      - name: Import Developer ID certificate
+        if: env.MACOS_CERTIFICATE != ''
+        run: |
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          keychain_password=$(openssl rand -base64 24)
+          echo "$MACOS_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$RUNNER_TEMP/cert.p12" -P "$MACOS_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$keychain"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain" >/dev/null
+          # shellcheck disable=SC2046
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          rm "$RUNNER_TEMP/cert.p12"
+
+      - name: Build
+        run: |
+          if [ -n "$MACOS_CERTIFICATE" ]; then
+            # Hardened runtime and a secure timestamp are required for notarization.
+            make build VERSION="$GITHUB_REF_NAME" CODESIGN_IDENTITY="$CODESIGN_IDENTITY_NAME" CODESIGN_FLAGS="--options runtime --timestamp"
+          else
+            echo "::warning::No signing certificate configured: the binary is ad-hoc signed, so users must clear the quarantine attribute (see README)."
+            make build VERSION="$GITHUB_REF_NAME" CODESIGN_IDENTITY=-
+          fi
+          ./bin/monolith --version
+          codesign --verify --verbose=2 bin/monolith
+
+      - name: Notarize
+        if: env.MACOS_CERTIFICATE != '' && env.NOTARY_KEY != ''
+        run: |
+          # A bare binary can't be stapled; Gatekeeper looks the ticket up online.
+          echo "$NOTARY_KEY" | base64 --decode > "$RUNNER_TEMP/notary.p8"
+          ditto -c -k bin/monolith "$RUNNER_TEMP/monolith.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/monolith.zip" \
+            --key "$RUNNER_TEMP/notary.p8" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER" --wait
+          rm "$RUNNER_TEMP/notary.p8"
+
+      - name: Package
+        run: make dist VERSION="$GITHUB_REF_NAME"
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: dist/*.tar.gz
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prerelease=()
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then prerelease=(--prerelease); fi
+          gh release create "$GITHUB_REF_NAME" dist/*.tar.gz dist/checksums.txt \
+            --title "$GITHUB_REF_NAME" --generate-notes --verify-tag "${prerelease[@]}"
+
+      - name: Remove signing keychain
+        if: always() && env.MACOS_CERTIFICATE != ''
+        run: security delete-keychain "$RUNNER_TEMP/signing.keychain-db" || true

@@ -1,0 +1,13 @@
+version: "2"
+
+linters:
+  default: standard
+  disable:
+    # Errors from Close, Remove, SetDeadline and the like are ignored on
+    # purpose throughout (best-effort cleanup).
+    - errcheck
+  settings:
+    staticcheck:
+      # golangci-lint's defaults, plus ST1005: the CLI prints error strings to
+      # users as sentences ("Docker host ... does not exist").
+      checks: ["all", "-ST1000", "-ST1003", "-ST1005", "-ST1016", "-ST1020", "-ST1021", "-ST1022"]

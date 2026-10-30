@@ -5,7 +5,13 @@
 ```bash
 make build   # builds to ./bin/monolith AND codesigns with entitlements.plist
 make run     # builds and runs: monolith vm run (auto-generated name)
+make lint    # gofmt check + go vet (CI also runs golangci-lint with .golangci.yml)
+make test    # unit tests: go test -short (skips tests that boot VMs)
+make test-vm # build, then every test, including VM-booting ones
+make dist    # dist/monolith_<version>_darwin_arm64.tar.gz + checksums.txt from bin/monolith
 ```
+
+`make build` stamps `VERSION` (default `git describe --tags --always --dirty`) into `monolith --version` via `-X github.com/bubunyo/monolith/cli.version`. `CODESIGN_FLAGS` adds codesign options (releases use `--options runtime --timestamp`, which notarization needs; VMs, the docker host and k3s were verified to work under the hardened runtime).
 
 `go build` alone is not enough. The binary **must** be codesigned with `entitlements.plist` (grants `com.apple.security.virtualization`) or it will crash at runtime. Always use `make build`. Set `CODESIGN_IDENTITY` env var to override the signing identity (defaults to ad-hoc signing with `-`). See `docs/codesigning.md` for setup instructions.
 
@@ -70,7 +76,17 @@ MONOLITH_TEST_DOCKER=1 go test -run TestDockerPauseResume ./vm  # docker host pa
 MONOLITH_TEST_K8S=1 go test -run TestKubernetesPauseResume ./vm  # k3s on both engines: LB service, pause/resume (needs internet, kubectl, unlocked Mac)
 ```
 
-**Tests boot a real VM.** They require macOS on Apple Silicon with Virtualization.framework. There is no mock/unit-only test path. Do not expect tests to pass in CI or on non-macOS hosts.
+**Many tests boot a real VM.** They require macOS on Apple Silicon with Virtualization.framework and the signed `bin/monolith`. Those tests skip under `go test -short` (`make test`), which is what CI runs: GitHub's macOS runners are VMs without nested virtualization. The remaining unit tests (parsers, command lines) run anywhere monolith builds.
+
+## CI and Releases
+
+GitHub Actions, all on `macos-15` (Apple Silicon) because of cgo and Virtualization.framework:
+
+- `.github/workflows/ci.yml` (push to master, PRs): `make lint`, `go mod tidy` check, golangci-lint (pinned v2.15.0, config `.golangci.yml`: standard linters minus `errcheck`, since cleanup errors are ignored on purpose, and staticcheck minus `ST1005`, since CLI errors are user-facing sentences); ad-hoc signed `make build`, checks that the signature carries the virtualization entitlement, `make test`, uploads the binary as an artifact; govulncheck; actionlint (with shellcheck) on the workflows.
+- `.github/workflows/release.yml` (tag `v*`; `-` in the tag makes a prerelease): lint and test, then build with `VERSION=<tag>`. With the `MACOS_CERTIFICATE` secrets it imports a Developer ID certificate into a temporary keychain and signs with the hardened runtime and a timestamp; with the `NOTARY_*` secrets it notarizes (a bare binary can't be stapled; Gatekeeper fetches the ticket online). Without secrets it ad-hoc signs and warns. Then `make dist`, a build provenance attestation, and `gh release create --generate-notes`. Secrets and the release steps are in `docs/releasing.md`.
+- `.github/dependabot.yml`: weekly grouped updates for Go modules and actions.
+- `install.sh`: `curl -fsSL https://raw.githubusercontent.com/bubunyo/monolith/master/install.sh | bash`. Checks macOS/arm64, resolves the latest tag (or `MONOLITH_VERSION`), downloads the `make dist` archive and `checksums.txt`, verifies both and the code signature, installs to `MONOLITH_INSTALL_DIR` (default `/usr/local/bin`, sudo if not writable). `MONOLITH_BASE_URL` points it at a mirror or a local test server. Shellchecked in CI.
+- `vendor/` is not committed (ignored by the maintainer's global gitignore), so CI builds in module mode.
 
 ## Platform Constraint
 
@@ -359,4 +375,4 @@ Each VM gets a MAC address (saved as `mac` in `config.json`) and a generic machi
 - Named network daemons and VMs must be the same build (CDHash peer requirement). Restart networks after rebuilding.
 - On this dev machine, vmnet modes (nat, shared) have no outbound internet: DHCP and guest→host TCP to `192.168.64.1` work, but the Mac drops traffic it forwards for the guest (to the LAN router and beyond), and vmnet's DNS fails. IP forwarding is on; the likely cause is the CrowdStrike Falcon network filter. `user` mode avoids it because the daemon process opens the connections itself. Not a monolith bug.
 - gvisor-tap-vsock v0.9.0 requires Go 1.26 (go.mod `go 1.26.0`). It logs through logrus at warn level; one "use of closed network connection" error at daemon exit is expected.
-- No linter, formatter, or CI config exists. No pre-commit hooks.
+- No pre-commit hooks. Run `make lint test` before pushing; CI runs the same plus golangci-lint.

@@ -1,0 +1,83 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# macOS on Apple Silicon only: monolith links Virtualization.framework
+# through cgo. GitHub's macOS runners are VMs without nested
+# virtualization, so tests that boot VMs are skipped (go test -short).
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: gofmt and go vet
+        run: make lint
+      - name: go.mod is tidy
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.15.0
+
+  test:
+    name: Build and test
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # git describe for the version
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Build (ad-hoc signed)
+        run: make build CODESIGN_IDENTITY=-
+      - name: Check the binary
+        run: |
+          ./bin/monolith --version
+          codesign --verify --verbose=2 bin/monolith
+          codesign -d --entitlements - --xml bin/monolith | grep -q com.apple.security.virtualization
+      - name: Unit tests
+        run: make test
+      - uses: actions/upload-artifact@v7
+        with:
+          name: monolith-darwin-arm64
+          path: bin/monolith
+          retention-days: 14
+
+  govulncheck:
+    name: Vulnerabilities
+    runs-on: macos-15
+    steps:
+      - uses: golang/govulncheck-action@v1
+        with:
+          go-version-file: go.mod
+
+  actionlint:
+    name: Workflow and script lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+      - run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+      - name: shellcheck install.sh
+        run: shellcheck install.sh

@@ -10,8 +10,12 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// version is set at build time with -ldflags "-X github.com/bubunyo/monolith/cli.version=...".
+var version = "dev"
+
 var rootCmd = &cobra.Command{
 	Use:           "monolith",
+	Version:       version,
 	Short:         "Lightweight Linux VM manager for macOS",
 	Long:          "monolith creates and manages lightweight Linux virtual machines using Apple Virtualization.framework.",
 	SilenceUsage:  true,
