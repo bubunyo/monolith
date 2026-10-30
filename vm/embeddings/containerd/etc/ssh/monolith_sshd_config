@@ -1,0 +1,13 @@
+# Internal sshd for `monolith docker nerdctl`. Not for general use: only
+# root, only with the VM's key, only from the user-mode gateway (the
+# monolith daemon relaying the host's ssh.sock), so containers can't log in.
+ListenAddress 192.168.127.2
+Port 22
+AllowUsers root@192.168.127.1
+PermitRootLogin prohibit-password
+PubkeyAuthentication yes
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+HostKey /etc/ssh/ssh_host_ed25519_key
+AuthorizedKeysFile .ssh/authorized_keys
+Subsystem sftp internal-sftp

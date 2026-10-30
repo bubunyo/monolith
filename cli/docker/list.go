@@ -20,7 +20,7 @@ var listCmd = &cobra.Command{
 	Use:     "list",
 	Aliases: []string{"ls"},
 	Short:   "List Docker host VMs",
-	Long: `List Docker host VMs with their state, docker context (* = current) and the
+	Long: `List Docker host VMs with their state, engine, docker context (* = current) and the
 container ports forwarded to localhost. A port marked "!" is published in the VM
 but couldn't be forwarded, usually because another VM already uses it.`,
 	Args: cobra.NoArgs,
@@ -56,7 +56,7 @@ func list() error {
 
 	current := currentContext()
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-	fmt.Fprintln(w, "NAME\tSTATE\tCONTEXT\tCPUS\tMEM\tDATA\tPORTS")
+	fmt.Fprintln(w, "NAME\tSTATE\tENGINE\tCONTEXT\tCPUS\tMEM\tDATA\tPORTS")
 	for _, name := range names {
 		cfg, _ := vm.ReadConfig(name)
 		state := vm.StatusStopped
@@ -66,15 +66,19 @@ func list() error {
 		if state == vm.StatusSuspended {
 			state = "paused (on disk)"
 		}
-		ctx := contextName(name)
-		if ctx == current {
-			ctx += " *"
+		engine := vm.EngineOf(cfg)
+		ctx := "-" // containerd hosts have no Docker API, so no context
+		if engine == vm.EngineDocker {
+			ctx = contextName(name)
+			if ctx == current {
+				ctx += " *"
+			}
 		}
 		ports := "-"
 		if state == vm.StatusRunning {
 			ports = forwardedPorts(name)
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s\t%s\t%s\n", name, state, ctx, cfg.CPUs, clivm.FormatMemory(cfg.Memory), dataUsage(name), ports)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\n", name, state, engine, ctx, cfg.CPUs, clivm.FormatMemory(cfg.Memory), dataUsage(name), ports)
 	}
 	return w.Flush()
 }

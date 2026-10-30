@@ -1,0 +1,17 @@
+# Overlay applied after ../docker/manifest.yaml for the containerd engine.
+files:
+  - src: containerd/etc/inittab.tmpl
+    dst: etc/inittab
+    mode: "0644"
+  - src: containerd/etc/motd.tmpl
+    dst: etc/motd
+    mode: "0644"
+  - src: containerd/etc/monolith-engine
+    dst: etc/monolith-engine
+    mode: "0644"
+  - src: containerd/etc/ssh/monolith_sshd_config
+    dst: etc/ssh/monolith_sshd_config
+    mode: "0644"
+  - src: containerd/etc/nerdctl/nerdctl.toml
+    dst: etc/nerdctl/nerdctl.toml
+    mode: "0644"

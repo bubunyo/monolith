@@ -42,12 +42,14 @@ monolith network list                             # list networks with attached 
 monolith network rm <name>                        # stop daemon and delete the named network
 monolith network logs <name>                      # stream the daemon log
 
-# Docker hosts (Colima-style); every command but list takes --name (default lith-default)
+# Docker hosts (Colima-style); every command but list takes --name (default docker-lith-default)
 monolith docker start [--cpus N --memory 2G]      # boot (or resume) the VM, wait for dockerd, make context docker-<name> current
+monolith docker start --engine containerd         # new VM with containerd + nerdctl + BuildKit instead of dockerd (fixed at creation)
+monolith docker nerdctl [--name N] run -d nginx   # run nerdctl in a containerd host (args pass through; -it gets a TTY)
 monolith docker pause                             # save the whole VM to disk and stop it (vm suspend)
 monolith docker resume                            # restore it, wait for dockerd and the clock, make its context current
 monolith docker stop [--force]                    # stop it (data persists); on a paused VM, discards the snapshot after asking
-monolith docker list                              # docker VMs: state, context (* = current), cpus, mem, data, ports
+monolith docker list                              # docker VMs: state, engine, context (* = current), cpus, mem, data, ports
 monolith docker rm [--force]                      # delete the VM and its docker context
 monolith docker env                               # print: export DOCKER_HOST=unix://…/vms/<name>/docker.sock
 ```
@@ -100,7 +102,8 @@ monolith/
       topology.go         — topology view helper
       style.go            — shared lipgloss styles for network output
     docker/
-      docker.go           — "docker start|stop|pause|resume|rm|env" for Docker host VMs (image docker, user mode)
+      docker.go           — "docker start|stop|pause|resume|rm|env" for Docker host VMs (image docker, user mode), --engine
+      ssh.go              — "docker nerdctl": execs ssh to the containerd host's internal sshd via ssh.sock
       context.go          — creates/selects/removes the docker CLI context docker-<name> (shells out to docker)
       list.go             — "docker list": docker VMs with context and forwarded ports (from the daemon's status reply)
   vm/                     — package vm: everything about a single VM. Imports net and the root package.
@@ -116,14 +119,18 @@ monolith/
     image.go              — Image interface (Prepare(name) → BootSpec), LookupImage, ValidImages, Exists.
     image_kata.go         — kata image: fetch kernel + rootfs from GHCR, dm-verity command line.
     image_alpine.go       — alpine image: wraps alpine_kernel.go + alpine_disk.go.
-    image_docker.go       — docker image: alpine + embeddings/docker overlay, sparse data.img, /Users virtio-fs share.
-    docker.go             — daemon-side docker services: docker.sock relay and published-port forwarding.
+    image_docker.go       — docker image: alpine + embeddings/docker overlay (+ embeddings/containerd for that engine),
+                            sparse data.img, /Users virtio-fs share; EngineDocker/EngineContainerd, EngineOf.
+    sshkey.go             — per-VM ed25519 key for the containerd engine's internal sshd.
+    docker.go             — daemon-side services: engine socket relay (docker.sock or ssh.sock) and published-port
+                            forwarding (ports from dockerd's API or `nerdctl ps --format json`).
     alpine_kernel.go      — DefaultKernel() downloads Alpine ISO, extracts/decompresses kernel+initrd.
                             DefaultRootFS() downloads minirootfs tarball.
     alpine_disk.go        — DefaultDisk(tarball, modloop, name, overlays...) creates the per-VM 1 GiB ext4 disk image
                             and writes guest config files from embeddings/manifest.yaml plus overlay manifests
                             (embeddings/docker/manifest.yaml) (go:embed needs them inside vm/).
-    paths.go              — VMsDir, VMDir, VMSockPath, VMSuspendPath, VMLogPath, VMMachineIDPath, VMDockerSockPath.
+    paths.go              — VMsDir, VMDir, VMSockPath, VMSuspendPath, VMLogPath, VMMachineIDPath, VMDockerSockPath,
+                            VMSSHKeyPath, VMSSHSockPath.
     keybag.go             — keybagLocked() (MobileKeyBag via dlopen, cgo): restore is refused while the Mac is locked.
     *_test.go             — tests (boot real VMs via ../bin/monolith; image_kata_test.go also has unit tests).
   net/                    — package net: networking. Imports only the root package (never vm).
@@ -242,9 +249,9 @@ Alpine guest configuration:
 
 ### Docker host
 
-`monolith docker` manages Docker host VMs: any VM with image `docker` and network mode `user` (default 2 vCPU / 2 GiB). `--name` picks one (default `lith-default`); commands refuse VMs with another image. `vm run --image docker` also works and defaults to user mode. It is Colima's design on monolith:
+`monolith docker` manages Docker host VMs: any VM with image `docker` and network mode `user` (default 2 vCPU / 2 GiB). `--name` picks one (default `docker-lith-default`); commands refuse VMs with another image. `vm run --image docker` also works and defaults to user mode. It is Colima's design on monolith. Each VM has an **engine**, `engine` in `config.json` (empty = docker), chosen by `start --engine` when the VM is created and fixed afterwards because it's installed on the VM's disk; `start` refuses a different `--engine` for an existing VM. See [containerd engine](#containerd-engine) for the second one.
 
-- **First boot**: `docker-setup` (sysinit, after DHCP) mounts cgroup2, loads modules, runs `apk add docker socat e2fsprogs` if missing, formats `/dev/vdb` if it has no ext4, mounts it on `/var/lib/docker`, and mounts the virtio-fs tag `users` (the Mac's `/Users`) at `/Users` so `-v ~/x:/x` resolves. About 20s with a warm Alpine cache; later boots take ~3s to a ready dockerd.
+- **First boot**: `docker-setup` (sysinit, after DHCP) reads the engine from `/etc/monolith-engine` (written by the containerd overlay; absent = docker), mounts cgroup2, loads modules, runs `apk add` for the engine's packages if any is missing (docker: `docker socat e2fsprogs`), formats `/dev/vdb` if it has no ext4, mounts it on `/var/lib/docker` (containerd: see below), and mounts the virtio-fs tag `users` (the Mac's `/Users`) at `/Users` so `-v ~/x:/x` resolves. About 20s with a warm Alpine cache; later boots take ~3s to a ready dockerd.
 - **API**: `docker-serve relay` runs `socat TCP-LISTEN:2375,bind=192.168.127.2,range=192.168.127.1/32` → `/var/run/docker.sock`. The daemon (`vm/docker.go`) listens on `vms/docker/docker.sock` on the Mac and relays each connection through `UserNetwork.DialGuest(2375)`. `range=` admits only the user-mode gateway, so containers can't reach dockerd. vsock was tried first, but vz's `VirtioSocketConnection` can't half-close (no `CloseWrite`), which broke attach (output lost, and `docker run -i` never sees stdin EOF). socat runs with `-t 86400` because its default closes a connection 0.5s after either side half-closes.
 - **Ports**: the daemon polls `GET /containers/json` every second and keeps a `127.0.0.1:<PublicPort>` listener for each published TCP port, relaying to the same port on the guest. Ports published on a specific guest address (`-p 127.0.0.1:80:80`) and UDP ports are not forwarded; listeners bind to localhost only.
 - **Contexts**: `start`/`resume` wait for `GET /_ping` (10 min timeout for slow first boots), then create or update the docker context `docker-<name>` (endpoint `unix://…/vms/<name>/docker.sock`) and `docker context use` it, which sets `currentContext` in `~/.docker/config.json` for all shells. `rm` deletes the context, switching to `default` first if it is current. They shell out to the `docker` CLI with `DOCKER_HOST`/`DOCKER_CONTEXT` removed from its environment; without the CLI on PATH, `start` just prints the socket. `start` warns when `DOCKER_HOST` is set, since it overrides contexts. `env` remains for scripts.
@@ -252,7 +259,18 @@ Alpine guest configuration:
 - **Pause/resume** are `vm suspend`/restore: the whole VM, virtio-fs share and file-handle NIC included, saves and restores (snapshot ≈ guest memory in use, ~100 MB for an idle 2 GiB host; restore ~3s). Containers carry on mid-instruction. The user-mode network stack lives in the daemon, which exits on pause, so TCP connections open through it (a `docker logs -f`, a container's outbound connection) are dropped on resume. `start` on a paused VM resumes it; `stop` on one discards the snapshot (asks unless `--force`). Restoring needs the Mac unlocked (see Gotchas). Don't touch `disk.img`/`data.img` while paused.
 - **Clock**: a restored guest's system clock is behind by the paused time; the RTC (pl031) follows the Mac's clock. `docker-serve clock` checks `/sys/class/rtc/rtc0/since_epoch` every 2s and runs `hwclock -s -u` when they differ by more than 2s. `resume` also waits (up to 10s) until dockerd's `/info` `SystemTime` is within 2s of the Mac's, so commands run right after it see the right time.
 - **Port forwards** are re-created by the restored daemon's first poll, which runs immediately.
-- Guest scripts are written into `disk.img` when it is created; after changing `embeddings/docker`, recreate the VM (`docker rm --name <n>`), which also reinstalls Docker and discards images.
+- Guest scripts are written into `disk.img` when it is created; after changing `embeddings/docker` or `embeddings/containerd`, recreate the VM (`docker rm --name <n>`), which also reinstalls the engine and discards images.
+
+#### containerd engine
+
+`start --engine containerd` builds the same VM with the `embeddings/containerd` overlay on top of `embeddings/docker`: its own inittab and motd, `/etc/monolith-engine`, `/etc/nerdctl/nerdctl.toml` (`cni_path = "/usr/libexec/cni"`, where Alpine puts the CNI plugins) and `/etc/ssh/monolith_sshd_config`. There is no Docker API, so no `docker.sock` and no docker context (`env` refuses; `list` shows `-`).
+
+- **Guest**: first boot installs `containerd nerdctl cni-plugins buildkit buildctl iptables ip6tables openssh-server socat e2fsprogs` (~10s). The data disk is mounted on `/data`, with `/data/{containerd,nerdctl,buildkit}` bind-mounted onto `/var/lib/…`. init respawns `docker-serve containerd|buildkitd|sshd|ports|clock`; buildkitd runs with the containerd worker so `nerdctl build` uses containerd's image store.
+- **Command channel**: `monolith docker nerdctl …` execs the Mac's `ssh` as root into the VM and runs `nerdctl` with the arguments shell-quoted (`-t` when stdin and stdout are terminals, so `-it`, exit codes, signals and stdin all behave). The connection goes `ssh -o ProxyCommand="nc -U vms/<name>/ssh.sock"` → daemon → `UserNetwork.DialGuest(22)`. Host keys aren't checked (local socket to the VM's own daemon; the key changes when the VM is recreated). This is the same approach as `colima nerdctl`.
+- **SSH key**: `ensureSSHKey` (`vm/sshkey.go`) creates `vms/<name>/ssh_key{,.pub}` (ed25519) on first `Prepare`; the public key's base64 body goes on the kernel command line as `monolith.ssh_pubkey=…`, and `docker-setup` writes it to `/root/.ssh/authorized_keys` on every boot. sshd listens on `192.168.127.2:22` with `AllowUsers root@192.168.127.1`, key-only, and an iptables rule rejects port 22 from any other source, so containers can't reach it.
+- **Ports**: `docker-serve ports` answers each connection to guest port 2377 (gateway only, via socat `range=`) with `nerdctl ps --format json`; the daemon polls it every second and parses the `Ports` column (`0.0.0.0:8080->80/tcp, …`; `parseNerdctlPorts`). nerdctl publishes with CNI's portmap plugin (iptables DNAT, no listening socket), which still applies to the forwarded connections because they arrive on eth0.
+- **Readiness**: `start`/`resume` poll `nerdctl info` over ssh, then wait for the guest clock (`date +%s` over ssh) like the docker engine does through `/info`.
+- Pause/resume, `/Users`, the clock loop, port clash reporting and `rm` work as for the docker engine.
 
 ### Per-VM identity
 
@@ -273,8 +291,10 @@ Each VM gets a MAC address (saved as `mac` in `config.json`) and a generic machi
   vms/                     — per-VM directories
     my-dev-box/
       disk.img             # alpine and docker only
-      data.img             # docker only: /var/lib/docker, sparse 64 GiB
-      docker.sock          # docker only: dockerd API relay (docker context docker-<name>)
+      data.img             # docker only: /var/lib/docker (containerd engine: /data), sparse 64 GiB
+      docker.sock          # docker engine only: dockerd API relay (docker context docker-<name>)
+      ssh.sock             # containerd engine only: relay to the internal sshd, used by `docker nerdctl`
+      ssh_key, ssh_key.pub # containerd engine only: key for the internal sshd
       config.json          # {"cpus":1,"memory":536870912,"network_mode":"nat","image":"alpine","mac":"..."}
       machine-identifier   # generic machine identifier, created on first boot
       state.json           # {"pid":12345,"mac":"...","started_at":..., "status":"running"}

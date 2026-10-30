@@ -18,7 +18,8 @@ type VMConfig struct {
 	NetworkMode   string `json:"network_mode"`             // "nat", "shared", "host", "isolated", "none"
 	NetworkName   string `json:"network_name,omitempty"`   // named network to join (for shared/isolated modes)
 	HostInterface string `json:"host_interface,omitempty"` // physical NIC for "host" mode (e.g. "en0")
-	Image         string `json:"image,omitempty"`          // base image: "kata" or "alpine"
+	Image         string `json:"image,omitempty"`          // base image: "kata", "alpine" or "docker"
+	Engine        string `json:"engine,omitempty"`         // docker image only: "docker" (default) or "containerd"
 	MAC           string `json:"mac,omitempty"`            // assigned on first boot, then reused
 }
 

@@ -111,3 +111,17 @@ func TestDockerPauseResume(t *testing.T) {
 		return drift >= -2 && drift <= 2
 	}, 15*time.Second, time.Second, "guest clock did not catch up after restore")
 }
+
+func TestParseNerdctlPorts(t *testing.T) {
+	out := `{"Names":"web","Ports":"0.0.0.0:8080->80/tcp, 127.0.0.1:9000->9000/tcp"}
+{"Names":"dns","Ports":"0.0.0.0:5353->53/udp"}
+{"Names":"v6","Ports":":::8443->443/tcp,[::]:8444->443/tcp"}
+{"Names":"none","Ports":""}
+`
+	ports, err := parseNerdctlPorts([]byte(out))
+	require.NoError(t, err)
+	require.Equal(t, map[int]bool{8080: true, 8443: true, 8444: true}, ports)
+
+	_, err = parseNerdctlPorts([]byte("not json\n"))
+	require.Error(t, err)
+}
