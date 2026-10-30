@@ -41,7 +41,7 @@ func listVMs(wide bool) error {
 		return err
 	}
 
-	// Filter to directories that contain a disk.img.
+	// Collect every VM directory (see vm.Exists).
 	type vmInfo struct {
 		name        string
 		logicalSize int64
@@ -52,6 +52,7 @@ func listVMs(wide bool) error {
 		cpus        uint
 		memory      uint64 // bytes
 		network     string
+		image       string
 		networkName string
 		uptime      time.Duration
 		cpuPercent  float64
@@ -62,17 +63,24 @@ func listVMs(wide bool) error {
 		if !e.IsDir() {
 			continue
 		}
-		diskPath := filepath.Join(vmsPath, e.Name(), "disk.img")
-		info, err := os.Stat(diskPath)
+		if !vm.Exists(e.Name()) {
+			continue
+		}
+		info, err := e.Info()
 		if err != nil {
-			continue // no disk.img, skip
+			continue
 		}
 
-		// Get actual disk usage via syscall (sparse file awareness).
-		var actual int64
-		var st syscall.Stat_t
-		if err := syscall.Stat(diskPath, &st); err == nil {
-			actual = st.Blocks * 512
+		// Alpine VMs have a per-VM disk; Kata VMs share a read-only base
+		// image and have none. Actual usage via syscall (sparse-aware).
+		var logical, actual int64
+		diskPath := filepath.Join(vmsPath, e.Name(), "disk.img")
+		if di, err := os.Stat(diskPath); err == nil {
+			logical = di.Size()
+			var st syscall.Stat_t
+			if err := syscall.Stat(diskPath, &st); err == nil {
+				actual = st.Blocks * 512
+			}
 		}
 
 		// Read runtime state (running/stopped + IP + stats).
@@ -91,7 +99,7 @@ func listVMs(wide bool) error {
 
 		vms = append(vms, vmInfo{
 			name:        e.Name(),
-			logicalSize: info.Size(),
+			logicalSize: logical,
 			actualSize:  actual,
 			created:     info.ModTime(),
 			state:       status.State,
@@ -100,6 +108,7 @@ func listVMs(wide bool) error {
 			memory:      cfg.Memory,
 			network:     cfg.NetworkMode,
 			networkName: cfg.NetworkName,
+			image:       cfg.Image,
 			uptime:      uptime,
 			cpuPercent:  status.CPUPercent,
 			memoryRSS:   status.MemoryRSS,
@@ -114,9 +123,9 @@ func listVMs(wide bool) error {
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
 
 	if wide {
-		fmt.Fprintln(w, "NAME\tSTATE\tIP\tNET\tCPUS\tMEM\tDISK\tUPTIME\tCPU%\tRSS\tOS")
+		fmt.Fprintln(w, "NAME\tSTATE\tIMAGE\tIP\tNET\tCPUS\tMEM\tDISK\tUPTIME\tCPU%\tRSS")
 	} else {
-		fmt.Fprintln(w, "NAME\tSTATE\tIP\tNET\tCPUS\tMEM\tDISK\tUPTIME")
+		fmt.Fprintln(w, "NAME\tSTATE\tIMAGE\tIP\tNET\tCPUS\tMEM\tDISK\tUPTIME")
 	}
 
 	for _, row := range vms {
@@ -126,7 +135,10 @@ func listVMs(wide bool) error {
 			uptime = formatUptime(row.uptime)
 		}
 
-		disk := formatDisk(row.actualSize, row.logicalSize)
+		disk := dash("")
+		if row.logicalSize > 0 {
+			disk = formatDisk(row.actualSize, row.logicalSize)
+		}
 		net := dash(row.network)
 		if row.networkName != "" {
 			net = fmt.Sprintf("%s:%s", row.network, row.networkName)
@@ -139,9 +151,10 @@ func listVMs(wide bool) error {
 				cpuPct = fmt.Sprintf("%.1f%%", row.cpuPercent)
 				rss = formatSize(row.memoryRSS)
 			}
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\n",
 				row.name,
 				row.state,
+				row.image,
 				ip,
 				net,
 				row.cpus,
@@ -150,12 +163,12 @@ func listVMs(wide bool) error {
 				uptime,
 				cpuPct,
 				rss,
-				"alpine",
 			)
 		} else {
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\n",
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\n",
 				row.name,
 				row.state,
+				row.image,
 				ip,
 				net,
 				row.cpus,
@@ -169,7 +182,7 @@ func listVMs(wide bool) error {
 }
 
 func init() {
-	listCmd.Flags().BoolVarP(&flagWide, "wide", "w", false, "show additional columns (CPU%, RSS, OS)")
+	listCmd.Flags().BoolVarP(&flagWide, "wide", "w", false, "show additional columns (CPU%, RSS)")
 }
 
 // dash returns "-" if s is empty, otherwise returns s.

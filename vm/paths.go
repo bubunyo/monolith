@@ -26,3 +26,8 @@ func VMSuspendPath(name string) (string, error) {
 func VMLogPath(name string) (string, error) {
 	return monolith.CachePath("vms", name, "daemon.log")
 }
+
+// VMMachineIDPath returns the path of the VM's persisted machine identifier.
+func VMMachineIDPath(name string) (string, error) {
+	return monolith.CachePath("vms", name, "machine-identifier")
+}

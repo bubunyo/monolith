@@ -23,6 +23,7 @@ var (
 	flagNetworkMode   string
 	flagNetwork       string
 	flagHostInterface string
+	flagImage         string
 	flagLogConsole    string
 )
 
@@ -35,6 +36,7 @@ type vmCfg struct {
 	NetworkMode   *string
 	NetworkName   *string
 	HostInterface *string
+	Image         *string
 	LogConsole    string // not persisted; applies to this boot only
 }
 
@@ -71,6 +73,9 @@ Detach from the console with Ctrl+C or Ctrl+] q. The VM keeps running in the bac
 		}
 		if cmd.Flags().Changed("host-interface") {
 			cfg.HostInterface = &flagHostInterface
+		}
+		if cmd.Flags().Changed("image") {
+			cfg.Image = &flagImage
 		}
 		cfg.LogConsole = flagLogConsole
 
@@ -140,6 +145,13 @@ func runVM(name string, cfg vmCfg) error {
 	if cfg.HostInterface != nil {
 		savedCfg.HostInterface = *cfg.HostInterface
 	}
+	if cfg.Image != nil {
+		savedCfg.Image = *cfg.Image
+	}
+	image, err := vm.LookupImage(savedCfg.Image)
+	if err != nil {
+		return err
+	}
 
 	if err := validateNetwork(savedCfg); err != nil {
 		return err
@@ -150,7 +162,14 @@ func runVM(name string, cfg vmCfg) error {
 		return fmt.Errorf("writing config: %w", err)
 	}
 
-	fmt.Printf("Booting VM %q (%d vCPU, %s RAM, network: %s)...\n", name, savedCfg.CPUs, formatMemory(savedCfg.Memory), savedCfg.NetworkMode)
+	// Prepare the base image here rather than in the daemon so first-run
+	// downloads are visible and don't race the daemon's socket timeout.
+	fmt.Printf("Preparing %s base image...\n", image.Name())
+	if _, err := image.Prepare(name); err != nil {
+		return fmt.Errorf("preparing %s image: %w", image.Name(), err)
+	}
+
+	fmt.Printf("Booting VM %q (%d vCPU, %s RAM, network: %s, image: %s)...\n", name, savedCfg.CPUs, formatMemory(savedCfg.Memory), savedCfg.NetworkMode, savedCfg.Image)
 
 	// Spawn the VM daemon.
 	if err := vm.SpawnVMDaemon(name, false, cfg.LogConsole); err != nil {
@@ -182,6 +201,7 @@ func init() {
 	runCmd.Flags().StringVar(&flagNetworkMode, "network-mode", "", `network mode: nat, shared, host, isolated, none (default: nat)`)
 	runCmd.Flags().StringVarP(&flagNetwork, "network", "n", "", `named network to join (for shared/isolated modes)`)
 	runCmd.Flags().StringVar(&flagHostInterface, "host-interface", "", `physical NIC for host mode (e.g. "en0")`)
+	runCmd.Flags().StringVar(&flagImage, "image", "", `base image: kata or alpine (default: kata for new VMs; existing VMs keep theirs)`)
 	runCmd.Flags().StringVar(&flagLogConsole, "log-console", "", "append guest console output to this file (from boot, even with no client attached)")
 }
 
