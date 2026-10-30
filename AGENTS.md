@@ -12,25 +12,35 @@ make run     # builds and runs: monolith vm run (auto-generated name)
 ## CLI
 
 ```bash
-# VM commands
-monolith vm run [name]                                      # boot a VM (creates on first run, reuses if exists)
+# VM lifecycle
+monolith vm run [name]                                      # boot a VM (creates on first run, reattaches if running)
 monolith vm run [name] --network-mode shared                # boot with shared vmnet networking (macOS 26+)
 monolith vm run [name] --network-mode shared --network lan  # join named network "lan"
 monolith vm run [name] --network-mode host --host-interface en0  # bridge to physical NIC
 monolith vm run [name] --network-mode isolated              # isolated network (macOS 26+)
 monolith vm run [name] --network-mode none                  # no network device (air-gapped)
-monolith vm list          # list all VMs (name, state, ip, net, cpus, mem, disk, uptime)
-monolith vm rm <name>     # delete a VM (prompts for confirmation)
-monolith vm top <name>    # live TUI dashboard for a running VM
+monolith vm attach <name>     # attach to a running VM's serial console (one client at a time)
+monolith vm pause <name>      # pause vCPUs in memory
+monolith vm resume <name>     # resume from pause or suspend
+monolith vm suspend <name>    # snapshot VM state to disk
+monolith vm stop <name>       # graceful stop (--force for hard stop)
+monolith vm list              # table: name, state, ip, net, cpus, mem, disk, uptime
+monolith vm rm <name>         # delete a VM (prompts for confirmation)
+monolith vm prune             # remove all stopped VMs
+monolith vm top <name>        # bubbletea TUI dashboard for a running VM
+monolith vm logs <name>       # stream the daemon log for a VM
 
-# Network commands
-monolith network create <name>                    # create a named shared network
-monolith network create <name> --mode isolated    # create a named isolated network
-monolith network list                             # list all named networks
-monolith network rm <name>                        # delete a named network
+# Named networks
+monolith network create <name>                    # create + start a named shared network daemon
+monolith network create <name> --mode isolated    # create + start an isolated network daemon
+monolith network start <name>                     # start the daemon for an existing named network
+monolith network stop <name>                      # stop the daemon (network config persists)
+monolith network list                             # list networks with attached VMs
+monolith network rm <name>                        # stop daemon and delete the named network
+monolith network logs <name>                      # stream the daemon log
 ```
 
-If no name is given to `run`, one is auto-generated as `lith-NNNNN` (random 5-digit number). VM names must be lowercase alphanumeric with hyphens, max 63 characters (valid hostnames).
+If no name is given to `run`, one is auto-generated as `lith-NNNNN` (random 5-digit number). VM names must be lowercase alphanumeric with hyphens, max 63 characters (valid hostnames). The `network` command is also aliased as `net`.
 
 ## Tests
 
@@ -47,34 +57,66 @@ macOS + aarch64 only. The entire codebase depends on Apple Virtualization.framew
 
 ## Package Layout
 
+The repo is a single Go module split into a library package (`monolith`, repo root) and a `cli/` package tree. The CLI never touches `vz` directly — it spawns and talks to per-VM daemons over unix sockets.
+
 ```
 monolith/
   cmd/monolith/main.go   — CLI entry point, calls cli.Execute()
   cli/
-    root.go               — root cobra command ("monolith"), registers vm + network subcommands
-    netd.go               — hidden "__netd" command for running network daemon process
+    root.go               — root cobra command, registers vm + network subcommands
+    netd.go               — hidden "__netd" command, entry point for the network daemon process
+    vmd.go                — hidden "__vmd" command, entry point for the per-VM daemon process
     vm/
-      vm.go               — "vm" parent command
+      vm.go               — "vm" parent command (registers all subcommands)
       run.go              — "vm run [name]" with --cpus, --memory, --network-mode, --network, --host-interface
+      attach.go           — "vm attach <name>" attaches to the daemon's console (boot log replayed from console_bus)
+      pause/resume/suspend/stop.go — control-plane commands sent over the daemon socket
       list.go             — "vm list" reads vms/ directory, prints table
       rm.go               — "vm rm <name>" with confirmation prompt
-      top.go              — "vm top <name>" launcher
-      top_model.go        — bubbletea TUI model for live VM monitoring
+      prune.go            — "vm prune" removes all stopped VMs
+      logs.go             — "vm logs <name>" tails the daemon log
+      top.go / top_model.go — bubbletea TUI dashboard for a running VM
+      helpers.go          — shared CLI utilities (name resolution, prompts, formatting)
     network/
-      network.go          — "network" parent command
-      create.go           — "network create <name>" spawns daemon process
+      network.go          — "network" parent command (alias "net")
+      create.go           — "network create <name>" writes config and starts daemon
+      start.go / stop.go  — start/stop the daemon for an existing named network
       list.go             — "network list" shows networks with attached VMs
       rm.go               — "network rm <name>" stops daemon and removes network
-  runtime.go              — Run(name) orchestrates VM boot (boot loader, vCPUs, RAM, network, serial, entropy)
+      logs.go             — "network logs <name>" tails the daemon log
+      topology.go         — topology view helper
+      style.go            — shared lipgloss styles for network output
+  vmd.go                  — RunDaemon(name, restore) is the per-VM daemon. Owns vz.VirtualMachine,
+                            listens on a unix socket, dispatches console-attach and control
+                            (pause/resume/suspend/stop/status) requests.
+  client.go               — client side of the VM daemon protocol used by the CLI.
+  console_bus.go          — drains the console PTY from boot; 64 KiB ring buffer replayed to the attached client.
+  protocol.go             — wire types shared by client and daemon.
   network.go              — configureNetwork(), createNetworkAttachment(), joinNamedNetwork()
-  netd.go                 — RunNetworkDaemon(), network persistence (config, PID, socket), serialization over unix socket
-  kernel.go               — DefaultKernel() downloads Alpine ISO, extracts/decompresses kernel+initrd. DefaultRootFS() downloads minirootfs tarball.
-  storage.go              — DefaultDisk(tarball, name) creates per-VM 1 GiB ext4 disk image.
-  config.go               — VMConfig with CPUs, Memory, NetworkMode, NetworkName, HostInterface. Per-VM config at vms/<name>/config.json.
-  state.go                — VMState/VMStatus, IP discovery (DHCP leases + ARP fallback), per-VM network stats via vmenet.
-  runtime_test.go         — test that boots a real VM
-  entitlements.plist      — codesigning entitlements (com.apple.security.virtualization)
+  netd.go                 — RunNetworkDaemon(), network persistence (config, PID, socket),
+                            serialization over unix socket.
+  kernel.go               — DefaultKernel() downloads Alpine ISO, extracts/decompresses kernel+initrd.
+                            DefaultRootFS() downloads minirootfs tarball.
+  storage.go              — DefaultDisk(tarball, name) creates per-VM 1 GiB ext4 disk image and
+                            writes Alpine config files.
+  config.go               — VMConfig (CPUs, Memory, NetworkMode, NetworkName, HostInterface).
+                            Per-VM config at vms/<name>/config.json. Defaults: 1 vCPU, 512 MiB, NAT.
+  state.go                — VMState/VMStatus, IP discovery (DHCP leases + ARP fallback),
+                            per-VM network stats via vmenet.
+  logger.go / logs.go     — daemon log file management.
+  entitlements.go         — runtime entitlement checks.
+  entitlements.plist      — codesigning entitlements (com.apple.security.virtualization).
+  vmd_test.go / vmd_console_log_test.go / network_subnet_test.go — tests (boot real VMs).
+  docs/                   — codesigning.md, networking.md, vm.md (deeper references).
 ```
+
+### Daemon model
+
+Every running VM is a separate `monolith __vmd <name>` process. The `vm run` CLI command spawns this daemon, the daemon owns the `vz.VirtualMachine`, and all subsequent CLI commands (`attach`, `pause`, `resume`, `suspend`, `stop`, `top`, `list` for live status) go through the daemon's unix socket at `~/.cache/monolith/vms/<name>/daemon.sock`. Only one console client may attach at a time; a second gets a NACK (`0xFF`). `console_bus.go` drains the PTY continuously from before boot and replays the last 64 KiB to whoever attaches, so early kernel output is not lost.
+
+Socket protocol (first byte selects the request type, see `protocol.go`):
+- `0x01` console attach: daemon ACKs with `0x01`, then raw console bytes flow both ways. Nothing else is ever sent on this stream.
+- `0x02` control: 4-byte big-endian length + JSON `ControlRequest` (`pause`, `resume`, `suspend`, `stop`, `status`, `resize`), answered the same way with a `ControlResponse`. `vm attach` sends `resize` (rows/cols) on attach and on `SIGWINCH` over a separate control connection; the daemon applies it to the host PTY with `TIOCSWINSZ`. The guest's `hvc0` does not see host PTY size changes, so the guest still needs `stty rows R cols C` to match. This is also what enables `restore` (resume from a suspended snapshot) on the next `vm run`.
 
 ## Network Modes
 
@@ -151,7 +193,9 @@ The `vmnet_network_create_with_serialization` API requires the deserializing pro
     my-dev-box/
       disk.img
       config.json          # {"cpus":1,"memory":536870912,"network_mode":"nat"}
-      state.json           # {"pid":12345,"mac":"...","started_at":...}
+      state.json           # {"pid":12345,"mac":"...","started_at":..., "status":"running"}
+      daemon.sock          # unix domain socket the per-VM daemon listens on
+      daemon.log           # daemon stdout/stderr (consumed by `vm logs`)
     lith-48271/
       disk.img
   networks/                — named networks

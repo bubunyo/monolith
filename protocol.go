@@ -22,12 +22,15 @@ const (
 	CmdSuspend = "suspend"
 	CmdStop    = "stop"
 	CmdStatus  = "status"
+	CmdResize  = "resize"
 )
 
 // ControlRequest is a JSON-encoded command sent from client to daemon.
 type ControlRequest struct {
 	Cmd   string `json:"cmd"`
 	Force bool   `json:"force,omitempty"` // for stop: forceful termination
+	Rows  uint16 `json:"rows,omitempty"`  // for resize: terminal rows
+	Cols  uint16 `json:"cols,omitempty"`  // for resize: terminal columns
 }
 
 // ControlResponse is a JSON-encoded reply from daemon to client.

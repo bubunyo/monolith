@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"os/signal"
 	"syscall"
 	"time"
 
@@ -25,40 +26,30 @@ func AttachConsole(name string) (*ControlRequest, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	fmt.Println(">>>>>>>>>>>>>>>>>>>>>>>")
-
 	conn, err := net.Dial("unix", sockPath)
 	if err != nil {
 		return nil, fmt.Errorf("connecting to VM daemon %q: %w (is the VM running?)", name, err)
 	}
 	defer conn.Close()
-	fmt.Println(" 4 >>>>>>>>>>>>>>>>>>>>>>>")
 
 	// Send console attach request.
 	if _, err := conn.Write([]byte{MsgConsoleAttach}); err != nil {
 		return nil, fmt.Errorf("sending attach request: %w", err)
 	}
-	fmt.Println(" 5 >>>>>>>>>>>>>>>>>>>>>>>")
 
 	// Read ACK.
 	ack := make([]byte, 1)
 	if _, err := io.ReadFull(conn, ack); err != nil {
 		return nil, fmt.Errorf("reading attach ACK: %w", err)
 	}
-
-	fmt.Println(" 6 >>>>>>>>>>>>>>>>>>>>>>>")
 	if ack[0] == 0xFF {
 		return nil, fmt.Errorf("another client is already attached to %q", name)
 	}
-
-	fmt.Println(" 7 >>>>>>>>>>>>>>>>>>>>>>>")
 	if ack[0] != MsgConsoleAttach {
 		return nil, fmt.Errorf("unexpected ACK byte: 0x%02x", ack[0])
 	}
-	fmt.Println(" 8 >>>>>>>>>>>>>>>>>>>>>>>")
 
-	// Save and set terminal to raw mode.
+	// Save terminal state and switch to raw mode.
 	var origAttrs unix.Termios
 	termios.Tcgetattr(os.Stdin.Fd(), &origAttrs)
 	defer termios.Tcsetattr(os.Stdin.Fd(), termios.TCSANOW, &origAttrs)
@@ -70,62 +61,93 @@ func AttachConsole(name string) (*ControlRequest, error) {
 	raw.Cc[syscall.VMIN] = 1
 	raw.Cc[syscall.VTIME] = 0
 	termios.Tcsetattr(os.Stdin.Fd(), termios.TCSANOW, &raw)
-	fmt.Println(" 9 >>>>>>>>>>>>>>>>>>>>>>>")
 
-	// Bidirectional relay with escape sequence detection.
+	// Send initial terminal size and propagate SIGWINCH. Resizes go over
+	// the control channel so they never mix with console bytes.
+	sendCurrentWinsize(name)
+	sigWinch := make(chan os.Signal, 1)
+	signal.Notify(sigWinch, syscall.SIGWINCH)
+	defer signal.Stop(sigWinch)
+	go func() {
+		for range sigWinch {
+			sendCurrentWinsize(name)
+		}
+	}()
+
 	doneCh := make(chan error, 2)
 	var escapeCmd *ControlRequest
 
 	// conn → stdout (VM output to terminal).
 	go func() {
 		_, err := io.Copy(os.Stdout, conn)
-		fmt.Println(" 9  out >>>>>>>>>>>>>>>>>>>>>>>")
 		doneCh <- err
 	}()
 
-	// stdin → conn (terminal input to VM), with escape handling.
+	// stdin → conn with escape sequence detection.
 	go func() {
-		buf := make([]byte, 1)
+		buf := make([]byte, 256)
 		for {
 			n, err := os.Stdin.Read(buf)
 			if err != nil || n == 0 {
 				doneCh <- err
 				return
 			}
-			fmt.Println(" 67 >>>>>>>>>>>>>>>>>>>>>>>")
 
-			b := buf[0]
+			chunk := buf[:n]
+			out := chunk // what we'll write to conn
 
-			// Ctrl+C (0x03) — quick detach.
-			if b == 0x03 {
-				doneCh <- nil
-				return
-			}
+			for i := 0; i < len(chunk); i++ {
+				b := chunk[i]
 
-			// Ctrl+] (0x1D) — enter command mode.
-			if b == 0x1D {
-				cmd := handleEscapePrompt(conn, &origAttrs)
-				if cmd != nil {
-					escapeCmd = cmd
+				if b == 0x03 { // Ctrl+C — detach
 					doneCh <- nil
 					return
 				}
-				// User cancelled or sent literal Ctrl+] — continue relay.
-				continue
+
+				if b == 0x1D { // Ctrl+] — command mode
+					// Flush bytes before the escape byte.
+					if i > 0 {
+						if _, err := conn.Write(chunk[:i]); err != nil {
+							doneCh <- err
+							return
+						}
+					}
+					cmd := handleEscapePrompt(conn, &origAttrs)
+					if cmd != nil {
+						escapeCmd = cmd
+						doneCh <- nil
+						return
+					}
+					// Cancelled — continue with remainder.
+					chunk = chunk[i+1:]
+					out = chunk
+					i = -1
+					continue
+				}
 			}
 
-			// Normal byte — relay to VM.
-			if _, err := conn.Write(buf[:n]); err != nil {
-				doneCh <- err
-				return
+			if len(out) > 0 {
+				if _, err := conn.Write(out); err != nil {
+					doneCh <- err
+					return
+				}
 			}
 		}
 	}()
 
-	// Wait for either direction to finish.
 	<-doneCh
-
 	return escapeCmd, nil
+}
+
+// sendCurrentWinsize reads the local terminal size and sends it to the
+// daemon as a resize control command. Errors are ignored: a missed resize
+// only affects layout, never the console session itself.
+func sendCurrentWinsize(name string) {
+	ws, err := unix.IoctlGetWinsize(int(os.Stdin.Fd()), unix.TIOCGWINSZ)
+	if err != nil {
+		return
+	}
+	SendControlCommand(name, ControlRequest{Cmd: CmdResize, Rows: ws.Row, Cols: ws.Col})
 }
 
 // handleEscapePrompt shows the monolith command prompt after Ctrl+] is pressed.
