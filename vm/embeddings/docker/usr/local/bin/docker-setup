@@ -1,0 +1,36 @@
+#!/bin/sh
+# docker-setup — prepares the monolith docker host on every boot.
+# The first boot installs Docker from the Alpine repositories.
+
+PACKAGES="docker socat e2fsprogs"
+DATA_DISK=/dev/vdb
+
+echo "docker-setup: preparing docker host"
+
+mkdir -p /sys/fs/cgroup
+mount -t cgroup2 cgroup2 /sys/fs/cgroup
+
+modprobe -a overlay br_netfilter veth virtiofs 2>/dev/null
+sysctl -qw net.ipv4.ip_forward=1
+
+if ! command -v dockerd >/dev/null || ! command -v socat >/dev/null || ! command -v mkfs.ext4 >/dev/null; then
+	echo "docker-setup: installing $PACKAGES (first boot)"
+	until apk add --no-cache $PACKAGES; do
+		echo "docker-setup: apk failed, retrying in 5s"
+		sleep 5
+	done
+fi
+
+# Images and containers live on their own sparse disk, formatted on first use.
+if ! blkid "$DATA_DISK" | grep -q 'TYPE="ext4"'; then
+	echo "docker-setup: formatting $DATA_DISK"
+	mkfs.ext4 -q -L docker "$DATA_DISK"
+fi
+mkdir -p /var/lib/docker
+mount -t ext4 "$DATA_DISK" /var/lib/docker
+
+# The Mac's /Users, at the same path, so bind mounts like -v ~/src:/src work.
+mkdir -p /Users
+mount -t virtiofs users /Users || echo "docker-setup: mounting /Users failed"
+
+echo "docker-setup: done"

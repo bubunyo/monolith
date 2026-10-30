@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/bubunyo/monolith/cli/docker"
 	"github.com/bubunyo/monolith/cli/network"
 	"github.com/bubunyo/monolith/cli/vm"
 	"github.com/spf13/cobra"
@@ -27,4 +28,5 @@ func Execute() {
 func init() {
 	rootCmd.AddCommand(vm.Cmd)
 	rootCmd.AddCommand(network.Cmd)
+	rootCmd.AddCommand(docker.Cmd)
 }

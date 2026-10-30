@@ -1,0 +1,14 @@
+# Overlay applied on top of ../manifest.yaml for the docker image.
+files:
+  - src: docker/etc/inittab.tmpl
+    dst: etc/inittab
+    mode: "0644"
+  - src: docker/etc/motd.tmpl
+    dst: etc/motd
+    mode: "0644"
+  - src: docker/usr/local/bin/docker-setup
+    dst: usr/local/bin/docker-setup
+    mode: "0755"
+  - src: docker/usr/local/bin/docker-serve
+    dst: usr/local/bin/docker-serve
+    mode: "0755"

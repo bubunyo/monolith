@@ -31,3 +31,9 @@ func VMLogPath(name string) (string, error) {
 func VMMachineIDPath(name string) (string, error) {
 	return monolith.CachePath("vms", name, "machine-identifier")
 }
+
+// VMDockerSockPath returns the host socket relayed to dockerd in a docker
+// image VM; point DOCKER_HOST at it.
+func VMDockerSockPath(name string) (string, error) {
+	return monolith.CachePath("vms", name, "docker.sock")
+}

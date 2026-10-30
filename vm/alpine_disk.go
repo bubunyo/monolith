@@ -56,7 +56,9 @@ const (
 // DefaultDisk returns the path to the VM's disk image, creating and
 // populating it with the Alpine minirootfs on first use.
 // Each VM gets its own disk under ~/.cache/monolith/vms/<name>/disk.img.
-func DefaultDisk(rootfsTarball, modloopPath, name string) (string, error) {
+// overlays are extra manifests under embeddings/ (e.g. "docker/manifest.yaml")
+// applied after the base manifest; their files replace the base ones.
+func DefaultDisk(rootfsTarball, modloopPath, name string, overlays ...string) (string, error) {
 	vmDir, err := VMDir(name)
 	if err != nil {
 		return "", err
@@ -70,14 +72,14 @@ func DefaultDisk(rootfsTarball, modloopPath, name string) (string, error) {
 		return diskPath, nil
 	}
 
-	if err := createDiskImage(diskPath, defaultDiskSize, rootfsTarball, modloopPath, name); err != nil {
+	if err := createDiskImage(diskPath, defaultDiskSize, rootfsTarball, modloopPath, name, overlays); err != nil {
 		os.Remove(diskPath) // clean up partial image on failure
 		return "", err
 	}
 	return diskPath, nil
 }
 
-func createDiskImage(path string, size int64, rootfsTarball, modloopPath, name string) error {
+func createDiskImage(path string, size int64, rootfsTarball, modloopPath, name string, overlays []string) error {
 	// Create a sparse file for the disk image.
 	f, err := os.Create(path)
 	if err != nil {
@@ -108,7 +110,7 @@ func createDiskImage(path string, size int64, rootfsTarball, modloopPath, name s
 		return fmt.Errorf("creating ext4 filesystem: %w", err)
 	}
 
-	if err := populateRootFS(ext4fs, rootfsTarball, modloopPath, name); err != nil {
+	if err := populateRootFS(ext4fs, rootfsTarball, modloopPath, name, overlays); err != nil {
 		return fmt.Errorf("populating rootfs: %w", err)
 	}
 
@@ -117,7 +119,7 @@ func createDiskImage(path string, size int64, rootfsTarball, modloopPath, name s
 
 // populateRootFS extracts an Alpine minirootfs tarball into the ext4
 // filesystem and writes a custom /etc/inittab for hvc0 console access.
-func populateRootFS(ext4fs filesystem.FileSystem, tarball, modloopPath, name string) error {
+func populateRootFS(ext4fs filesystem.FileSystem, tarball, modloopPath, name string, overlays []string) error {
 	f, err := os.Open(tarball)
 	if err != nil {
 		return err
@@ -232,7 +234,7 @@ func populateRootFS(ext4fs filesystem.FileSystem, tarball, modloopPath, name str
 
 	// Apply VM-specific configuration: custom inittab, user accounts,
 	// autologin, and sudo support.
-	if err := configureVM(ext4fs, name); err != nil {
+	if err := configureVM(ext4fs, name, overlays); err != nil {
 		return err
 	}
 
@@ -327,9 +329,10 @@ func installModloop(ext4fs filesystem.FileSystem, modloopPath string) error {
 }
 
 // configureVM installs all VM-specific configuration files into the ext4
-// filesystem using embedded assets from embeddings/ and a YAML manifest.
+// filesystem using embedded assets from embeddings/ and YAML manifests: the
+// base manifest.yaml, then each overlay manifest in order.
 // The name parameter is used as the VM's hostname and appears in templates.
-func configureVM(ext4fs filesystem.FileSystem, name string) error {
+func configureVM(ext4fs filesystem.FileSystem, name string, overlays []string) error {
 	const monoUID = 1000
 	const monoGID = 1000
 
@@ -340,19 +343,23 @@ func configureVM(ext4fs filesystem.FileSystem, name string) error {
 		return fmt.Errorf("filesystem does not support Truncate")
 	}
 
-	// Parse the manifest.
-	manifestData, err := embeddings.ReadFile("embeddings/manifest.yaml")
-	if err != nil {
-		return fmt.Errorf("reading manifest: %w", err)
-	}
-	var m manifest
-	if err := yaml.Unmarshal(manifestData, &m); err != nil {
-		return fmt.Errorf("parsing manifest: %w", err)
+	// Parse the manifests. Source paths are relative to embeddings/.
+	var entries []manifestEntry
+	for _, path := range append([]string{"manifest.yaml"}, overlays...) {
+		manifestData, err := embeddings.ReadFile("embeddings/" + path)
+		if err != nil {
+			return fmt.Errorf("reading manifest %s: %w", path, err)
+		}
+		var m manifest
+		if err := yaml.Unmarshal(manifestData, &m); err != nil {
+			return fmt.Errorf("parsing manifest %s: %w", path, err)
+		}
+		entries = append(entries, m.Files...)
 	}
 
 	data := templateData{Name: name}
 
-	for _, entry := range m.Files {
+	for _, entry := range entries {
 		// Read source from embedded FS.
 		src, err := embeddings.ReadFile("embeddings/" + entry.Src)
 		if err != nil {

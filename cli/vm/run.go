@@ -59,7 +59,7 @@ Detach from the console with Ctrl+C or Ctrl+] q. The VM keeps running in the bac
 			cfg.CPUs = &flagCPUs
 		}
 		if cmd.Flags().Changed("memory") {
-			mem, err := parseMemory(flagMemory)
+			mem, err := ParseMemory(flagMemory)
 			if err != nil {
 				return err
 			}
@@ -148,6 +148,10 @@ func runVM(name string, cfg vmCfg) error {
 	if cfg.Image != nil {
 		savedCfg.Image = *cfg.Image
 	}
+	// The docker image only works with user-mode networking.
+	if savedCfg.Image == vm.ImageDocker && cfg.NetworkMode == nil {
+		savedCfg.NetworkMode = mnet.NetworkUser
+	}
 	image, err := vm.LookupImage(savedCfg.Image)
 	if err != nil {
 		return err
@@ -169,7 +173,7 @@ func runVM(name string, cfg vmCfg) error {
 		return fmt.Errorf("preparing %s image: %w", image.Name(), err)
 	}
 
-	fmt.Printf("Booting VM %q (%d vCPU, %s RAM, network: %s, image: %s)...\n", name, savedCfg.CPUs, formatMemory(savedCfg.Memory), savedCfg.NetworkMode, savedCfg.Image)
+	fmt.Printf("Booting VM %q (%d vCPU, %s RAM, network: %s, image: %s)...\n", name, savedCfg.CPUs, FormatMemory(savedCfg.Memory), savedCfg.NetworkMode, savedCfg.Image)
 
 	// Spawn the VM daemon.
 	if err := vm.SpawnVMDaemon(name, false, cfg.LogConsole); err != nil {
@@ -198,10 +202,10 @@ func attachAndHandle(name string) error {
 func init() {
 	runCmd.Flags().UintVarP(&flagCPUs, "cpus", "c", 0, "number of vCPUs (default: 1)")
 	runCmd.Flags().StringVarP(&flagMemory, "memory", "m", "", `RAM size, e.g. "512M", "1G", "2048M" (default: 512M)`)
-	runCmd.Flags().StringVar(&flagNetworkMode, "network-mode", "", `network mode: nat, shared, host, isolated, none (default: nat)`)
+	runCmd.Flags().StringVar(&flagNetworkMode, "network-mode", "", `network mode: nat, shared, host, isolated, none, user (default: nat; user for the docker image)`)
 	runCmd.Flags().StringVarP(&flagNetwork, "network", "n", "", `named network to join (for shared/isolated modes)`)
 	runCmd.Flags().StringVar(&flagHostInterface, "host-interface", "", `physical NIC for host mode (e.g. "en0")`)
-	runCmd.Flags().StringVar(&flagImage, "image", "", `base image: kata or alpine (default: kata for new VMs; existing VMs keep theirs)`)
+	runCmd.Flags().StringVar(&flagImage, "image", "", `base image: kata, alpine or docker (default: kata for new VMs; existing VMs keep theirs)`)
 	runCmd.Flags().StringVar(&flagLogConsole, "log-console", "", "append guest console output to this file (from boot, even with no client attached)")
 }
 
@@ -221,7 +225,10 @@ func isValidNetwork(mode string) bool {
 // requires shared or isolated mode).
 func validateNetwork(cfg vm.VMConfig) error {
 	if !isValidNetwork(cfg.NetworkMode) {
-		return fmt.Errorf("invalid network mode %q; must be one of: nat, shared, host, isolated, none", cfg.NetworkMode)
+		return fmt.Errorf("invalid network mode %q; must be one of: %s", cfg.NetworkMode, strings.Join(mnet.ValidNetworkModes, ", "))
+	}
+	if cfg.Image == vm.ImageDocker && cfg.NetworkMode != mnet.NetworkUser {
+		return fmt.Errorf("the docker image requires --network-mode user (it forwards published ports through the user-mode network)")
 	}
 	if cfg.NetworkMode == mnet.NetworkHost && cfg.HostInterface == "" {
 		return fmt.Errorf("host network mode requires --host-interface (e.g. --host-interface en0)")
@@ -246,9 +253,9 @@ Workaround: use --network-mode nat (default), shared, or isolated.`, monolith.En
 	return nil
 }
 
-// parseMemory parses a human-readable memory string like "512M", "1G", "2048M"
+// ParseMemory parses a human-readable memory string like "512M", "1G", "2048M"
 // into bytes. Plain numbers are treated as mebibytes.
-func parseMemory(s string) (uint64, error) {
+func ParseMemory(s string) (uint64, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return 0, fmt.Errorf("empty memory value")
@@ -311,8 +318,8 @@ func generateUniqueName() (string, error) {
 	return "", fmt.Errorf("failed to generate a unique VM name after %d attempts", maxAttempts)
 }
 
-// formatMemory converts bytes to a human-readable string.
-func formatMemory(bytes uint64) string {
+// FormatMemory converts bytes to a human-readable string.
+func FormatMemory(bytes uint64) string {
 	const (
 		mib = 1024 * 1024
 		gib = 1024 * mib

@@ -183,13 +183,42 @@ No network device is attached to the VM. The guest has no `eth0` interface.
 | IP discovery | Not applicable |
 | Per-VM stats | Not applicable |
 
+### `user` (user-mode networking)
+
+The VM daemon runs the network itself with
+[gvisor-tap-vsock](https://github.com/containers/gvisor-tap-vsock), the
+library behind Podman machine and Lima's VZ networking. The guest NIC uses
+`VZFileHandleNetworkDeviceAttachment` on one end of a datagram socket pair;
+a userspace TCP/IP stack on the other end terminates guest connections and
+re-opens them from the daemon process. To macOS (and VPNs or endpoint
+security) the traffic looks like any app's, so outbound access works even on
+Macs that drop vmnet's forwarded traffic.
+
+```bash
+monolith vm run my-vm --network-mode user
+```
+
+| Property | Value |
+|----------|-------|
+| Internet access | Yes (TCP/UDP; ping does not leave the Mac) |
+| Host → VM | Only through the daemon (`UserNetwork.DialGuest`); the docker image forwards published ports to `127.0.0.1` |
+| VM → Host | `192.168.127.254` reaches the Mac's `127.0.0.1` |
+| Inter-VM | No (each VM gets its own private network) |
+| Addresses | guest `192.168.127.2` (static DHCP lease for its MAC), gateway and DNS `192.168.127.1` |
+| macOS version | 11+ |
+| Entitlement | `com.apple.security.virtualization` |
+| IP discovery | Always `192.168.127.2` |
+| Per-VM stats | Not available (no `vmenet` interface) |
+
+The docker image (`monolith docker start`) requires this mode.
+
 ## CLI Flags
 
 All networking flags are on the `vm run` command:
 
 | Flag | Short | Description |
 |------|-------|-------------|
-| `--network-mode` | | One of: `nat`, `shared`, `host`, `isolated`, `none`. Default: `nat`. |
+| `--network-mode` | | One of: `nat`, `shared`, `host`, `isolated`, `none`, `user`. Default: `nat` (`user` for the docker image). |
 | `--network` | `-n` | Named network to join (shared/isolated modes only). |
 | `--host-interface` | | Physical NIC for host mode (e.g. `en0`). Required when mode is `host`. |
 
@@ -466,6 +495,7 @@ and `vm top`. The discovery strategy depends on the network mode:
 | `nat`, `shared` | Parse `/var/db/dhcpd_leases` (macOS DHCP server) |
 | `host` | DHCP leases first, then `arp -an` fallback |
 | `isolated`, `none` | No IP expected (returns empty) |
+| `user` | Fixed `192.168.127.2` (not reachable from the Mac) |
 
 ### DHCP Leases
 
@@ -537,7 +567,7 @@ Network settings are stored in the per-VM `config.json`:
 
 | Field | JSON Key | Description |
 |-------|----------|-------------|
-| `NetworkMode` | `network_mode` | One of: nat, shared, host, isolated, none |
+| `NetworkMode` | `network_mode` | One of: nat, shared, host, isolated, none, user |
 | `NetworkName` | `network_name` | Named network to join (omitted if empty) |
 | `HostInterface` | `host_interface` | Physical NIC for host mode (omitted if empty) |
 

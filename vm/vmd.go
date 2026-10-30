@@ -144,7 +144,41 @@ func RunDaemon(name string, restore bool, consoleLogPath string) error {
 	if err != nil {
 		return errors.Wrap(err, "vz.NewVirtioBlockDeviceConfiguration")
 	}
-	vmCfg.SetStorageDevicesVirtualMachineConfiguration([]vz.StorageDeviceConfiguration{storageConfig})
+	storageDevices := []vz.StorageDeviceConfiguration{storageConfig}
+	if spec.DataDiskPath != "" {
+		dataAttachment, err := vz.NewDiskImageStorageDeviceAttachment(spec.DataDiskPath, false)
+		if err != nil {
+			return errors.Wrap(err, "data disk attachment")
+		}
+		dataConfig, err := vz.NewVirtioBlockDeviceConfiguration(dataAttachment)
+		if err != nil {
+			return errors.Wrap(err, "data disk device")
+		}
+		storageDevices = append(storageDevices, dataConfig)
+	}
+	vmCfg.SetStorageDevicesVirtualMachineConfiguration(storageDevices)
+
+	// Shared directories (virtio-fs).
+	var shareDevices []vz.DirectorySharingDeviceConfiguration
+	for _, sh := range spec.Shares {
+		dir, err := vz.NewSharedDirectory(sh.HostPath, false)
+		if err != nil {
+			return errors.Wrapf(err, "shared directory %s", sh.HostPath)
+		}
+		share, err := vz.NewSingleDirectoryShare(dir)
+		if err != nil {
+			return errors.Wrapf(err, "directory share %s", sh.HostPath)
+		}
+		fsConfig, err := vz.NewVirtioFileSystemDeviceConfiguration(sh.Tag)
+		if err != nil {
+			return errors.Wrapf(err, "virtio-fs device %q", sh.Tag)
+		}
+		fsConfig.SetDirectoryShare(share)
+		shareDevices = append(shareDevices, fsConfig)
+	}
+	if len(shareDevices) > 0 {
+		vmCfg.SetDirectorySharingDevicesVirtualMachineConfiguration(shareDevices)
+	}
 
 	// Network.
 	// Snapshots taken before MACs were persisted only recorded theirs in
@@ -152,9 +186,12 @@ func RunDaemon(name string, restore bool, consoleLogPath string) error {
 	if cfg.MAC == "" && restore {
 		cfg.MAC = suspendedMAC(name)
 	}
-	macStr, err := mnet.ConfigureNetwork(vmCfg, cfg.NetworkMode, cfg.NetworkName, cfg.HostInterface, cfg.MAC)
+	macStr, userNet, err := mnet.ConfigureNetwork(vmCfg, cfg.NetworkMode, cfg.NetworkName, cfg.HostInterface, cfg.MAC)
 	if err != nil {
 		return errors.Wrap(err, "configureNetwork")
+	}
+	if userNet != nil {
+		defer userNet.Close()
 	}
 	if cfg.MAC == "" {
 		cfg.MAC = macStr
@@ -230,6 +267,14 @@ func RunDaemon(name string, restore bool, consoleLogPath string) error {
 		if err := vm.Start(); err != nil {
 			return errors.Wrap(err, "vz.Start")
 		}
+	}
+
+	if cfg.Image == ImageDocker {
+		services, err := startDockerServices(name, userNet, logger)
+		if err != nil {
+			return errors.Wrap(err, "docker services")
+		}
+		defer services.close()
 	}
 
 	// Write state.
