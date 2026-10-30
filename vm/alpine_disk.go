@@ -48,7 +48,10 @@ type truncater interface {
 	Truncate(p string, size int64) error
 }
 
-const defaultDiskSize = 1 << 30 // 1 GiB
+const (
+	defaultDiskSize = 1 << 30 // 1 GiB
+	alpineDiskName  = "disk.img"
+)
 
 // DefaultDisk returns the path to the VM's disk image, creating and
 // populating it with the Alpine minirootfs on first use.
@@ -62,7 +65,7 @@ func DefaultDisk(rootfsTarball, modloopPath, name string) (string, error) {
 		return "", fmt.Errorf("creating VM directory: %w", err)
 	}
 
-	diskPath := filepath.Join(vmDir, "disk.img")
+	diskPath := filepath.Join(vmDir, alpineDiskName)
 	if exists(diskPath) {
 		return diskPath, nil
 	}

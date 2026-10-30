@@ -31,12 +31,15 @@ import (
 // that file from boot onward, independent of any attached client.
 func RunDaemon(name string, restore bool, consoleLogPath string) error {
 	var d *vmDaemon
+	keepState := false
 	defer func() {
 		// A suspended VM keeps its state file so the next run/resume
-		// restores from the snapshot instead of booting fresh.
-		if d == nil || !d.suspended.Load() {
-			CleanState(name)
+		// restores from the snapshot instead of booting fresh. So does one
+		// whose restore failed, so the snapshot stays reachable.
+		if keepState || (d != nil && d.suspended.Load()) {
+			return
 		}
+		CleanState(name)
 	}()
 
 	// Ignore SIGPIPE — the parent closes our stdout pipe after boot,
@@ -50,20 +53,15 @@ func RunDaemon(name string, restore bool, consoleLogPath string) error {
 		return errors.Wrap(err, "ReadConfig")
 	}
 
-	kernelConfig, err := DefaultKernel()
+	image, err := LookupImage(cfg.Image)
 	if err != nil {
-		return errors.Wrap(err, "DefaultKernel")
+		return err
 	}
-
-	rootfs, err := DefaultRootFS()
+	spec, err := image.Prepare(name)
 	if err != nil {
-		return errors.Wrap(err, "DefaultRootFS")
+		return errors.Wrapf(err, "preparing %s image", image.Name())
 	}
-
-	disk, err := DefaultDisk(rootfs, kernelConfig.ModloopPath, name)
-	if err != nil {
-		return errors.Wrap(err, "DefaultDisk")
-	}
+	logger.Info("VM %q booting %s image (kernel=%s, disk=%s, read-only=%t)", name, image.Name(), spec.KernelPath, spec.DiskPath, spec.DiskReadOnly)
 
 	// Create a PTY pair for the serial console.
 	// The VM writes/reads the master side; clients relay the slave side.
@@ -110,11 +108,11 @@ func RunDaemon(name string, restore bool, consoleLogPath string) error {
 	go bus.drain(pts, monolith.NewLogger(os.Stderr))
 
 	// Boot loader.
-	bootLoader, err := vz.NewLinuxBootLoader(
-		kernelConfig.KernelPath,
-		vz.WithCommandLine("console=hvc0 root=/dev/vda rootfstype=ext4 rw modules=squashfs,loop"),
-		vz.WithInitrd(kernelConfig.InitrdPath),
-	)
+	bootOpts := []vz.LinuxBootLoaderOption{vz.WithCommandLine(spec.CommandLine)}
+	if spec.InitrdPath != "" {
+		bootOpts = append(bootOpts, vz.WithInitrd(spec.InitrdPath))
+	}
+	bootLoader, err := vz.NewLinuxBootLoader(spec.KernelPath, bootOpts...)
 	if err != nil {
 		return errors.Wrap(err, "vz.NewLinuxBootLoader")
 	}
@@ -125,8 +123,20 @@ func RunDaemon(name string, restore bool, consoleLogPath string) error {
 		return errors.Wrap(err, "vz.NewVirtualMachineConfiguration")
 	}
 
+	// Platform. Restoring a saved state requires the same machine
+	// identifier it was saved with, so each VM keeps one.
+	machineID, err := loadMachineIdentifier(name)
+	if err != nil {
+		return errors.Wrap(err, "machine identifier")
+	}
+	platform, err := vz.NewGenericPlatformConfiguration(vz.WithGenericMachineIdentifier(machineID))
+	if err != nil {
+		return errors.Wrap(err, "vz.NewGenericPlatformConfiguration")
+	}
+	vmCfg.SetPlatformVirtualMachineConfiguration(platform)
+
 	// Storage.
-	diskAttachment, err := vz.NewDiskImageStorageDeviceAttachment(disk, false)
+	diskAttachment, err := vz.NewDiskImageStorageDeviceAttachment(spec.DiskPath, spec.DiskReadOnly)
 	if err != nil {
 		return errors.Wrap(err, "vz.NewDiskImageStorageDeviceAttachment")
 	}
@@ -137,9 +147,20 @@ func RunDaemon(name string, restore bool, consoleLogPath string) error {
 	vmCfg.SetStorageDevicesVirtualMachineConfiguration([]vz.StorageDeviceConfiguration{storageConfig})
 
 	// Network.
-	macStr, err := mnet.ConfigureNetwork(vmCfg, cfg.NetworkMode, cfg.NetworkName, cfg.HostInterface)
+	// Snapshots taken before MACs were persisted only recorded theirs in
+	// the suspended state file; restore must reuse it.
+	if cfg.MAC == "" && restore {
+		cfg.MAC = suspendedMAC(name)
+	}
+	macStr, err := mnet.ConfigureNetwork(vmCfg, cfg.NetworkMode, cfg.NetworkName, cfg.HostInterface, cfg.MAC)
 	if err != nil {
 		return errors.Wrap(err, "configureNetwork")
+	}
+	if cfg.MAC == "" {
+		cfg.MAC = macStr
+		if err := WriteConfig(name, cfg); err != nil {
+			logger.Warn("failed to persist MAC %s: %v", macStr, err)
+		}
 	}
 
 	// Serial console — connected to the PTY master.
@@ -191,10 +212,12 @@ func RunDaemon(name string, restore bool, consoleLogPath string) error {
 		}
 		logger.Info("restoring VM %q from %s", name, suspendPath)
 		if err := vm.RestoreMachineStateFromURL(suspendPath); err != nil {
+			keepState = true
 			return errors.Wrap(err, "RestoreMachineStateFromURL")
 		}
 		// Restore puts the VM in Paused state — resume it.
 		if err := vm.Resume(); err != nil {
+			keepState = true
 			return errors.Wrap(err, "Resume after restore")
 		}
 		// Clean up the suspend file now that we've successfully restored.
@@ -540,6 +563,9 @@ func (d *vmDaemon) handleSuspend(conn net.Conn) {
 		return
 	}
 
+	// A leftover snapshot (e.g. from a failed restore followed by a fresh
+	// boot) is obsolete, and VZ refuses to overwrite it.
+	os.Remove(suspendPath)
 	d.logger.Info("saving VM %q state to %s", d.name, suspendPath)
 	if err := d.vm.SaveMachineStateToPath(suspendPath); err != nil {
 		fail(true, fmt.Sprintf("save failed: %v", err))
@@ -574,20 +600,44 @@ func (d *vmDaemon) handleStop(conn net.Conn, force bool) {
 				return
 			}
 		}
-	} else {
-		if d.vm.CanRequestStop() {
-			if ok, err := d.vm.RequestStop(); !ok || err != nil {
-				// Guest didn't accept graceful stop — try force.
-				if d.vm.CanStop() {
-					d.vm.Stop()
-				}
-			}
-		} else if d.vm.CanStop() {
-			d.vm.Stop()
+	} else if d.requestStopAndWait(gracefulStopTimeout) {
+		d.sendControlResponse(conn, ControlResponse{OK: true, Status: StatusStopped})
+		return
+	} else if d.vm.CanStop() {
+		// The guest ignored the request (neither image handles it today).
+		d.logger.Info("VM %q did not stop within %s; forcing", d.name, gracefulStopTimeout)
+		if err := d.vm.Stop(); err != nil {
+			d.sendControlResponse(conn, ControlResponse{OK: false, Error: fmt.Sprintf("force stop after timeout failed: %v", err)})
+			return
 		}
+		d.sendControlResponse(conn, ControlResponse{OK: true, Status: StatusStopped, Forced: true})
+		return
 	}
 
 	d.sendControlResponse(conn, ControlResponse{OK: true, Status: StatusStopped})
+}
+
+// gracefulStopTimeout is how long `vm stop` waits for the guest to shut
+// down after a stop request before forcing it.
+const gracefulStopTimeout = 10 * time.Second
+
+// requestStopAndWait asks the guest to shut down and reports whether the VM
+// reached the stopped state within timeout.
+func (d *vmDaemon) requestStopAndWait(timeout time.Duration) bool {
+	if !d.vm.CanRequestStop() {
+		return false
+	}
+	if ok, err := d.vm.RequestStop(); !ok || err != nil {
+		return false
+	}
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if d.vm.State() == vz.VirtualMachineStateStopped {
+			return true
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return false
 }
 
 func (d *vmDaemon) handleStatus(conn net.Conn) {
@@ -661,4 +711,24 @@ func (d *vmDaemon) sendControlResponse(conn net.Conn, resp ControlResponse) {
 	binary.BigEndian.PutUint32(lenBuf, uint32(len(data)))
 	conn.Write(lenBuf)
 	conn.Write(data)
+}
+
+// loadMachineIdentifier returns the VM's persisted generic machine
+// identifier, creating and saving one on first boot.
+func loadMachineIdentifier(name string) (*vz.GenericMachineIdentifier, error) {
+	path, err := VMMachineIDPath(name)
+	if err != nil {
+		return nil, err
+	}
+	if data, err := os.ReadFile(path); err == nil {
+		return vz.NewGenericMachineIdentifierWithData(data)
+	}
+	id, err := vz.NewGenericMachineIdentifier()
+	if err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(path, id.DataRepresentation(), 0644); err != nil {
+		return nil, err
+	}
+	return id, nil
 }

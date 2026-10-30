@@ -241,3 +241,35 @@ func ProcessStatsEx(pid int) (cpuPct float64, rssBytes int64, cpuTime string) {
 	rssKiB, _ := strconv.ParseInt(fields[1], 10, 64)
 	return cpuPct, rssKiB * 1024, fields[2]
 }
+
+// suspendedMAC returns the MAC recorded in a suspended VM's state file, or
+// "" if there is none.
+func suspendedMAC(name string) string {
+	dir, err := VMDir(name)
+	if err != nil {
+		return ""
+	}
+	data, err := os.ReadFile(filepath.Join(dir, stateFileName))
+	if err != nil {
+		return ""
+	}
+	var state VMState
+	if json.Unmarshal(data, &state) != nil || state.Status != StatusSuspended {
+		return ""
+	}
+	return state.MAC
+}
+
+// DiscardSuspended deletes a suspended VM's saved state and snapshot file,
+// leaving it stopped. Used when a snapshot can't or shouldn't be restored.
+func DiscardSuspended(name string) error {
+	path, err := VMSuspendPath(name)
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	CleanState(name)
+	return nil
+}

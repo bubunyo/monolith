@@ -274,7 +274,37 @@ func SendControlCommand(name string, req ControlRequest) (ControlResponse, error
 		return ControlResponse{}, fmt.Errorf("reading response data: %w", err)
 	}
 
-	return UnmarshalControlResponse(respData)
+	resp, err := UnmarshalControlResponse(respData)
+	if err != nil {
+		return resp, err
+	}
+
+	// stop and suspend end the daemon. Wait for it to exit so callers that
+	// immediately boot or restore the VM again don't race it.
+	if resp.OK && (req.Cmd == CmdStop || req.Cmd == CmdSuspend) {
+		conn.Close()
+		if err := waitForDaemonExit(sockPath, daemonExitTimeout); err != nil {
+			return resp, fmt.Errorf("VM %q: %w", name, err)
+		}
+	}
+	return resp, nil
+}
+
+const daemonExitTimeout = 30 * time.Second
+
+// waitForDaemonExit waits for the daemon to remove its socket, which it
+// does as it exits.
+func waitForDaemonExit(sockPath string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		if _, err := os.Stat(sockPath); os.IsNotExist(err) {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("daemon did not exit within %s", timeout)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }
 
 // SpawnVMDaemon starts the VM daemon as a background process.
@@ -313,6 +343,14 @@ func SpawnVMDaemon(name string, restore bool, consoleLogPath string) error {
 		args = append(args, "--log-console", consoleLogPath)
 	}
 
+	// Only the new daemon's socket may count as ready; a leftover one from
+	// an earlier daemon would make this return before the VM is up.
+	sockPath, err := VMSockPath(name)
+	if err != nil {
+		return err
+	}
+	os.Remove(sockPath)
+
 	cmd := exec.Command(exe, args...)
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
@@ -327,11 +365,6 @@ func SpawnVMDaemon(name string, restore bool, consoleLogPath string) error {
 	logFile.Close()
 
 	// Wait for the daemon's socket to become available.
-	sockPath, err := VMSockPath(name)
-	if err != nil {
-		return err
-	}
-
 	for i := 0; i < 100; i++ { // up to 10 seconds
 		time.Sleep(100 * time.Millisecond)
 		if _, err := os.Stat(sockPath); err == nil {

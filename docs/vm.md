@@ -1,7 +1,9 @@
 # Virtual Machines
 
-monolith manages lightweight Alpine Linux virtual machines on macOS using
-Apple's Virtualization.framework. VMs run as background daemon processes,
+monolith manages lightweight Linux virtual machines on macOS using
+Apple's Virtualization.framework. The guest OS is a pluggable base image:
+Kata Containers' guest (default for new VMs) or Alpine Linux (`--image alpine`).
+See AGENTS.md § Base Images for how each boots. VMs run as background daemon processes,
 allowing you to detach, reattach, pause, suspend to disk, and resume without
 losing state.
 
@@ -31,9 +33,10 @@ monolith vm stop my-vm
 monolith vm rm my-vm
 ```
 
-On first run, monolith downloads ~60 MB of Alpine Linux assets (kernel,
-initramfs, minirootfs) from `dl-cdn.alpinelinux.org` and caches them at
-`~/.cache/monolith/alpine/`. Subsequent runs reuse the cache.
+The first VM of each image downloads its assets once: ~65 MB of Kata kernel
+and rootfs from `ghcr.io` (cached at `~/.cache/monolith/kata/`), or ~60 MB of
+Alpine kernel, initramfs and minirootfs from `dl-cdn.alpinelinux.org`
+(cached at `~/.cache/monolith/alpine/`). Subsequent runs reuse the cache.
 
 ## VM Naming
 
@@ -173,11 +176,12 @@ Output columns:
 |--------|-------------|
 | NAME | VM name |
 | STATE | `running`, `paused`, `suspended`, or `stopped` |
+| IMAGE | Base image: `kata` or `alpine` |
 | IP | Guest IP address (from DHCP leases) |
 | NET | Network mode, or `mode:name` for named networks |
 | CPUS | Number of vCPUs |
 | MEM | Configured RAM |
-| DISK | Actual / logical disk usage (sparse-file aware) |
+| DISK | Actual / logical disk usage (sparse-file aware); `-` for kata VMs, which share a read-only base image |
 | UPTIME | Time since boot (for running/paused VMs) |
 
 With `--wide` (`-w`), additional columns are shown:
@@ -186,7 +190,6 @@ With `--wide` (`-w`), additional columns are shown:
 |--------|-------------|
 | CPU% | Host-side CPU usage of the daemon process |
 | RSS | Host-side resident memory of the daemon process |
-| OS | Guest OS (always `alpine`) |
 
 ### `vm top <name>`
 
@@ -329,8 +332,9 @@ communicates with the daemon over a Unix domain socket.
 The daemon (`monolith __vmd <name>`) is a hidden CLI command that:
 
 1. Reads the VM config from `config.json`
-2. Downloads/verifies Alpine kernel and rootfs (cached)
-3. Creates the disk image on first boot
+2. Prepares its base image (`vm.LookupImage(cfg.Image).Prepare`): downloads
+   and verifies kernel and rootfs if not cached; for Alpine, creates the
+   per-VM disk image on first boot
 4. Creates a PTY pair for the serial console
 5. Configures and boots the VM via Virtualization.framework
 6. Listens on a Unix domain socket for client connections
@@ -386,7 +390,12 @@ alive by sending signal 0 to the recorded PID. If the process is dead:
 
 ### Operating System
 
-VMs run Alpine Linux 3.21 with the `virt` kernel variant, optimized for
+This section describes the **Alpine** image. Kata VMs instead boot Kata's
+kernel and its read-only Ubuntu rootfs (dm-verity), get a root bash from
+kata-agent's debug console, and keep no state across boots; see AGENTS.md §
+Base Images.
+
+Alpine VMs run Alpine Linux 3.21 with the `virt` kernel variant, optimized for
 virtualization. The guest boots from:
 
 - **Kernel**: `vmlinuz-virt` (extracted and decompressed from the Alpine ISO)
@@ -611,8 +620,11 @@ disk is recreated from the Alpine minirootfs template.
 | `vm/protocol.go` | Shared types: message types, control commands, request/response structs |
 | `vm/state.go` | VM state: `ReadState()`, `WriteState()`, `UpdateStateStatus()` (IP discovery is in `net/ip.go`) |
 | `vm/config.go` | VM config: `VMConfig`, `ReadConfig()`, `WriteConfig()` (mode constants are in `net/modes.go`) |
-| `vm/kernel.go` | Alpine asset download: kernel, initramfs, minirootfs, modloop |
-| `vm/storage.go` | Disk image creation: ext4 formatting, rootfs extraction, VM configuration |
+| `vm/image.go` | Base image interface (`Image`, `BootSpec`), `LookupImage()`, `Exists()` |
+| `vm/image_kata.go` | Kata image (default): GHCR download, dm-verity kernel command line |
+| `vm/image_alpine.go` | Alpine image adapter |
+| `vm/alpine_kernel.go` | Alpine asset download: kernel, initramfs, minirootfs, modloop |
+| `vm/alpine_disk.go` | Alpine disk image creation: ext4 formatting, rootfs extraction, VM configuration |
 | `cli/vmd.go` | Hidden `__vmd <name>` command for daemon process |
 | `cli/vm/run.go` | `vm run` command with flags and state-aware dispatch |
 | `cli/vm/attach.go` | `vm attach` command |
@@ -626,5 +638,5 @@ disk is recreated from the Alpine minirootfs template.
 | `cli/vm/rm.go` | `vm rm` command with confirmation |
 | `cli/vm/prune.go` | `vm prune` command for batch cleanup |
 | `cli/vm/helpers.go` | Shared escape command handler |
-| `vm/embeddings/` | Guest OS configuration templates (inittab, passwd, motd, etc.) |
+| `vm/embeddings/` | Alpine guest configuration templates (inittab, passwd, motd, etc.) |
 | `entitlements.plist` | Code signing entitlements |

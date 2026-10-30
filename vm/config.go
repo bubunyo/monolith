@@ -18,19 +18,24 @@ type VMConfig struct {
 	NetworkMode   string `json:"network_mode"`             // "nat", "shared", "host", "isolated", "none"
 	NetworkName   string `json:"network_name,omitempty"`   // named network to join (for shared/isolated modes)
 	HostInterface string `json:"host_interface,omitempty"` // physical NIC for "host" mode (e.g. "en0")
+	Image         string `json:"image,omitempty"`          // base image: "kata" or "alpine"
+	MAC           string `json:"mac,omitempty"`            // assigned on first boot, then reused
 }
 
-// DefaultConfig returns the default VM configuration: 1 vCPU, 512 MiB RAM, NAT networking.
+// DefaultConfig returns the default VM configuration: 1 vCPU, 512 MiB RAM,
+// NAT networking, Kata base image.
 func DefaultConfig() VMConfig {
 	return VMConfig{
 		CPUs:        1,
 		Memory:      512 * 1024 * 1024,
 		NetworkMode: mnet.NetworkNAT,
+		Image:       DefaultImage,
 	}
 }
 
 // ReadConfig reads the VM configuration from its config file.
-// If the file does not exist, default values are returned.
+// If the file does not exist, default values are returned, except that a VM
+// directory that already holds an Alpine disk.img stays on Alpine.
 func ReadConfig(name string) (VMConfig, error) {
 	dir, err := VMDir(name)
 	if err != nil {
@@ -40,7 +45,11 @@ func ReadConfig(name string) (VMConfig, error) {
 	data, err := os.ReadFile(filepath.Join(dir, configFileName))
 	if err != nil {
 		if os.IsNotExist(err) {
-			return DefaultConfig(), nil
+			cfg := DefaultConfig()
+			if _, err := os.Stat(filepath.Join(dir, alpineDiskName)); err == nil {
+				cfg.Image = ImageAlpine
+			}
+			return cfg, nil
 		}
 		return VMConfig{}, fmt.Errorf("reading config: %w", err)
 	}
@@ -59,6 +68,11 @@ func ReadConfig(name string) (VMConfig, error) {
 	}
 	if cfg.NetworkMode == "" {
 		cfg.NetworkMode = mnet.NetworkNAT
+	}
+	// Configs written before base images existed belong to Alpine VMs with
+	// a persistent disk; keep booting them as Alpine.
+	if cfg.Image == "" {
+		cfg.Image = ImageAlpine
 	}
 
 	return cfg, nil

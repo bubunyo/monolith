@@ -60,6 +60,9 @@ func pruneVMs() error {
 		// Check disk size for display.
 		diskPath := filepath.Join(dir, name, "disk.img")
 		diskSize := "no disk"
+		if cfg, _ := vm.ReadConfig(name); cfg.Image == vm.ImageKata {
+			diskSize = "kata, no disk"
+		}
 		var st syscall.Stat_t
 		if err := syscall.Stat(diskPath, &st); err == nil {
 			diskSize = formatSize(st.Blocks * 512)

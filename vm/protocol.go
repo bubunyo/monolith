@@ -37,6 +37,7 @@ type ControlRequest struct {
 type ControlResponse struct {
 	OK     bool   `json:"ok"`
 	Status string `json:"status,omitempty"` // current VM status after the operation
+	Forced bool   `json:"forced,omitempty"` // stop: the guest ignored the request and was force-stopped
 	Error  string `json:"error,omitempty"`
 }
 
