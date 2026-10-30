@@ -25,7 +25,10 @@ type VMConfig struct {
 	KubePort      int    `json:"kube_port,omitempty"`      // host port on 127.0.0.1 forwarded to the k3s API
 	GuestLayout   int    `json:"guest_layout,omitempty"`   // docker image only: GuestLayout its disk was created with
 	Rosetta       bool   `json:"rosetta,omitempty"`        // docker image only: run x86-64 binaries with Rosetta
-	MAC           string `json:"mac,omitempty"`            // assigned on first boot, then reused
+
+	// Sandbox makes a docker image VM a repo sandbox (`monolith sandbox`).
+	Sandbox *SandboxConfig `json:"sandbox,omitempty"`
+	MAC     string         `json:"mac,omitempty"` // assigned on first boot, then reused
 }
 
 // DefaultConfig returns the default VM configuration: 1 vCPU, 512 MiB RAM,

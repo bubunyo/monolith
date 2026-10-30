@@ -12,3 +12,6 @@ files:
   - src: docker/usr/local/bin/docker-serve
     dst: usr/local/bin/docker-serve
     mode: "0755"
+  - src: docker/usr/local/bin/sandbox-mount
+    dst: usr/local/bin/sandbox-mount
+    mode: "0755"

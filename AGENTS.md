@@ -57,6 +57,13 @@ monolith docker start --kubernetes=false          # turn k3s off on the next boo
 monolith docker kubeconfig                        # print the standalone kubeconfig (context k3s-<name>)
 monolith docker start --rosetta                   # run linux/amd64 images with Rosetta (opt-in, saved; --rosetta=false to turn off)
 monolith docker link-socket [--unlink]            # sudo-symlink /var/run/docker.sock to the host's docker.sock
+
+# Repo sandboxes (untrusted code); the repo is the git root, else an existing parent sandbox, else cwd
+monolith sandbox activate [--image I --network outbound|none|allow --allow host:port]  # shell in the repo's sandbox
+monolith sandbox exec -- CMD                      # one command, exits with its status
+monolith sandbox diff [-p] [PATH...]              # A/M/D vs the Mac's copy
+monolith sandbox apply PATH...|--all [--yes]      # copy changes to the Mac
+monolith sandbox reset|status|list|stop|rm
 monolith docker pause                             # save the whole VM to disk and stop it (vm suspend)
 monolith docker resume                            # restore it, wait for dockerd and the clock, make its context current
 monolith docker stop [--force]                    # stop it (data persists); on a paused VM, discards the snapshot after asking
@@ -74,6 +81,7 @@ go test ./...             # all tests
 go test -run TestRun ./vm # single test
 MONOLITH_TEST_DOCKER=1 go test -run TestDockerPauseResume ./vm  # docker host pause/resume (needs internet, docker CLI, unlocked Mac)
 MONOLITH_TEST_K8S=1 go test -run TestKubernetesPauseResume ./vm  # k3s on both engines: LB service, pause/resume (needs internet, kubectl, unlocked Mac)
+MONOLITH_TEST_SANDBOX=1 go test -run TestSandboxIsolation ./cli/sandbox  # hostile script in a real sandbox (needs docker CLI, unlocked Mac)
 ```
 
 **Many tests boot a real VM.** They require macOS on Apple Silicon with Virtualization.framework and the signed `bin/monolith`. Those tests skip under `go test -short` (`make test`), which is what CI runs: GitHub's macOS runners are VMs without nested virtualization. The remaining unit tests (parsers, command lines) run anywhere monolith builds.
@@ -127,6 +135,11 @@ monolith/
       docker.go           — "docker start|stop|pause|resume|rm|env" for Docker host VMs (image docker, user mode), --engine
       ssh.go              — "docker nerdctl": execs ssh to the containerd host's internal sshd via ssh.sock
       link.go             — "docker link-socket": sudo ln -sfn docker.sock /var/run/docker.sock (refuses non-symlinks)
+    sandbox/
+      sandbox.go          — "sandbox activate|exec|status|list|stop|rm": per-repo docker image VM, shell container, sessions
+      firewall.go         — network policy as iptables rules applied in the VM via a privileged helper container
+      devcontainer.go     — shell image from --image, .devcontainer (image or build.dockerfile, JSONC), or the default
+      layer.go            — "sandbox diff|apply|reset": the overlay's writable layer vs the Mac's copy
       kube.go             — "docker kubeconfig", kubeconfig fetch/rewrite, merge into $KUBECONFIG or ~/.kube/config, readiness
       context.go          — creates/selects/removes the docker CLI context docker-<name> (shells out to docker)
       list.go             — "docker list": docker VMs with context and forwarded ports (from the daemon's status reply)
@@ -150,6 +163,7 @@ monolith/
                             FreeLocalPort.
     rosetta.go            — CheckRosetta (vz Rosetta availability); share tag and cmdline arg.
     fswatch.go            — relayFileEvents: FSEvents on /Users → guest port 2379, which touches each path (inotify).
+    sandbox.go            — SandboxConfig (repo, image, network, allow), policies, parseListeningPorts, GuestLayoutSandbox.
     docker.go             — daemon-side services: engine socket relay (docker.sock or ssh.sock) and published-port
                             forwarding (ports from dockerd's API or `nerdctl ps --format json`).
     alpine_kernel.go      — DefaultKernel() downloads Alpine ISO, extracts/decompresses kernel+initrd.
@@ -317,6 +331,19 @@ Alpine guest configuration:
 - **Readiness**: after the engine, `start`/`resume` wait (up to 10 min; the first start pulls k3s's system images, ~25s on a warm cache) for the kubeconfig, `/readyz`, and the node's Ready condition, using the kubeconfig's client certificate.
 - **Service ports**: every poll the daemon adds Kubernetes service ports to the engine's: LoadBalancer ports (k3s's servicelb serves them on the node) and NodePorts, TCP only (`parseKubeServicePorts`). They're forwarded to localhost like container ports, with the same clash rules.
 - **list**: `docker list` has a K8S column with the k3s version; `vm list` shows `docker (docker+k3s)`.
+
+### Sandboxes
+
+`monolith sandbox` (docs/sandbox.md) runs a repo's commands in a lith. A sandbox is a docker image VM (docker engine, user-mode network) named `sbx-<slug>-<6 hex of sha256(repo path)>` with `sandbox` in `config.json`; created on first `activate`/`exec`, which take `--image/--network/--allow/--cpus/--memory/--rosetta` and save them.
+
+- **Repo resolution** never runs `git` (an untrusted `.git/config` can execute commands): walk up for `.git`, else for a directory that already has a sandbox, else use cwd. Symlinks are resolved; `/` and `$HOME` are refused.
+- **Files**: `Prepare` shares only the repo, read-only (virtio-fs tag `repo`), instead of `/Users`, and puts `monolith.sandbox=<base64 path>` on the kernel command line. `sandbox-mount` (guest, called by `docker-setup`) mounts the share at `/mnt/repo-lower` and an overlay at the repo's own path with upper/work in `/var/lib/docker/.monolith/sandbox` on the data disk. `sandbox-mount reset` discards the layer. The VM needs guest layout ≥ 3.
+- **Mac edits under the overlay**: overlayfs caches the lower layer, so Mac edits showed truncated content (stale size) or `ESTALE` after editor-style rename saves. The daemon runs the FSEvents relay on the repo (all events, removals included) and the guest's `touch-paths` handler, in sandbox mode, drops dentry/inode caches (`echo 2 > drop_caches`, once per burst) instead of touching (a touch would copy the file into the upper layer and freeze it). Watchers in the sandbox therefore don't get inotify events for Mac edits.
+- **Shell**: a container `monolith-sandbox` (`--init`, hostname `lith`, `--network host` or `none`, the overlay bind-mounted at the same path, label `monolith.shell=<image>|<network>`; recreated when that changes) running `tail -f /dev/null`. `activate` runs `docker exec -it` with `/etc/monolith-sandbox.rc` (prompt `(lith:<base>)`, `deactivate` = exit) via `bash --rcfile` or `ENV=` for sh. The CLI uses the Mac's `docker` with `DOCKER_HOST` set to the VM's `docker.sock` (never the user's context). Image: `--image`, else `.devcontainer/devcontainer.json` (`image`, or `build.dockerfile`/`context`, built with the Mac CLI uploading the context; both must stay inside the repo), else `debian:stable-slim`.
+- **Network policy**: the user-mode network is created without host access for sandboxes (`NewUserNetwork(mac, false)`: no `192.168.127.254` NAT, no `*.docker.internal`). `firewall.go` installs chain `MONOLITH-SBX` through a helper container (`--privileged --pid=host --net=host --cgroupns=host alpine:3.21 nsenter -t 1 -m -n`): ESTABLISHED and DNS to the gateway return; `outbound` rejects private/CGNAT/link-local/multicast ranges (the Mac, the LAN, the user-mode subnet); `allow` returns only the resolved `--allow` IPs and ports and rejects the rest. It's jumped to from `OUTPUT -o eth0 -m cgroup --path docker` (container traffic only, so dockerd can still pull) and `FORWARD -o eth0`. Gotchas found: the nf_tables backend doesn't autoload `xt_cgroup` (`modprobe` first), the cgroup path resolves in the caller's cgroup namespace (hence `--cgroupns=host`), and `xt_cgroup` is rejected in FORWARD. The shell container lacks `CAP_NET_ADMIN`, so it can't change the rules; a container escape to VM root could.
+- **Ports**: the daemon's port source for sandboxes is guest port 2380 (`docker-serve listening`, gateway only), which serves `/proc/net/tcp{,6}`; LISTEN sockets on all interfaces are forwarded to localhost (monolith's relays and 22 excluded).
+- **Sessions**: `activate`/`exec`/`diff`/`apply` register `vms/<name>/sessions/<pid>`; the last one out pauses the VM (`vm suspend`) if it wasn't running before (`activate` always pauses unless `--keep-running`). `reset` refuses while sessions are open.
+- **diff/apply** (`layer.go`): deletions are found in the VM by listing, for every directory in the upper layer that exists in the lower, the lower entries missing from the merged view (covers whiteouts and opaque directories). Additions and modifications come from a tar of the upper layer streamed through the helper, compared on the Mac (size, exec bit, sha256; symlink targets). New directories are collapsed. `apply` writes via temp file + rename, refuses paths escaping the repo or crossing a symlinked directory on the Mac, skips symlinks pointing outside, and never deletes a path it also writes (or its parent).
 
 ### Per-VM identity
 

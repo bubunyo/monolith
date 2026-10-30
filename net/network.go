@@ -14,8 +14,9 @@ import (
 // keeps the VM's DHCP address stable. It returns the MAC address string (even
 // for "none" mode, for state tracking) and attaches the network device to the
 // VM configuration when applicable. In "user" mode it also returns the
-// running UserNetwork, which the caller must Close when the VM stops.
-func ConfigureNetwork(vmConfig *vz.VirtualMachineConfiguration, mode, networkName, hostInterface, macAddr string) (string, *UserNetwork, error) {
+// running UserNetwork, which the caller must Close when the VM stops;
+// userHostAccess is passed to NewUserNetwork.
+func ConfigureNetwork(vmConfig *vz.VirtualMachineConfiguration, mode, networkName, hostInterface, macAddr string, userHostAccess bool) (string, *UserNetwork, error) {
 	var mac *vz.MACAddress
 	var err error
 	if macAddr == "" {
@@ -52,7 +53,7 @@ func ConfigureNetwork(vmConfig *vz.VirtualMachineConfiguration, mode, networkNam
 			return "", nil, fmt.Errorf("attaching to named network %q: %w", networkName, err)
 		}
 	} else if mode == NetworkUser {
-		if user, err = NewUserNetwork(mac.String()); err != nil {
+		if user, err = NewUserNetwork(mac.String(), userHostAccess); err != nil {
 			return "", nil, err
 		}
 		if attachment, err = user.attachment(); err != nil {

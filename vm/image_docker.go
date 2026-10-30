@@ -94,6 +94,20 @@ func (dockerImage) Prepare(name string) (*BootSpec, error) {
 	}
 
 	shares := []Share{{Tag: "users", HostPath: "/Users"}}
+	if cfg.Sandbox != nil {
+		// Only the repo, read-only; the guest overlays it at the same path.
+		if cfg.GuestLayout < GuestLayoutSandbox {
+			return nil, fmt.Errorf("VM %q was created before sandbox support; remove it and activate again", name)
+		}
+		if err := validateSandbox(cfg.Sandbox); err != nil {
+			return nil, err
+		}
+		if cfg.Kubernetes {
+			return nil, fmt.Errorf("sandboxes don't run Kubernetes")
+		}
+		shares = []Share{{Tag: sandboxShareTag, HostPath: cfg.Sandbox.Repo, ReadOnly: true}}
+		commandLine += " " + sandboxCmdline(cfg.Sandbox.Repo)
+	}
 	if cfg.Kubernetes {
 		if cfg.GuestLayout < GuestLayoutKubernetes {
 			return nil, fmt.Errorf("VM %q was created before Kubernetes support; recreate it to use --kubernetes", name)
