@@ -54,12 +54,10 @@ const defaultDiskSize = 1 << 30 // 1 GiB
 // populating it with the Alpine minirootfs on first use.
 // Each VM gets its own disk under ~/.cache/monolith/vms/<name>/disk.img.
 func DefaultDisk(rootfsTarball, modloopPath, name string) (string, error) {
-	cache, err := cacheDir()
+	vmDir, err := VMDir(name)
 	if err != nil {
 		return "", err
 	}
-
-	vmDir := filepath.Join(cache, "vms", name)
 	if err := os.MkdirAll(vmDir, 0755); err != nil {
 		return "", fmt.Errorf("creating VM directory: %w", err)
 	}

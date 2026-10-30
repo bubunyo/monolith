@@ -24,38 +24,11 @@ const (
 	networkLogFileName    = "daemon.log"
 )
 
-// NetworkLogPath returns the path to the network daemon's log file.
-func NetworkLogPath(name string) (string, error) {
-	dir, err := NetworkDir(name)
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, networkLogFileName), nil
-}
-
 // NetworkConfig holds the persisted configuration for a named network.
 type NetworkConfig struct {
 	Mode       string `json:"mode"`                  // "shared" or "isolated"
 	Subnet     string `json:"subnet"`                // actual IPv4 subnet allocated by vmnet (e.g. "192.168.64.0/24"), filled after creation
 	UserSubnet string `json:"user_subnet,omitempty"` // caller-requested IPv4 subnet (CIDR); empty means vmnet picks
-}
-
-// NetworkDir returns the path to the named network's directory.
-func NetworkDir(name string) (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".cache", "monolith", "networks", name), nil
-}
-
-// NetworksDir returns the parent directory for all named networks.
-func NetworksDir() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".cache", "monolith", "networks"), nil
 }
 
 // ReadNetworkConfig reads a named network's configuration.

@@ -24,7 +24,7 @@ var rmCmd = &cobra.Command{
 
 // removeVM stops (if running) and deletes a VM after user confirmation.
 func removeVM(name string) error {
-	dir, err := vmsDir()
+	dir, err := monolith.VMsDir()
 	if err != nil {
 		return err
 	}

@@ -105,23 +105,13 @@ func DefaultRootFS() (string, error) {
 	return rootfsPath, nil
 }
 
-func cacheDir() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	dir := filepath.Join(home, ".cache", "monolith")
-	return dir, os.MkdirAll(dir, 0755)
-}
-
 // alpineCacheDir returns the path for shared Alpine assets (kernel, initrd,
 // minirootfs) scoped under the "alpine" subdirectory of the cache.
 func alpineCacheDir() (string, error) {
-	base, err := cacheDir()
+	dir, err := cachePath("alpine")
 	if err != nil {
 		return "", err
 	}
-	dir := filepath.Join(base, "alpine")
 	return dir, os.MkdirAll(dir, 0755)
 }
 

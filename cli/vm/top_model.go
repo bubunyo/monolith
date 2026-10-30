@@ -256,7 +256,7 @@ func (m *model) gatherStats() {
 	}
 
 	// Disk stats.
-	dir, err := vmsDir()
+	dir, err := monolith.VMsDir()
 	if err == nil {
 		diskPath := filepath.Join(dir, m.name, "disk.img")
 		if info, err := os.Stat(diskPath); err == nil {

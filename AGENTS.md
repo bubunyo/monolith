@@ -106,6 +106,7 @@ monolith/
                             Per-VM config at vms/<name>/config.json. Defaults: 1 vCPU, 512 MiB, NAT.
   state.go                — VMState/VMStatus, IP discovery (DHCP leases + ARP fallback),
                             per-VM network stats via vmenet.
+  paths.go                — every ~/.cache/monolith path (VM/network dirs, sockets, logs) via cachePath().
   logger.go / logs.go     — daemon log file management.
   entitlements.go         — runtime entitlement checks.
   entitlements.plist      — codesigning entitlements (com.apple.security.virtualization).

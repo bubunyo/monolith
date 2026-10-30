@@ -42,7 +42,7 @@ func DefaultConfig() VMConfig {
 // ReadConfig reads the VM configuration from its config file.
 // If the file does not exist, default values are returned.
 func ReadConfig(name string) (VMConfig, error) {
-	dir, err := vmDir(name)
+	dir, err := VMDir(name)
 	if err != nil {
 		return DefaultConfig(), nil
 	}
@@ -76,7 +76,7 @@ func ReadConfig(name string) (VMConfig, error) {
 
 // WriteConfig persists the VM configuration to its config file.
 func WriteConfig(name string, cfg VMConfig) error {
-	dir, err := vmDir(name)
+	dir, err := VMDir(name)
 	if err != nil {
 		return err
 	}

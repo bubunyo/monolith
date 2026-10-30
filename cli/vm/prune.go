@@ -24,7 +24,7 @@ var pruneCmd = &cobra.Command{
 
 // pruneVMs finds all stopped VMs and deletes them after user confirmation.
 func pruneVMs() error {
-	dir, err := vmsDir()
+	dir, err := monolith.VMsDir()
 	if err != nil {
 		return err
 	}

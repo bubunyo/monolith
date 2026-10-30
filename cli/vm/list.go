@@ -26,7 +26,7 @@ var listCmd = &cobra.Command{
 
 // listVMs lists all VMs with their current status, config, and resource usage.
 func listVMs(wide bool) error {
-	vmsPath, err := vmsDir()
+	vmsPath, err := monolith.VMsDir()
 	if err != nil {
 		return err
 	}
@@ -169,15 +169,6 @@ func listVMs(wide bool) error {
 
 func init() {
 	listCmd.Flags().BoolVarP(&flagWide, "wide", "w", false, "show additional columns (CPU%, RSS, OS)")
-}
-
-// vmsDir returns the path to the VMs directory.
-func vmsDir() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".cache", "monolith", "vms"), nil
 }
 
 // dash returns "-" if s is empty, otherwise returns s.
