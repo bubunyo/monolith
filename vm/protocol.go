@@ -39,6 +39,17 @@ type ControlResponse struct {
 	Status string `json:"status,omitempty"` // current VM status after the operation
 	Forced bool   `json:"forced,omitempty"` // stop: the guest ignored the request and was force-stopped
 	Error  string `json:"error,omitempty"`
+
+	// Ports is reported by status for docker image VMs: published container
+	// ports and whether each is forwarded to the Mac's localhost.
+	Ports []PortForward `json:"ports,omitempty"`
+}
+
+// PortForward is a container port published to localhost on the Mac. Error
+// is set when the daemon couldn't bind it, e.g. another VM holds the port.
+type PortForward struct {
+	Port  int    `json:"port"`
+	Error string `json:"error,omitempty"`
 }
 
 // MarshalControlRequest encodes a control request to JSON bytes.

@@ -1,0 +1,36 @@
+# /etc/inittab — busybox init for the monolith docker host
+# Alpine initramfs already mounts proc, sysfs, devtmpfs and root (ro).
+::sysinit:/bin/mount -o remount,rw /
+::sysinit:/bin/mkdir -p /dev/pts /dev/shm /run /tmp
+::sysinit:/bin/mount -t devpts devpts /dev/pts
+::sysinit:/bin/mount -t tmpfs tmpfs /dev/shm
+::sysinit:/bin/mount -t tmpfs tmpfs /run
+::sysinit:/bin/mount -t tmpfs tmpfs /tmp
+::sysinit:/sbin/mdev -s
+::sysinit:/bin/chmod 666 /dev/null /dev/zero /dev/urandom /dev/random /dev/tty
+::sysinit:/bin/hostname {{.Name}}
+
+# Kernel modules from the modloop squashfs, as in ../../etc/inittab.tmpl.
+::sysinit:/bin/mkdir -p /.modloop
+::sysinit:/bin/mount -t squashfs -o ro /lib/modloop-virt /.modloop
+::sysinit:/bin/rm -rf /lib/modules
+::sysinit:/bin/ln -s /.modloop/modules /lib/modules
+
+::sysinit:/sbin/modprobe af_packet
+::sysinit:/sbin/ifconfig lo 127.0.0.1 up
+::sysinit:/sbin/ifconfig eth0 up
+::sysinit:/usr/local/bin/dhcp-configure eth0
+
+# Installs Docker on first boot, then mounts its data disk and /Users.
+::sysinit:/usr/local/bin/docker-setup
+
+# dockerd, the TCP relay the host's docker.sock connects through, and the
+# clock sync that corrects the time after a restore.
+::respawn:/usr/local/bin/docker-serve dockerd
+::respawn:/usr/local/bin/docker-serve relay
+::respawn:/usr/local/bin/docker-serve clock
+
+hvc0::respawn:/sbin/getty -n -l /usr/local/bin/autologin 0 hvc0
+
+::ctrlaltdel:/sbin/reboot
+::shutdown:/bin/umount -a -r

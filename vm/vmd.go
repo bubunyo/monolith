@@ -144,7 +144,41 @@ func RunDaemon(name string, restore bool, consoleLogPath string) error {
 	if err != nil {
 		return errors.Wrap(err, "vz.NewVirtioBlockDeviceConfiguration")
 	}
-	vmCfg.SetStorageDevicesVirtualMachineConfiguration([]vz.StorageDeviceConfiguration{storageConfig})
+	storageDevices := []vz.StorageDeviceConfiguration{storageConfig}
+	if spec.DataDiskPath != "" {
+		dataAttachment, err := vz.NewDiskImageStorageDeviceAttachment(spec.DataDiskPath, false)
+		if err != nil {
+			return errors.Wrap(err, "data disk attachment")
+		}
+		dataConfig, err := vz.NewVirtioBlockDeviceConfiguration(dataAttachment)
+		if err != nil {
+			return errors.Wrap(err, "data disk device")
+		}
+		storageDevices = append(storageDevices, dataConfig)
+	}
+	vmCfg.SetStorageDevicesVirtualMachineConfiguration(storageDevices)
+
+	// Shared directories (virtio-fs).
+	var shareDevices []vz.DirectorySharingDeviceConfiguration
+	for _, sh := range spec.Shares {
+		dir, err := vz.NewSharedDirectory(sh.HostPath, false)
+		if err != nil {
+			return errors.Wrapf(err, "shared directory %s", sh.HostPath)
+		}
+		share, err := vz.NewSingleDirectoryShare(dir)
+		if err != nil {
+			return errors.Wrapf(err, "directory share %s", sh.HostPath)
+		}
+		fsConfig, err := vz.NewVirtioFileSystemDeviceConfiguration(sh.Tag)
+		if err != nil {
+			return errors.Wrapf(err, "virtio-fs device %q", sh.Tag)
+		}
+		fsConfig.SetDirectoryShare(share)
+		shareDevices = append(shareDevices, fsConfig)
+	}
+	if len(shareDevices) > 0 {
+		vmCfg.SetDirectorySharingDevicesVirtualMachineConfiguration(shareDevices)
+	}
 
 	// Network.
 	// Snapshots taken before MACs were persisted only recorded theirs in
@@ -152,9 +186,12 @@ func RunDaemon(name string, restore bool, consoleLogPath string) error {
 	if cfg.MAC == "" && restore {
 		cfg.MAC = suspendedMAC(name)
 	}
-	macStr, err := mnet.ConfigureNetwork(vmCfg, cfg.NetworkMode, cfg.NetworkName, cfg.HostInterface, cfg.MAC)
+	macStr, userNet, err := mnet.ConfigureNetwork(vmCfg, cfg.NetworkMode, cfg.NetworkName, cfg.HostInterface, cfg.MAC)
 	if err != nil {
 		return errors.Wrap(err, "configureNetwork")
+	}
+	if userNet != nil {
+		defer userNet.Close()
 	}
 	if cfg.MAC == "" {
 		cfg.MAC = macStr
@@ -232,6 +269,15 @@ func RunDaemon(name string, restore bool, consoleLogPath string) error {
 		}
 	}
 
+	var services *dockerServices
+	if cfg.Image == ImageDocker {
+		services, err = startDockerServices(name, userNet, logger)
+		if err != nil {
+			return errors.Wrap(err, "docker services")
+		}
+		defer services.close()
+	}
+
 	// Write state.
 	if err := WriteState(name, os.Getpid(), macStr, StatusRunning); err != nil {
 		logger.Warn("failed to write state file: %v", err)
@@ -262,6 +308,7 @@ func RunDaemon(name string, restore bool, consoleLogPath string) error {
 		listener: listener,
 		logger:   logger,
 		bus:      bus,
+		docker:   services,
 	}
 
 	// Accept connections in background.
@@ -335,6 +382,7 @@ type vmDaemon struct {
 	listener net.Listener
 	logger   *monolith.Logger
 	bus      *consoleBus
+	docker   *dockerServices // nil unless the VM uses the docker image
 
 	suspended atomic.Bool    // set while suspending; keeps state.json on exit
 	controlWG sync.WaitGroup // in-flight control requests
@@ -656,7 +704,11 @@ func (d *vmDaemon) handleStatus(conn net.Conn) {
 	default:
 		status = fmt.Sprintf("vz:%d", int(state))
 	}
-	d.sendControlResponse(conn, ControlResponse{OK: true, Status: status})
+	resp := ControlResponse{OK: true, Status: status}
+	if d.docker != nil {
+		resp.Ports = d.docker.forwards()
+	}
+	d.sendControlResponse(conn, resp)
 }
 
 // handleResize records the client's terminal size on the console PTY.

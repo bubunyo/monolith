@@ -2,7 +2,8 @@
 
 monolith manages lightweight Linux virtual machines on macOS using
 Apple's Virtualization.framework. The guest OS is a pluggable base image:
-Kata Containers' guest (default for new VMs) or Alpine Linux (`--image alpine`).
+Kata Containers' guest (default for new VMs), Alpine Linux (`--image alpine`),
+or a Docker host built on Alpine (`--image docker`, see [Docker Host](#docker-host)).
 See AGENTS.md § Base Images for how each boots. VMs run as background daemon processes,
 allowing you to detach, reattach, pause, suspend to disk, and resume without
 losing state.
@@ -81,7 +82,7 @@ Behavior depends on the VM's current state:
 |------|-------|---------|-------------|
 | `--cpus` | `-c` | 1 | Number of vCPUs |
 | `--memory` | `-m` | `512M` | RAM size (e.g. `512M`, `1G`, `2048M`) |
-| `--network-mode` | | `nat` | Network mode: `nat`, `shared`, `host`, `isolated`, `none` |
+| `--network-mode` | | `nat` | Network mode: `nat`, `shared`, `host`, `isolated`, `none`, `user` (`user` for the docker image) |
 | `--network` | `-n` | | Named network to join (shared/isolated only) |
 | `--host-interface` | | | Physical NIC for host mode (e.g. `en0`) |
 
@@ -177,7 +178,7 @@ Output columns:
 |--------|-------------|
 | NAME | VM name |
 | STATE | `running`, `paused`, `suspended`, or `stopped` |
-| IMAGE | Base image: `kata` or `alpine` |
+| IMAGE | Base image: `kata`, `alpine` or `docker` |
 | IP | Guest IP address (from DHCP leases) |
 | NET | Network mode, or `mode:name` for named networks |
 | CPUS | Number of vCPUs |
@@ -237,6 +238,42 @@ monolith vm prune
 Lists all VMs that are in the `stopped` state (not running, paused, or
 suspended) and prompts for confirmation before deleting them. Shows the
 name and actual disk usage of each VM to be pruned.
+
+## Docker Host
+
+`monolith docker` runs Docker Engine in VMs and points the docker CLI on the
+Mac at them, like Colima. Every command except `list` takes `--name`
+(default `lith-default`).
+
+```bash
+monolith docker start                  # first run installs Docker in the VM (~20s)
+docker run --rm -it busybox sh         # context docker-lith-default is now current
+docker run -d -p 8080:80 nginx         # http://localhost:8080
+docker run --rm -v "$PWD":/src busybox ls /src   # paths under /Users work
+monolith docker pause                  # save the whole VM to disk; frees its memory
+monolith docker resume                 # containers carry on where they were
+monolith docker start --name lith-2    # a second host; context docker-lith-2
+monolith docker list
+monolith docker stop
+monolith docker rm --name lith-2       # deletes the VM and its context
+```
+
+- `start` creates the context `docker-<name>` and makes it current (like
+  `docker context use`). It resumes a paused VM. It takes `--cpus` (default 2)
+  and `--memory` (default `2G`). If `DOCKER_HOST` is set in your shell, it
+  overrides the context; `start` warns about it.
+- `pause` is `vm suspend`: memory and devices go to `suspend.vmstate`.
+  Resuming needs the Mac unlocked. Connections open at pause time are dropped
+  on resume, and the guest clock is corrected within seconds.
+- `stop` on a paused VM discards its saved state (it asks first, or pass
+  `--force`); images and volumes stay.
+- Images and containers live on a 64 GiB sparse `data.img` per VM.
+- Published TCP ports are forwarded to `127.0.0.1`. If two VMs publish the same
+  port, the first one keeps it; `docker list` marks the other with `!`. UDP
+  ports and ports bound to a specific address (`-p 127.0.0.1:80:80`) aren't
+  forwarded.
+- `monolith vm attach <name>` opens a VM's console; dockerd logs to
+  `/var/log/docker.log`.
 
 ## Console Interaction
 

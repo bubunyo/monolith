@@ -11,13 +11,14 @@ import (
 const (
 	ImageKata   = "kata"
 	ImageAlpine = "alpine"
+	ImageDocker = "docker"
 )
 
 // DefaultImage is used for new VMs when --image is not given.
 const DefaultImage = ImageKata
 
 // ValidImages is the set of accepted --image values.
-var ValidImages = []string{ImageKata, ImageAlpine}
+var ValidImages = []string{ImageKata, ImageAlpine, ImageDocker}
 
 // BootSpec is everything the daemon needs from a base image to boot a VM.
 type BootSpec struct {
@@ -26,6 +27,15 @@ type BootSpec struct {
 	CommandLine  string
 	DiskPath     string // root disk attached as /dev/vda
 	DiskReadOnly bool   // true when the disk is a base image shared by all VMs
+	DataDiskPath string // optional second writable disk, attached as /dev/vdb
+	Shares       []Share
+}
+
+// Share is a host directory exposed to the guest over virtio-fs; the guest
+// mounts it with `mount -t virtiofs <Tag> <dir>`.
+type Share struct {
+	Tag      string
+	HostPath string
 }
 
 // Image is a guest base image: where the kernel comes from, how the root
@@ -46,6 +56,8 @@ func LookupImage(name string) (Image, error) {
 		return kataImage{}, nil
 	case ImageAlpine:
 		return alpineImage{}, nil
+	case ImageDocker:
+		return dockerImage{}, nil
 	default:
 		return nil, fmt.Errorf("unknown image %q; must be one of: %s", name, strings.Join(ValidImages, ", "))
 	}

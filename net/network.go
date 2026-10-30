@@ -13,8 +13,9 @@ import (
 // one is generated. A stable MAC is required to restore a saved VM state and
 // keeps the VM's DHCP address stable. It returns the MAC address string (even
 // for "none" mode, for state tracking) and attaches the network device to the
-// VM configuration when applicable.
-func ConfigureNetwork(vmConfig *vz.VirtualMachineConfiguration, mode, networkName, hostInterface, macAddr string) (string, error) {
+// VM configuration when applicable. In "user" mode it also returns the
+// running UserNetwork, which the caller must Close when the VM stops.
+func ConfigureNetwork(vmConfig *vz.VirtualMachineConfiguration, mode, networkName, hostInterface, macAddr string) (string, *UserNetwork, error) {
 	var mac *vz.MACAddress
 	var err error
 	if macAddr == "" {
@@ -26,7 +27,7 @@ func ConfigureNetwork(vmConfig *vz.VirtualMachineConfiguration, mode, networkNam
 		}
 	}
 	if err != nil {
-		return "", fmt.Errorf("MAC address %q: %w", macAddr, err)
+		return "", nil, fmt.Errorf("MAC address %q: %w", macAddr, err)
 	}
 
 	if mode == "" {
@@ -34,36 +35,48 @@ func ConfigureNetwork(vmConfig *vz.VirtualMachineConfiguration, mode, networkNam
 	}
 
 	if mode == NetworkNone {
-		return mac.String(), nil
+		return mac.String(), nil, nil
 	}
 
 	var attachment vz.NetworkDeviceAttachment
+	var user *UserNetwork
 
 	// If a named network is specified, join it via the daemon.
 	if networkName != "" {
 		network, err := joinNamedNetwork(networkName)
 		if err != nil {
-			return "", fmt.Errorf("joining named network %q: %w", networkName, err)
+			return "", nil, fmt.Errorf("joining named network %q: %w", networkName, err)
 		}
 		attachment, err = vz.NewVMNetNetworkDeviceAttachment(network)
 		if err != nil {
-			return "", fmt.Errorf("attaching to named network %q: %w", networkName, err)
+			return "", nil, fmt.Errorf("attaching to named network %q: %w", networkName, err)
+		}
+	} else if mode == NetworkUser {
+		if user, err = NewUserNetwork(mac.String()); err != nil {
+			return "", nil, err
+		}
+		if attachment, err = user.attachment(); err != nil {
+			user.Close()
+			return "", nil, fmt.Errorf("attaching to user-mode network: %w", err)
 		}
 	} else {
 		attachment, err = createNetworkAttachment(mode, hostInterface)
 		if err != nil {
-			return "", fmt.Errorf("creating network attachment (%s): %w", mode, err)
+			return "", nil, fmt.Errorf("creating network attachment (%s): %w", mode, err)
 		}
 	}
 
 	netDevConfig, err := vz.NewVirtioNetworkDeviceConfiguration(attachment)
 	if err != nil {
-		return "", fmt.Errorf("creating virtio network device: %w", err)
+		if user != nil {
+			user.Close()
+		}
+		return "", nil, fmt.Errorf("creating virtio network device: %w", err)
 	}
 	netDevConfig.SetMACAddress(mac)
 	vmConfig.SetNetworkDevicesVirtualMachineConfiguration([]*vz.VirtioNetworkDeviceConfiguration{netDevConfig})
 
-	return mac.String(), nil
+	return mac.String(), user, nil
 }
 
 // createNetworkAttachment builds the appropriate vz.NetworkDeviceAttachment for the given mode.

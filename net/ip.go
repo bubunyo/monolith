@@ -139,6 +139,8 @@ func LookupIPForMode(mode, mac string) string {
 			return ip
 		}
 		return lookupIPByARP(mac)
+	case NetworkUser:
+		return UserGuestIP // fixed lease; reachable only through the daemon
 	case NetworkIsolated, NetworkNone:
 		return ""
 	default:
