@@ -54,13 +54,14 @@ Every command except list takes --name (default "docker-lith-default").`,
 }
 
 var (
-	flagName   string
-	flagCPUs   uint
-	flagMemory string
-	flagForce  bool
-	flagEngine string
-	flagKube   bool
-	flagK3s    string
+	flagName    string
+	flagCPUs    uint
+	flagMemory  string
+	flagForce   bool
+	flagEngine  string
+	flagKube    bool
+	flagK3s     string
+	flagRosetta bool
 )
 
 var startCmd = &cobra.Command{
@@ -163,10 +164,10 @@ func start(cmd *cobra.Command) error {
 		if engine := vm.EngineOf(cfg); cmd.Flags().Changed("engine") && flagEngine != engine {
 			return fmt.Errorf("%q was created with the %s engine; the engine can't be changed (remove it or pick another --name)", flagName, engine)
 		}
-		// Kubernetes changes the VM's devices and boot arguments, so it can
-		// only change on a fresh boot.
-		if status, err := vm.ReadState(flagName); err == nil && status.State != vm.StatusStopped && kubeFlagsChange(cmd, cfg) {
-			return fmt.Errorf("%q is %s; stop it to change --kubernetes or --k3s-version", flagName, status.State)
+		// Kubernetes and Rosetta change the VM's devices and boot
+		// arguments, so they can only change on a fresh boot.
+		if status, err := vm.ReadState(flagName); err == nil && status.State != vm.StatusStopped && bootFlagsChange(cmd, cfg) {
+			return fmt.Errorf("%q is %s; stop it to change --kubernetes, --k3s-version or --rosetta", flagName, status.State)
 		}
 	}
 	status, err := vm.ReadState(flagName)
@@ -230,11 +231,17 @@ func boot(cmd *cobra.Command) error {
 	}
 	// Checked here as well as in Prepare so a refused --kubernetes isn't
 	// saved to the config.
-	if cfg.Kubernetes && vm.Exists(flagName) && cfg.GuestLayout < vm.GuestLayout {
+	if cfg.Kubernetes && vm.Exists(flagName) && cfg.GuestLayout < vm.GuestLayoutKubernetes {
 		return fmt.Errorf("%q was created before Kubernetes support; recreate it ('monolith docker rm --name %s') to use --kubernetes", flagName, flagName)
 	}
 	if cmd.Flags().Changed("k3s-version") {
 		cfg.K3sVersion = flagK3s
+	}
+	if cmd.Flags().Changed("rosetta") {
+		cfg.Rosetta = flagRosetta
+	}
+	if cfg.Rosetta && vm.Exists(flagName) && cfg.GuestLayout < vm.GuestLayoutRosetta {
+		return fmt.Errorf("%q was created before Rosetta support; recreate it ('monolith docker rm --name %s') to use --rosetta", flagName, flagName)
 	}
 	if cfg.Kubernetes && cfg.KubePort == 0 {
 		port, err := vm.FreeLocalPort()
@@ -510,10 +517,13 @@ func checkEngine(name, engine string) error {
 	return nil
 }
 
-// kubeFlagsChange reports whether start's --kubernetes or --k3s-version
-// differ from the VM's config.
-func kubeFlagsChange(cmd *cobra.Command, cfg vm.VMConfig) bool {
-	if cmd.Flags().Changed("kubernetes") && flagKube != cfg.Kubernetes {
+// bootFlagsChange reports whether start's --kubernetes, --k3s-version or
+// --rosetta differ from the VM's config.
+func bootFlagsChange(cmd *cobra.Command, cfg vm.VMConfig) bool {
+	switch {
+	case cmd.Flags().Changed("kubernetes") && flagKube != cfg.Kubernetes:
+		return true
+	case cmd.Flags().Changed("rosetta") && flagRosetta != cfg.Rosetta:
 		return true
 	}
 	return cmd.Flags().Changed("k3s-version") && flagK3s != vm.K3sVersionOf(cfg)
@@ -606,9 +616,9 @@ func confirm(question string) bool {
 }
 
 func init() {
-	Cmd.AddCommand(startCmd, stopCmd, pauseCmd, resumeCmd, listCmd, rmCmd, envCmd, nerdctlCmd, kubeconfigCmd)
+	Cmd.AddCommand(startCmd, stopCmd, pauseCmd, resumeCmd, listCmd, rmCmd, envCmd, nerdctlCmd, kubeconfigCmd, linkSocketCmd)
 
-	for _, c := range []*cobra.Command{startCmd, stopCmd, pauseCmd, resumeCmd, rmCmd, envCmd, nerdctlCmd, kubeconfigCmd} {
+	for _, c := range []*cobra.Command{startCmd, stopCmd, pauseCmd, resumeCmd, rmCmd, envCmd, nerdctlCmd, kubeconfigCmd, linkSocketCmd} {
 		c.Flags().StringVar(&flagName, "name", defaultName, "Docker host VM name")
 	}
 	startCmd.Flags().UintVarP(&flagCPUs, "cpus", "c", 0, "number of vCPUs (default: 2)")
@@ -616,6 +626,7 @@ func init() {
 	startCmd.Flags().StringVar(&flagEngine, "engine", vm.EngineDocker, "container engine for a new VM: docker or containerd")
 	startCmd.Flags().BoolVar(&flagKube, "kubernetes", false, "run Kubernetes (k3s) on the engine; --kubernetes=false turns it off (saved)")
 	startCmd.Flags().StringVar(&flagK3s, "k3s-version", vm.DefaultK3sVersion, "k3s release for --kubernetes (saved)")
+	startCmd.Flags().BoolVar(&flagRosetta, "rosetta", true, "run x86-64 (amd64) images with Rosetta (opt-in; saved); --rosetta=false turns it off again")
 	stopCmd.Flags().BoolVarP(&flagForce, "force", "f", false, "discard a paused VM's saved state without asking")
 	rmCmd.Flags().BoolVarP(&flagForce, "force", "f", false, "delete without asking")
 }

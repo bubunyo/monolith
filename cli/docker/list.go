@@ -99,6 +99,9 @@ func forwardedPorts(name string) string {
 	var parts []string
 	for _, p := range resp.Ports {
 		s := strconv.Itoa(p.Port)
+		if p.Protocol == "udp" {
+			s += "/udp"
+		}
 		if p.Error != "" {
 			s += "!"
 		}

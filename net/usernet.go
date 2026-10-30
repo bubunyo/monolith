@@ -1,11 +1,16 @@
 package net
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/Code-Hex/vz/v4"
 	"github.com/containers/gvisor-tap-vsock/pkg/types"
@@ -21,6 +26,12 @@ const (
 	UserGatewayIP = "192.168.127.1"   // DHCP and DNS server
 	UserGuestIP   = "192.168.127.2"   // static lease for the VM's MAC
 	UserHostIP    = "192.168.127.254" // NATed to the Mac's 127.0.0.1
+
+	// UserHostName and UserGatewayName resolve to UserHostIP through the
+	// gateway's DNS server, in the guest and in its containers and pods, as
+	// with Docker Desktop.
+	UserHostName    = "host.docker.internal"
+	UserGatewayName = "gateway.docker.internal"
 
 	userGatewayMAC = "5a:94:ef:e4:0c:dd"
 	userMTU        = 1500
@@ -55,7 +66,14 @@ func NewUserNetwork(mac string) (*UserNetwork, error) {
 		DHCPStaticLeases:  map[string]string{UserGuestIP: mac},
 		NAT:               map[string]string{UserHostIP: "127.0.0.1"},
 		GatewayVirtualIPs: []string{UserHostIP},
-		Protocol:          types.VfkitProtocol,
+		DNS: []types.Zone{{
+			Name: "docker.internal.",
+			Records: []types.Record{
+				{Name: strings.TrimSuffix(UserHostName, ".docker.internal"), IP: net.ParseIP(UserHostIP)},
+				{Name: strings.TrimSuffix(UserGatewayName, ".docker.internal"), IP: net.ParseIP(UserHostIP)},
+			},
+		}},
+		Protocol: types.VfkitProtocol,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("creating user-mode network: %w", err)
@@ -103,6 +121,39 @@ func (u *UserNetwork) attachment() (vz.NetworkDeviceAttachment, error) {
 // network, as if from the gateway.
 func (u *UserNetwork) DialGuest(ctx context.Context, port int) (net.Conn, error) {
 	return u.vn.DialContextTCP(ctx, net.JoinHostPort(UserGuestIP, strconv.Itoa(port)))
+}
+
+// ExposeUDP forwards UDP on 127.0.0.1:hostPort on the Mac to guestPort on
+// the guest, using gvisor-tap-vsock's port forwarder (it tracks a session
+// per client address). TCP goes through DialGuest instead.
+func (u *UserNetwork) ExposeUDP(hostPort, guestPort int) error {
+	return u.forwarder("/services/forwarder/expose", types.ExposeRequest{
+		Local:    net.JoinHostPort("127.0.0.1", strconv.Itoa(hostPort)),
+		Remote:   net.JoinHostPort(UserGuestIP, strconv.Itoa(guestPort)),
+		Protocol: types.UDP,
+	})
+}
+
+// UnexposeUDP stops a forward started by ExposeUDP.
+func (u *UserNetwork) UnexposeUDP(hostPort int) error {
+	return u.forwarder("/services/forwarder/unexpose", types.UnexposeRequest{
+		Local:    net.JoinHostPort("127.0.0.1", strconv.Itoa(hostPort)),
+		Protocol: types.UDP,
+	})
+}
+
+// forwarder calls the forwarder's HTTP API in-process.
+func (u *UserNetwork) forwarder(path string, req any) error {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return err
+	}
+	rec := httptest.NewRecorder()
+	u.vn.ServicesMux().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body)))
+	if rec.Code != http.StatusOK {
+		return fmt.Errorf("%s", strings.TrimSpace(rec.Body.String()))
+	}
+	return nil
 }
 
 // Close stops serving the network.

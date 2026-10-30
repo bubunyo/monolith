@@ -95,7 +95,7 @@ func (dockerImage) Prepare(name string) (*BootSpec, error) {
 
 	shares := []Share{{Tag: "users", HostPath: "/Users"}}
 	if cfg.Kubernetes {
-		if cfg.GuestLayout < GuestLayout {
+		if cfg.GuestLayout < GuestLayoutKubernetes {
 			return nil, fmt.Errorf("VM %q was created before Kubernetes support; recreate it to use --kubernetes", name)
 		}
 		dir, err := ensureK3s(K3sVersionOf(cfg))
@@ -104,6 +104,15 @@ func (dockerImage) Prepare(name string) (*BootSpec, error) {
 		}
 		shares = append(shares, Share{Tag: k3sShareTag, HostPath: dir, ReadOnly: true})
 		commandLine += " " + k3sCmdlineArg + "=1"
+	}
+	if cfg.Rosetta {
+		if cfg.GuestLayout < GuestLayoutRosetta {
+			return nil, fmt.Errorf("VM %q was created before Rosetta support; recreate it to use --rosetta", name)
+		}
+		if err := CheckRosetta(); err != nil {
+			return nil, err
+		}
+		commandLine += " " + rosettaCmdlineArg + "=1"
 	}
 
 	disk, err := DefaultDisk(rootfs, kernel.ModloopPath, name, overlays...)
@@ -131,6 +140,8 @@ func (dockerImage) Prepare(name string) (*BootSpec, error) {
 		DiskPath:     disk,
 		DataDiskPath: dataDisk,
 		Shares:       shares,
+		Rosetta:      cfg.Rosetta,
+		HandlesStop:  cfg.GuestLayout >= GuestLayoutRosetta,
 	}, nil
 }
 

@@ -41,11 +41,11 @@ type dockerServices struct {
 
 	// publishedPorts returns the host ports published on all guest
 	// interfaces, from dockerd's API or nerdctl.
-	publishedPorts func() (map[int]bool, error)
+	publishedPorts func() (map[portKey]bool, error)
 
 	mu     sync.Mutex
-	ports  map[int]net.Listener // published host port -> localhost listener
-	failed map[int]string       // published ports that couldn't be bound -> error
+	ports  map[portKey]func() // forwarded port -> stops its forward
+	failed map[portKey]string // published ports that couldn't be forwarded -> error
 }
 
 // startDockerServices starts the engine's socket relays and the port
@@ -61,8 +61,8 @@ func startDockerServices(name string, cfg VMConfig, user *mnet.UserNetwork, logg
 		user:   user,
 		logger: logger,
 		cancel: cancel,
-		ports:  map[int]net.Listener{},
-		failed: map[int]string{},
+		ports:  map[portKey]func(){},
+		failed: map[portKey]string{},
 	}
 
 	var sockPath string
@@ -107,7 +107,7 @@ func startDockerServices(name string, cfg VMConfig, user *mnet.UserNetwork, logg
 		s.listeners = append(s.listeners, l)
 		go s.serveListener(ctx, l, KubeAPIPort)
 		engineHostPorts := s.publishedPorts
-		s.publishedPorts = func() (map[int]bool, error) {
+		s.publishedPorts = func() (map[portKey]bool, error) {
 			ports, err := engineHostPorts()
 			if err != nil {
 				return nil, err
@@ -125,6 +125,7 @@ func startDockerServices(name string, cfg VMConfig, user *mnet.UserNetwork, logg
 	}
 
 	go s.forwardPorts(ctx)
+	go s.relayFileEvents(ctx, "/Users")
 	logger.Info("%s engine for %q: %s relays to guest port %d", engine, name, sockPath, sockPort)
 	return s, nil
 }
@@ -200,7 +201,7 @@ func (s *dockerServices) kubeconfig() ([]byte, error) {
 
 // kubeServicePorts returns the ports Kubernetes services expose on the node:
 // LoadBalancer ports (served by k3s's servicelb on the node) and NodePorts.
-func (s *dockerServices) kubeServicePorts() (map[int]bool, error) {
+func (s *dockerServices) kubeServicePorts() (map[portKey]bool, error) {
 	data, err := s.k8sInfo("services")
 	if err != nil {
 		return nil, err
@@ -208,7 +209,7 @@ func (s *dockerServices) kubeServicePorts() (map[int]bool, error) {
 	return parseKubeServicePorts(data)
 }
 
-func parseKubeServicePorts(data []byte) (map[int]bool, error) {
+func parseKubeServicePorts(data []byte) (map[portKey]bool, error) {
 	var list struct {
 		Items []struct {
 			Spec struct {
@@ -224,27 +225,39 @@ func parseKubeServicePorts(data []byte) (map[int]bool, error) {
 	if err := json.Unmarshal(data, &list); err != nil {
 		return nil, fmt.Errorf("kubectl get svc: %w", err)
 	}
-	ports := map[int]bool{}
+	ports := map[portKey]bool{}
 	for _, svc := range list.Items {
 		for _, p := range svc.Spec.Ports {
-			if p.Protocol != "" && p.Protocol != "TCP" {
+			proto := strings.ToLower(p.Protocol)
+			if proto == "" {
+				proto = "tcp"
+			}
+			if proto != "tcp" && proto != "udp" {
 				continue
 			}
 			switch svc.Spec.Type {
 			case "LoadBalancer":
-				ports[p.Port] = true
+				ports[portKey{proto, p.Port}] = true
 				if p.NodePort > 0 {
-					ports[p.NodePort] = true
+					ports[portKey{proto, p.NodePort}] = true
 				}
 			case "NodePort":
 				if p.NodePort > 0 {
-					ports[p.NodePort] = true
+					ports[portKey{proto, p.NodePort}] = true
 				}
 			}
 		}
 	}
 	return ports, nil
 }
+
+// portKey is a published port and its protocol ("tcp" or "udp").
+type portKey struct {
+	Proto string
+	Port  int
+}
+
+func (k portKey) String() string { return fmt.Sprintf("%d/%s", k.Port, k.Proto) }
 
 // publishedPort is the subset of GET /containers/json we use.
 type publishedPort struct {
@@ -253,11 +266,11 @@ type publishedPort struct {
 	Type       string `json:"Type"`
 }
 
-// forwardPorts keeps one localhost listener per published TCP port. The
-// engine publishes on the guest; each listener relays to the same port on the
-// guest through the user-mode network.
+// forwardPorts keeps a localhost forward for every published port. The
+// engine publishes on the guest; TCP forwards are listeners relaying through
+// DialGuest, UDP forwards use the user-mode network's port forwarder.
 // The first sync runs immediately, so after a restore the forwards are back
-// as soon as dockerd answers.
+// as soon as the engine answers.
 func (s *dockerServices) forwardPorts(ctx context.Context) {
 	ticker := time.NewTicker(portPollInterval)
 	defer ticker.Stop()
@@ -278,36 +291,52 @@ func (s *dockerServices) syncPorts(ctx context.Context) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for port := range s.failed {
-		if !want[port] {
-			delete(s.failed, port)
+	for key := range s.failed {
+		if !want[key] {
+			delete(s.failed, key)
 		}
 	}
-	for port, l := range s.ports {
-		if !want[port] {
-			l.Close()
-			delete(s.ports, port)
-			s.logger.Info("stopped forwarding localhost:%d", port)
+	for key, stop := range s.ports {
+		if !want[key] {
+			stop()
+			delete(s.ports, key)
+			s.logger.Info("stopped forwarding localhost:%s", key)
 		}
 	}
-	for port := range want {
-		if _, ok := s.ports[port]; ok {
+	for key := range want {
+		if _, ok := s.ports[key]; ok {
 			continue
 		}
-		l, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+		stop, err := s.forward(ctx, key)
 		if err != nil {
 			// Retried on every poll; log only the first failure.
-			if _, logged := s.failed[port]; !logged {
-				s.logger.Warn("cannot forward localhost:%d: %v", port, err)
+			if _, logged := s.failed[key]; !logged {
+				s.logger.Warn("cannot forward localhost:%s: %v", key, err)
 			}
-			s.failed[port] = err.Error()
+			s.failed[key] = err.Error()
 			continue
 		}
-		delete(s.failed, port)
-		s.ports[port] = l
-		go s.serveListener(ctx, l, port)
-		s.logger.Info("forwarding localhost:%d to %s:%d", port, mnet.UserGuestIP, port)
+		delete(s.failed, key)
+		s.ports[key] = stop
+		s.logger.Info("forwarding localhost:%s to %s:%d", key, mnet.UserGuestIP, key.Port)
 	}
+}
+
+// forward starts forwarding localhost:key to the same port on the guest and
+// returns a func that stops it.
+func (s *dockerServices) forward(ctx context.Context, key portKey) (func(), error) {
+	if key.Proto == "udp" {
+		if err := s.user.ExposeUDP(key.Port, key.Port); err != nil {
+			return nil, err
+		}
+		return func() { s.user.UnexposeUDP(key.Port) }, nil
+	}
+	l, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(key.Port)))
+	if err != nil {
+		return nil, err
+	}
+	go s.serveListener(ctx, l, key.Port)
+	return func() { l.Close() }, nil
 }
 
 // forwards lists the published ports, sorted, with the bind error for any
@@ -316,21 +345,26 @@ func (s *dockerServices) forwards() []PortForward {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var out []PortForward
-	for port := range s.ports {
-		out = append(out, PortForward{Port: port})
+	for key := range s.ports {
+		out = append(out, PortForward{Port: key.Port, Protocol: key.Proto})
 	}
-	for port, msg := range s.failed {
-		out = append(out, PortForward{Port: port, Error: msg})
+	for key, msg := range s.failed {
+		out = append(out, PortForward{Port: key.Port, Protocol: key.Proto, Error: msg})
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Port < out[j].Port })
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Port != out[j].Port {
+			return out[i].Port < out[j].Port
+		}
+		return out[i].Protocol < out[j].Protocol
+	})
 	return out
 }
 
-// dockerPorts returns the TCP ports published on all guest interfaces, from
-// dockerd's API. Ports bound to a specific guest address
+// dockerPorts returns the TCP and UDP ports published on all guest
+// interfaces, from dockerd's API. Ports bound to a specific guest address
 // (-p 127.0.0.1:80:80) aren't reachable from the gateway, so they are
 // skipped.
-func (s *dockerServices) dockerPorts() (map[int]bool, error) {
+func (s *dockerServices) dockerPorts() (map[portKey]bool, error) {
 	resp, err := s.client.Get("http://docker/containers/json")
 	if err != nil {
 		return nil, err
@@ -345,16 +379,13 @@ func (s *dockerServices) dockerPorts() (map[int]bool, error) {
 	if err := json.NewDecoder(resp.Body).Decode(&containers); err != nil {
 		return nil, err
 	}
-	ports := map[int]bool{}
+	ports := map[portKey]bool{}
 	for _, c := range containers {
 		for _, p := range c.Ports {
-			if p.Type != "tcp" || p.PublicPort == 0 {
+			if (p.Type != "tcp" && p.Type != "udp") || p.PublicPort == 0 || !allInterfaces(p.IP) {
 				continue
 			}
-			if !allInterfaces(p.IP) {
-				continue
-			}
-			ports[p.PublicPort] = true
+			ports[portKey{p.Type, p.PublicPort}] = true
 		}
 	}
 	return ports, nil
@@ -364,12 +395,12 @@ func allInterfaces(ip string) bool {
 	return ip == "" || ip == "0.0.0.0" || ip == "::" || ip == "[::]"
 }
 
-// nerdctlPorts returns the TCP ports published on all guest interfaces, from
-// `nerdctl ps --format json` (one JSON object per line), which the guest
-// serves on NerdctlPortsPort. nerdctl publishes with CNI's portmap plugin
-// (iptables DNAT), which applies to the forwarded connections because they
-// arrive on eth0.
-func (s *dockerServices) nerdctlPorts() (map[int]bool, error) {
+// nerdctlPorts returns the TCP and UDP ports published on all guest
+// interfaces, from `nerdctl ps --format json` (one JSON object per line),
+// which the guest serves on NerdctlPortsPort. nerdctl publishes with CNI's
+// portmap plugin (iptables DNAT), which applies to the forwarded traffic
+// because it arrives on eth0.
+func (s *dockerServices) nerdctlPorts() (map[portKey]bool, error) {
 	conn, err := s.dialGuest(context.Background(), NerdctlPortsPort)
 	if err != nil {
 		return nil, err
@@ -387,8 +418,8 @@ func (s *dockerServices) nerdctlPorts() (map[int]bool, error) {
 // "0.0.0.0:8080->80/tcp" or "127.0.0.1:9000->9000/udp".
 var nerdctlPortRE = regexp.MustCompile(`^(?:(.*):)?(\d+)->\d+/(tcp|udp|sctp)$`)
 
-func parseNerdctlPorts(data []byte) (map[int]bool, error) {
-	ports := map[int]bool{}
+func parseNerdctlPorts(data []byte) (map[portKey]bool, error) {
+	ports := map[portKey]bool{}
 	for _, line := range strings.Split(string(data), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
@@ -402,18 +433,18 @@ func parseNerdctlPorts(data []byte) (map[int]bool, error) {
 		}
 		for _, entry := range strings.Split(c.Ports, ",") {
 			m := nerdctlPortRE.FindStringSubmatch(strings.TrimSpace(entry))
-			if m == nil || m[3] != "tcp" || !allInterfaces(m[1]) {
+			if m == nil || m[3] == "sctp" || !allInterfaces(m[1]) {
 				continue
 			}
 			if port, err := strconv.Atoi(m[2]); err == nil && port > 0 {
-				ports[port] = true
+				ports[portKey{m[3], port}] = true
 			}
 		}
 	}
 	return ports, nil
 }
 
-// close stops all listeners and removes the host sockets.
+// close stops all listeners and forwards and removes the host sockets.
 func (s *dockerServices) close() {
 	s.cancel()
 	for _, l := range s.listeners {
@@ -423,8 +454,8 @@ func (s *dockerServices) close() {
 		os.Remove(path)
 	}
 	s.mu.Lock()
-	for _, l := range s.ports {
-		l.Close()
+	for _, stop := range s.ports {
+		stop()
 	}
 	s.mu.Unlock()
 }

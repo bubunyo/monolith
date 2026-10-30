@@ -9,6 +9,7 @@ require (
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/containers/gvisor-tap-vsock v0.9.0
 	github.com/diskfs/go-diskfs v1.9.1
+	github.com/fsnotify/fsevents v0.2.0
 	github.com/klauspost/compress v1.17.4
 	github.com/mattn/go-isatty v0.0.20
 	github.com/muesli/termenv v0.16.0

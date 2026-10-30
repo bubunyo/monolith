@@ -24,6 +24,7 @@ type VMConfig struct {
 	K3sVersion    string `json:"k3s_version,omitempty"`    // k3s release, e.g. "v1.36.5+k3s1" (default DefaultK3sVersion)
 	KubePort      int    `json:"kube_port,omitempty"`      // host port on 127.0.0.1 forwarded to the k3s API
 	GuestLayout   int    `json:"guest_layout,omitempty"`   // docker image only: GuestLayout its disk was created with
+	Rosetta       bool   `json:"rosetta,omitempty"`        // docker image only: run x86-64 binaries with Rosetta
 	MAC           string `json:"mac,omitempty"`            // assigned on first boot, then reused
 }
 

@@ -268,10 +268,23 @@ monolith docker rm --name lith-2       # deletes the VM and its context
 - `stop` on a paused VM discards its saved state (it asks first, or pass
   `--force`); images and volumes stay.
 - Images and containers live on a 64 GiB sparse `data.img` per VM.
-- Published TCP ports are forwarded to `127.0.0.1`. If two VMs publish the same
-  port, the first one keeps it; `docker list` marks the other with `!`. UDP
-  ports and ports bound to a specific address (`-p 127.0.0.1:80:80`) aren't
+- Published TCP and UDP ports are forwarded to `127.0.0.1`. If two VMs publish
+  the same port, the first one keeps it; `docker list` marks the other with
+  `!`. Ports bound to a specific address (`-p 127.0.0.1:80:80`) aren't
   forwarded.
+- Containers reach services on the Mac at `host.docker.internal`.
+- `start --rosetta` runs `--platform linux/amd64` images through Rosetta
+  (opt-in; needs `softwareupdate --install-rosetta`). Without it, amd64-only
+  images fail with `exec format error`. Turn it on or off while the host is
+  stopped.
+- Files you change on the Mac under `/Users` raise inotify events in containers,
+  so hot reload and file watchers work.
+- `stop` shuts the VM down cleanly: containers get SIGTERM, then the VM powers
+  off (a few seconds).
+- `monolith docker link-socket` points `/var/run/docker.sock` at the host, for
+  tools that ignore contexts (it uses sudo).
+- Hosts created before these features need recreating to get clean shutdown,
+  Rosetta and file events.
 - `monolith vm attach <name>` opens a VM's console; dockerd logs to
   `/var/log/docker.log`.
 

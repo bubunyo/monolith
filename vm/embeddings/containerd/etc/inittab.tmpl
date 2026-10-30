@@ -30,6 +30,8 @@
 ::respawn:/usr/local/bin/docker-serve sshd
 ::respawn:/usr/local/bin/docker-serve ports
 ::respawn:/usr/local/bin/docker-serve clock
+::respawn:/usr/local/bin/docker-serve power
+::respawn:/usr/local/bin/docker-serve fsnotify
 # Kubernetes (k3s); idle unless the host enables it.
 ::respawn:/usr/local/bin/docker-serve k3s
 ::respawn:/usr/local/bin/docker-serve k8s-info
@@ -37,4 +39,6 @@
 hvc0::respawn:/sbin/getty -n -l /usr/local/bin/autologin 0 hvc0
 
 ::ctrlaltdel:/sbin/reboot
+# Stop the engine cleanly before init kills everything and unmounts.
+::shutdown:/usr/local/bin/docker-serve shutdown
 ::shutdown:/bin/umount -a -r
