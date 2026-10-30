@@ -3,7 +3,8 @@ package vm
 import (
 	"fmt"
 
-	"github.com/bubunyo/monolith"
+	"github.com/bubunyo/monolith/vm"
+
 	"github.com/spf13/cobra"
 )
 
@@ -22,15 +23,15 @@ For suspended VMs: spawns a new daemon that restores the VM state from the suspe
 
 // resumeVM resumes a paused VM or restores a suspended VM from disk.
 func resumeVM(name string) error {
-	status, err := monolith.ReadState(name)
+	status, err := vm.ReadState(name)
 	if err != nil {
 		return fmt.Errorf("reading VM state: %w", err)
 	}
 
 	switch status.State {
-	case monolith.StatusPaused:
+	case vm.StatusPaused:
 		// VM is paused — send resume to daemon.
-		resp, err := monolith.SendControlCommand(name, monolith.ControlRequest{Cmd: monolith.CmdResume})
+		resp, err := vm.SendControlCommand(name, vm.ControlRequest{Cmd: vm.CmdResume})
 		if err != nil {
 			return err
 		}
@@ -40,16 +41,16 @@ func resumeVM(name string) error {
 		fmt.Printf("VM %q resumed.\n", name)
 		return nil
 
-	case monolith.StatusSuspended:
+	case vm.StatusSuspended:
 		// VM is suspended — spawn daemon with --restore.
 		fmt.Printf("Restoring VM %q from suspend file...\n", name)
-		if err := monolith.SpawnVMDaemon(name, true, ""); err != nil {
+		if err := vm.SpawnVMDaemon(name, true, ""); err != nil {
 			return err
 		}
 		fmt.Printf("VM %q restored and running.\n", name)
 		return nil
 
-	case monolith.StatusRunning:
+	case vm.StatusRunning:
 		return fmt.Errorf("VM %q is already running", name)
 
 	default:

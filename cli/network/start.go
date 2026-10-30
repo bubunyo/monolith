@@ -6,7 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bubunyo/monolith"
+	mnet "github.com/bubunyo/monolith/net"
+
 	"github.com/spf13/cobra"
 )
 
@@ -24,7 +25,7 @@ var startCmd = &cobra.Command{
 
 // startNetwork starts the daemon for an existing named network.
 func startNetwork(name string, verbose bool) error {
-	dir, err := monolith.NetworkDir(name)
+	dir, err := mnet.NetworkDir(name)
 	if err != nil {
 		return err
 	}
@@ -32,11 +33,11 @@ func startNetwork(name string, verbose bool) error {
 		return fmt.Errorf("network %q does not exist (use 'network create' first)", name)
 	}
 
-	if monolith.IsNetworkDaemonAlive(name) {
+	if mnet.IsNetworkDaemonAlive(name) {
 		return fmt.Errorf("network %q daemon is already running", name)
 	}
 
-	cfg, err := monolith.ReadNetworkConfig(name)
+	cfg, err := mnet.ReadNetworkConfig(name)
 	if err != nil {
 		return fmt.Errorf("reading network config: %w", err)
 	}
@@ -45,7 +46,7 @@ func startNetwork(name string, verbose bool) error {
 		return err
 	}
 
-	cfg, err = monolith.ReadNetworkConfig(name)
+	cfg, err = mnet.ReadNetworkConfig(name)
 	if err != nil {
 		fmt.Printf("Network %q started (mode: %s)\n", name, cfg.Mode)
 	} else {
@@ -61,20 +62,20 @@ func init() {
 // spawnDaemon loads the network's launchd job and waits for the daemon to
 // publish the network.
 func spawnDaemon(name, mode string, verbose bool) error {
-	if err := monolith.StartNetworkDaemon(name, mode, verbose); err != nil {
+	if err := mnet.StartNetworkDaemon(name, mode, verbose); err != nil {
 		return err
 	}
 
-	logPath, err := monolith.NetworkLogPath(name)
+	logPath, err := mnet.NetworkLogPath(name)
 	if err != nil {
 		return err
 	}
 
 	deadline := time.Now().Add(10 * time.Second)
-	for !monolith.IsNetworkDaemonAlive(name) {
+	for !mnet.IsNetworkDaemonAlive(name) {
 		if time.Now().After(deadline) {
 			// Unload the job so a failed start doesn't leave it registered.
-			monolith.StopNetworkDaemon(name)
+			mnet.StopNetworkDaemon(name)
 			tail := tailLog(logPath, 10)
 			if tail != "" {
 				return fmt.Errorf("daemon for network %q failed to start. Last log lines:\n%s", name, tail)

@@ -606,13 +606,13 @@ disk is recreated from the Alpine minirootfs template.
 
 | File | Purpose |
 |------|---------|
-| `vmd.go` | VM daemon: `RunDaemon()`, PTY setup, socket server, control handlers |
-| `client.go` | Client library: `AttachConsole()`, `SendControlCommand()`, `SpawnVMDaemon()` |
-| `protocol.go` | Shared types: message types, control commands, request/response structs |
-| `state.go` | VM state: `ReadState()`, `WriteState()`, `UpdateStateStatus()`, IP discovery |
-| `config.go` | VM config: `VMConfig`, `ReadConfig()`, `WriteConfig()`, network mode constants |
-| `kernel.go` | Alpine asset download: kernel, initramfs, minirootfs, modloop |
-| `storage.go` | Disk image creation: ext4 formatting, rootfs extraction, VM configuration |
+| `vm/vmd.go` | VM daemon: `RunDaemon()`, PTY setup, socket server, control handlers |
+| `vm/client.go` | Client library: `AttachConsole()`, `SendControlCommand()`, `SpawnVMDaemon()` |
+| `vm/protocol.go` | Shared types: message types, control commands, request/response structs |
+| `vm/state.go` | VM state: `ReadState()`, `WriteState()`, `UpdateStateStatus()` (IP discovery is in `net/ip.go`) |
+| `vm/config.go` | VM config: `VMConfig`, `ReadConfig()`, `WriteConfig()` (mode constants are in `net/modes.go`) |
+| `vm/kernel.go` | Alpine asset download: kernel, initramfs, minirootfs, modloop |
+| `vm/storage.go` | Disk image creation: ext4 formatting, rootfs extraction, VM configuration |
 | `cli/vmd.go` | Hidden `__vmd <name>` command for daemon process |
 | `cli/vm/run.go` | `vm run` command with flags and state-aware dispatch |
 | `cli/vm/attach.go` | `vm attach` command |
@@ -626,5 +626,5 @@ disk is recreated from the Alpine minirootfs template.
 | `cli/vm/rm.go` | `vm rm` command with confirmation |
 | `cli/vm/prune.go` | `vm prune` command for batch cleanup |
 | `cli/vm/helpers.go` | Shared escape command handler |
-| `embeddings/` | Guest OS configuration templates (inittab, passwd, motd, etc.) |
+| `vm/embeddings/` | Guest OS configuration templates (inittab, passwd, motd, etc.) |
 | `entitlements.plist` | Code signing entitlements |

@@ -8,7 +8,8 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/bubunyo/monolith"
+	"github.com/bubunyo/monolith/vm"
+
 	"github.com/spf13/cobra"
 )
 
@@ -24,7 +25,7 @@ var pruneCmd = &cobra.Command{
 
 // pruneVMs finds all stopped VMs and deletes them after user confirmation.
 func pruneVMs() error {
-	dir, err := monolith.VMsDir()
+	dir, err := vm.VMsDir()
 	if err != nil {
 		return err
 	}
@@ -51,8 +52,8 @@ func pruneVMs() error {
 		name := e.Name()
 
 		// Skip VMs that are not stopped (running, paused, or suspended).
-		status, _ := monolith.ReadState(name)
-		if status != nil && status.State != monolith.StatusStopped {
+		status, _ := vm.ReadState(name)
+		if status != nil && status.State != vm.StatusStopped {
 			continue
 		}
 

@@ -3,7 +3,8 @@ package vm
 import (
 	"fmt"
 
-	"github.com/bubunyo/monolith"
+	"github.com/bubunyo/monolith/vm"
+
 	"github.com/spf13/cobra"
 )
 
@@ -25,7 +26,7 @@ The disk image must not be modified between suspend and resume.`,
 
 // suspendVM saves the VM's full state to disk and stops the daemon.
 func suspendVM(name string) error {
-	resp, err := monolith.SendControlCommand(name, monolith.ControlRequest{Cmd: monolith.CmdSuspend})
+	resp, err := vm.SendControlCommand(name, vm.ControlRequest{Cmd: vm.CmdSuspend})
 	if err != nil {
 		return err
 	}

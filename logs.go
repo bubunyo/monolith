@@ -115,9 +115,9 @@ func seekToLastNLines(f *os.File, n int) error {
 
 	const chunk int64 = 8192
 	var (
-		offset    = size
-		newlines  = 0
-		buf       = make([]byte, chunk)
+		offset   = size
+		newlines = 0
+		buf      = make([]byte, chunk)
 		// We need n+1 newlines so that we land at the start of the
 		// nth-from-last line (a trailing newline at EOF counts as one).
 		needed = n + 1

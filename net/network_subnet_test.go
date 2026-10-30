@@ -1,4 +1,4 @@
-package monolith
+package net
 
 import (
 	"net/netip"
@@ -36,7 +36,8 @@ func equalPrefix(t *testing.T, want, got string) {
 //
 // Network names used by this test (hardcoded; documented here so they can
 // be cleaned up manually if a previous run was interrupted):
-//   test-subnet, test-bad, test-public, test-overlap-a, test-overlap-b
+//
+//	test-subnet, test-bad, test-public, test-overlap-a, test-overlap-b
 //
 // Subnets used: 192.168.77.0/24 and 192.168.77.128/25 (overlap probe);
 // 192.168.88.0/24 (independent, used by overlap A); 8.8.8.0/24 (rejected).
@@ -50,7 +51,7 @@ func TestNetworkCustomSubnet(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("must not run as root")
 	}
-	binary, err := filepath.Abs("./bin/monolith")
+	binary, err := filepath.Abs("../bin/monolith")
 	require.NoError(t, err)
 	if _, err := os.Stat(binary); err != nil {
 		t.Skipf("binary not found at %s — run 'make build' first", binary)

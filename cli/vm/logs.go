@@ -3,6 +3,8 @@ package vm
 import (
 	"os"
 
+	"github.com/bubunyo/monolith/vm"
+
 	"github.com/bubunyo/monolith"
 	"github.com/spf13/cobra"
 )
@@ -23,7 +25,7 @@ following new output as it is written, like ` + "`tail -F`" + `. Use
 to limit the size of the initial backlog.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		path, err := monolith.VMLogPath(args[0])
+		path, err := vm.VMLogPath(args[0])
 		if err != nil {
 			return err
 		}

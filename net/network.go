@@ -1,4 +1,4 @@
-package monolith
+package net
 
 import (
 	"fmt"
@@ -7,16 +7,15 @@ import (
 	"github.com/Code-Hex/vz/v4/vmnet"
 )
 
-// configureNetwork sets up the VM's network device based on the config.
+// ConfigureNetwork sets up the VM's network device based on the config.
 // It returns the MAC address string (even for "none" mode, for state tracking)
 // and attaches the network device to the VM configuration when applicable.
-func configureNetwork(vmConfig *vz.VirtualMachineConfiguration, cfg VMConfig) (string, error) {
+func ConfigureNetwork(vmConfig *vz.VirtualMachineConfiguration, mode, networkName, hostInterface string) (string, error) {
 	mac, err := vz.NewRandomLocallyAdministeredMACAddress()
 	if err != nil {
 		return "", fmt.Errorf("generating MAC address: %w", err)
 	}
 
-	mode := cfg.NetworkMode
 	if mode == "" {
 		mode = NetworkNAT
 	}
@@ -28,17 +27,17 @@ func configureNetwork(vmConfig *vz.VirtualMachineConfiguration, cfg VMConfig) (s
 	var attachment vz.NetworkDeviceAttachment
 
 	// If a named network is specified, join it via the daemon.
-	if cfg.NetworkName != "" {
-		network, err := joinNamedNetwork(cfg.NetworkName)
+	if networkName != "" {
+		network, err := joinNamedNetwork(networkName)
 		if err != nil {
-			return "", fmt.Errorf("joining named network %q: %w", cfg.NetworkName, err)
+			return "", fmt.Errorf("joining named network %q: %w", networkName, err)
 		}
 		attachment, err = vz.NewVMNetNetworkDeviceAttachment(network)
 		if err != nil {
-			return "", fmt.Errorf("attaching to named network %q: %w", cfg.NetworkName, err)
+			return "", fmt.Errorf("attaching to named network %q: %w", networkName, err)
 		}
 	} else {
-		attachment, err = createNetworkAttachment(mode, cfg.HostInterface)
+		attachment, err = createNetworkAttachment(mode, hostInterface)
 		if err != nil {
 			return "", fmt.Errorf("creating network attachment (%s): %w", mode, err)
 		}

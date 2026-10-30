@@ -3,7 +3,8 @@ package vm
 import (
 	"fmt"
 
-	"github.com/bubunyo/monolith"
+	"github.com/bubunyo/monolith/vm"
+
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 )
@@ -20,11 +21,11 @@ var topCmd = &cobra.Command{
 
 // topVM launches a live TUI dashboard for a running or paused VM.
 func topVM(name string) error {
-	status, err := monolith.ReadState(name)
+	status, err := vm.ReadState(name)
 	if err != nil {
 		return fmt.Errorf("reading VM state: %w", err)
 	}
-	if status.State != monolith.StatusRunning && status.State != monolith.StatusPaused {
+	if status.State != vm.StatusRunning && status.State != vm.StatusPaused {
 		return fmt.Errorf("VM %q is not running (state: %s)", name, status.State)
 	}
 

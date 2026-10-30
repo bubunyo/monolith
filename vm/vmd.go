@@ -1,4 +1,4 @@
-package monolith
+package vm
 
 import (
 	"encoding/binary"
@@ -12,6 +12,9 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"github.com/bubunyo/monolith"
+	mnet "github.com/bubunyo/monolith/net"
 
 	"github.com/Code-Hex/vz/v4"
 	"github.com/pkg/errors"
@@ -40,7 +43,7 @@ func RunDaemon(name string, restore bool, consoleLogPath string) error {
 	// and we must not die when subsequent log writes fail.
 	signal.Ignore(syscall.SIGPIPE)
 
-	logger := NewLogger(os.Stderr)
+	logger := monolith.NewLogger(os.Stderr)
 
 	cfg, err := ReadConfig(name)
 	if err != nil {
@@ -104,7 +107,7 @@ func RunDaemon(name string, restore bool, consoleLogPath string) error {
 		tee = consoleLog
 	}
 	bus := newConsoleBus(tee)
-	go bus.drain(pts, NewLogger(os.Stderr))
+	go bus.drain(pts, monolith.NewLogger(os.Stderr))
 
 	// Boot loader.
 	bootLoader, err := vz.NewLinuxBootLoader(
@@ -134,7 +137,7 @@ func RunDaemon(name string, restore bool, consoleLogPath string) error {
 	vmCfg.SetStorageDevicesVirtualMachineConfiguration([]vz.StorageDeviceConfiguration{storageConfig})
 
 	// Network.
-	macStr, err := configureNetwork(vmCfg, cfg)
+	macStr, err := mnet.ConfigureNetwork(vmCfg, cfg.NetworkMode, cfg.NetworkName, cfg.HostInterface)
 	if err != nil {
 		return errors.Wrap(err, "configureNetwork")
 	}
@@ -304,7 +307,7 @@ type vmDaemon struct {
 	pts      *os.File // PTY slave for console relay
 	mac      string
 	listener net.Listener
-	logger   *Logger
+	logger   *monolith.Logger
 	bus      *consoleBus
 
 	suspended atomic.Bool    // set while suspending; keeps state.json on exit

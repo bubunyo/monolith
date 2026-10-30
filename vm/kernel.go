@@ -1,4 +1,4 @@
-package monolith
+package vm
 
 import (
 	"bytes"
@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+
+	"github.com/bubunyo/monolith"
 
 	"github.com/diskfs/go-diskfs"
 	"github.com/diskfs/go-diskfs/backend/file"
@@ -108,7 +110,7 @@ func DefaultRootFS() (string, error) {
 // alpineCacheDir returns the path for shared Alpine assets (kernel, initrd,
 // minirootfs) scoped under the "alpine" subdirectory of the cache.
 func alpineCacheDir() (string, error) {
-	dir, err := cachePath("alpine")
+	dir, err := monolith.CachePath("alpine")
 	if err != nil {
 		return "", err
 	}

@@ -1,4 +1,4 @@
-package monolith
+package net
 
 import (
 	"bytes"

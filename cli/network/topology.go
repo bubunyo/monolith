@@ -7,7 +7,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/bubunyo/monolith"
+	mnet "github.com/bubunyo/monolith/net"
+	"github.com/bubunyo/monolith/vm"
 )
 
 // vmRow describes a single VM as it appears in the topology tree.
@@ -48,7 +49,7 @@ func collectTopology() (topologyData, error) {
 	}
 
 	// Walk named networks first so we can attach VMs to them by name.
-	netsDir, err := monolith.NetworksDir()
+	netsDir, err := mnet.NetworksDir()
 	if err != nil {
 		return td, err
 	}
@@ -59,12 +60,12 @@ func collectTopology() (topologyData, error) {
 				continue
 			}
 			name := e.Name()
-			cfg, err := monolith.ReadNetworkConfig(name)
+			cfg, err := mnet.ReadNetworkConfig(name)
 			if err != nil {
 				continue
 			}
 			state := "stopped"
-			if monolith.IsNetworkDaemonAlive(name) {
+			if mnet.IsNetworkDaemonAlive(name) {
 				state = "running"
 			}
 			n := &namedNet{
@@ -75,9 +76,9 @@ func collectTopology() (topologyData, error) {
 			}
 			netByName[name] = n
 			switch cfg.Mode {
-			case monolith.NetworkShared:
+			case mnet.NetworkShared:
 				td.namedShared = append(td.namedShared, namedNet{}) // placeholder, replaced below
-			case monolith.NetworkIsolated:
+			case mnet.NetworkIsolated:
 				td.namedIsolated = append(td.namedIsolated, namedNet{})
 			}
 		}
@@ -88,7 +89,7 @@ func collectTopology() (topologyData, error) {
 	td.namedIsolated = td.namedIsolated[:0]
 
 	// Walk VMs and classify each.
-	vmsDir, err := monolith.VMsDir()
+	vmsDir, err := vm.VMsDir()
 	if err != nil {
 		return td, err
 	}
@@ -98,13 +99,13 @@ func collectTopology() (topologyData, error) {
 				continue
 			}
 			name := e.Name()
-			cfg, err := monolith.ReadConfig(name)
+			cfg, err := vm.ReadConfig(name)
 			if err != nil {
 				continue
 			}
-			st, err := monolith.ReadState(name)
+			st, err := vm.ReadState(name)
 			if err != nil || st == nil {
-				st = &monolith.VMStatus{State: monolith.StatusStopped}
+				st = &vm.VMStatus{State: vm.StatusStopped}
 			}
 			row := vmRow{
 				name:      name,
@@ -116,15 +117,15 @@ func collectTopology() (topologyData, error) {
 			}
 
 			switch cfg.NetworkMode {
-			case monolith.NetworkHost:
+			case mnet.NetworkHost:
 				iface := cfg.HostInterface
 				if iface == "" {
 					iface = "(none)"
 				}
 				td.bridgedByIface[iface] = append(td.bridgedByIface[iface], row)
-			case monolith.NetworkNAT:
+			case mnet.NetworkNAT:
 				td.natVMs = append(td.natVMs, row)
-			case monolith.NetworkShared:
+			case mnet.NetworkShared:
 				if cfg.NetworkName == "" {
 					td.anonShared = append(td.anonShared, row)
 				} else if n, ok := netByName[cfg.NetworkName]; ok {
@@ -134,14 +135,14 @@ func collectTopology() (topologyData, error) {
 					// pseudo-network so the VM is visible.
 					missing := &namedNet{
 						name:   "(missing: " + cfg.NetworkName + ")",
-						mode:   monolith.NetworkShared,
+						mode:   mnet.NetworkShared,
 						subnet: "",
 						state:  "missing",
 					}
 					missing.vms = append(missing.vms, row)
 					netByName["__missing_shared_"+cfg.NetworkName] = missing
 				}
-			case monolith.NetworkIsolated:
+			case mnet.NetworkIsolated:
 				if cfg.NetworkName == "" {
 					td.anonIsolated = append(td.anonIsolated, row)
 				} else if n, ok := netByName[cfg.NetworkName]; ok {
@@ -149,14 +150,14 @@ func collectTopology() (topologyData, error) {
 				} else {
 					missing := &namedNet{
 						name:   "(missing: " + cfg.NetworkName + ")",
-						mode:   monolith.NetworkIsolated,
+						mode:   mnet.NetworkIsolated,
 						subnet: "",
 						state:  "missing",
 					}
 					missing.vms = append(missing.vms, row)
 					netByName["__missing_isolated_"+cfg.NetworkName] = missing
 				}
-			case monolith.NetworkNone, "":
+			case mnet.NetworkNone, "":
 				td.detached = append(td.detached, row)
 			}
 		}
@@ -168,13 +169,13 @@ func collectTopology() (topologyData, error) {
 	for k, n := range netByName {
 		isMissing := strings.HasPrefix(k, "__missing_")
 		switch n.mode {
-		case monolith.NetworkShared:
+		case mnet.NetworkShared:
 			if isMissing {
 				sharedMissing = append(sharedMissing, n)
 			} else {
 				sharedReal = append(sharedReal, n)
 			}
-		case monolith.NetworkIsolated:
+		case mnet.NetworkIsolated:
 			if isMissing {
 				isoMissing = append(isoMissing, n)
 			} else {

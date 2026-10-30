@@ -3,6 +3,8 @@ package network
 import (
 	"os"
 
+	mnet "github.com/bubunyo/monolith/net"
+
 	"github.com/bubunyo/monolith"
 	"github.com/spf13/cobra"
 )
@@ -23,7 +25,7 @@ following new output as it is written, like ` + "`tail -F`" + `. Use
 to limit the size of the initial backlog.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		path, err := monolith.NetworkLogPath(args[0])
+		path, err := mnet.NetworkLogPath(args[0])
 		if err != nil {
 			return err
 		}

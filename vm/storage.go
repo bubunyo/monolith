@@ -1,4 +1,4 @@
-package monolith
+package vm
 
 import (
 	"archive/tar"

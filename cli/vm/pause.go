@@ -3,7 +3,8 @@ package vm
 import (
 	"fmt"
 
-	"github.com/bubunyo/monolith"
+	"github.com/bubunyo/monolith/vm"
+
 	"github.com/spf13/cobra"
 )
 
@@ -19,7 +20,7 @@ var pauseCmd = &cobra.Command{
 
 // pauseVM freezes a running VM in memory.
 func pauseVM(name string) error {
-	resp, err := monolith.SendControlCommand(name, monolith.ControlRequest{Cmd: monolith.CmdPause})
+	resp, err := vm.SendControlCommand(name, vm.ControlRequest{Cmd: vm.CmdPause})
 	if err != nil {
 		return err
 	}

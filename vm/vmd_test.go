@@ -1,4 +1,4 @@
-package monolith
+package vm
 
 import (
 	"os"
@@ -14,7 +14,7 @@ import (
 // The daemon runs as a subprocess (like production) because RunDaemon blocks
 // and requires the binary to be codesigned with entitlements.plist.
 func TestRunDaemon(t *testing.T) {
-	binary := "./bin/monolith"
+	binary := "../bin/monolith"
 	if _, err := os.Stat(binary); err != nil {
 		t.Skipf("binary not found at %s — run 'make build' first", binary)
 	}

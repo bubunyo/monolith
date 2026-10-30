@@ -8,6 +8,9 @@ import (
 	"strconv"
 	"strings"
 
+	mnet "github.com/bubunyo/monolith/net"
+	"github.com/bubunyo/monolith/vm"
+
 	"github.com/bubunyo/monolith"
 	"github.com/spf13/cobra"
 )
@@ -94,21 +97,21 @@ func runVM(name string, cfg vmCfg) error {
 	}
 
 	// Check current state.
-	status, err := monolith.ReadState(name)
+	status, err := vm.ReadState(name)
 	if err != nil {
 		return fmt.Errorf("reading VM state: %w", err)
 	}
 
 	switch status.State {
-	case monolith.StatusRunning, monolith.StatusPaused:
+	case vm.StatusRunning, vm.StatusPaused:
 		// Already running — just attach.
 		fmt.Printf("VM %q is already %s. Attaching to console...\n", name, status.State)
 		return attachAndHandle(name)
 
-	case monolith.StatusSuspended:
+	case vm.StatusSuspended:
 		// Restore from suspend file.
 		fmt.Printf("Restoring VM %q from suspend file...\n", name)
-		if err := monolith.SpawnVMDaemon(name, true, cfg.LogConsole); err != nil {
+		if err := vm.SpawnVMDaemon(name, true, cfg.LogConsole); err != nil {
 			return err
 		}
 		fmt.Printf("VM %q restored. Attaching to console...\n", name)
@@ -116,7 +119,7 @@ func runVM(name string, cfg vmCfg) error {
 	}
 
 	// Stopped — need to boot. Read/apply config.
-	savedCfg, err := monolith.ReadConfig(name)
+	savedCfg, err := vm.ReadConfig(name)
 	if err != nil {
 		return err
 	}
@@ -143,14 +146,14 @@ func runVM(name string, cfg vmCfg) error {
 	}
 
 	// Persist config so the daemon can read it.
-	if err := monolith.WriteConfig(name, savedCfg); err != nil {
+	if err := vm.WriteConfig(name, savedCfg); err != nil {
 		return fmt.Errorf("writing config: %w", err)
 	}
 
 	fmt.Printf("Booting VM %q (%d vCPU, %s RAM, network: %s)...\n", name, savedCfg.CPUs, formatMemory(savedCfg.Memory), savedCfg.NetworkMode)
 
 	// Spawn the VM daemon.
-	if err := monolith.SpawnVMDaemon(name, false, cfg.LogConsole); err != nil {
+	if err := vm.SpawnVMDaemon(name, false, cfg.LogConsole); err != nil {
 		return err
 	}
 
@@ -160,7 +163,7 @@ func runVM(name string, cfg vmCfg) error {
 
 // attachAndHandle attaches to the VM console and handles any escape commands.
 func attachAndHandle(name string) error {
-	escapeCmd, err := monolith.AttachConsole(name)
+	escapeCmd, err := vm.AttachConsole(name)
 	if err != nil {
 		return err
 	}
@@ -184,7 +187,7 @@ func init() {
 
 // isValidNetwork checks if the given string is a valid network mode.
 func isValidNetwork(mode string) bool {
-	for _, m := range monolith.ValidNetworkModes {
+	for _, m := range mnet.ValidNetworkModes {
 		if m == mode {
 			return true
 		}
@@ -196,14 +199,14 @@ func isValidNetwork(mode string) bool {
 // It checks that the network mode is recognized and that flag combinations
 // are consistent (e.g. --host-interface requires host mode, --network
 // requires shared or isolated mode).
-func validateNetwork(cfg monolith.VMConfig) error {
+func validateNetwork(cfg vm.VMConfig) error {
 	if !isValidNetwork(cfg.NetworkMode) {
 		return fmt.Errorf("invalid network mode %q; must be one of: nat, shared, host, isolated, none", cfg.NetworkMode)
 	}
-	if cfg.NetworkMode == monolith.NetworkHost && cfg.HostInterface == "" {
+	if cfg.NetworkMode == mnet.NetworkHost && cfg.HostInterface == "" {
 		return fmt.Errorf("host network mode requires --host-interface (e.g. --host-interface en0)")
 	}
-	if cfg.NetworkMode == monolith.NetworkHost && !monolith.HasEntitlement(monolith.EntitlementHostNetworking) {
+	if cfg.NetworkMode == mnet.NetworkHost && !monolith.HasEntitlement(monolith.EntitlementHostNetworking) {
 		return fmt.Errorf(`host network mode requires the %q entitlement, which is not present on this binary.
 
 Apple guards this entitlement tightly: it must be granted via a provisioning
@@ -214,10 +217,10 @@ for details.
 
 Workaround: use --network-mode nat (default), shared, or isolated.`, monolith.EntitlementHostNetworking)
 	}
-	if cfg.HostInterface != "" && cfg.NetworkMode != monolith.NetworkHost {
+	if cfg.HostInterface != "" && cfg.NetworkMode != mnet.NetworkHost {
 		return fmt.Errorf("--host-interface is only valid with --network-mode host")
 	}
-	if cfg.NetworkName != "" && cfg.NetworkMode != monolith.NetworkShared && cfg.NetworkMode != monolith.NetworkIsolated {
+	if cfg.NetworkName != "" && cfg.NetworkMode != mnet.NetworkShared && cfg.NetworkMode != mnet.NetworkIsolated {
 		return fmt.Errorf("--network is only valid with --network-mode shared or --network-mode isolated")
 	}
 	return nil
@@ -277,7 +280,7 @@ func generateUniqueName() (string, error) {
 	const maxAttempts = 10
 	for i := 0; i < maxAttempts; i++ {
 		name := fmt.Sprintf("lith-%05d", rand.IntN(100000))
-		dir, err := monolith.VMDir(name)
+		dir, err := vm.VMDir(name)
 		if err != nil {
 			return "", err
 		}
