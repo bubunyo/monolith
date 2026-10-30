@@ -2,6 +2,7 @@ package monolith
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"os/exec"
 	"strings"
@@ -75,3 +76,38 @@ func loadOwnEntitlements() map[string]bool {
 // EntitlementHostNetworking is the entitlement Apple requires for using
 // VZBridgedNetworkDeviceAttachment (i.e. host/bridged network mode).
 const EntitlementHostNetworking = "com.apple.vm.networking"
+
+var (
+	codeRequirementOnce sync.Once
+	codeRequirement     string
+	codeRequirementErr  error
+)
+
+// OwnCodeRequirement returns a code signing requirement that matches only
+// the currently running binary (`cdhash H"<hash>"`). Network daemons and VM
+// daemons run the same binary, so each side uses this to authenticate the
+// other when sharing a vmnet network over XPC. Rebuilding or re-signing the
+// binary changes the hash, so daemons from an older build won't match.
+func OwnCodeRequirement() (string, error) {
+	codeRequirementOnce.Do(func() {
+		exe, err := os.Executable()
+		if err != nil {
+			codeRequirementErr = err
+			return
+		}
+		// codesign -d prints signature details, including CDHash=..., to stderr.
+		out, err := exec.Command("codesign", "-d", "-vvvv", exe).CombinedOutput()
+		if err != nil {
+			codeRequirementErr = fmt.Errorf("codesign -d %s: %v: %s", exe, err, strings.TrimSpace(string(out)))
+			return
+		}
+		for _, line := range strings.Split(string(out), "\n") {
+			if hash, ok := strings.CutPrefix(strings.TrimSpace(line), "CDHash="); ok {
+				codeRequirement = `cdhash H"` + hash + `"`
+				return
+			}
+		}
+		codeRequirementErr = fmt.Errorf("codesign -d %s reported no CDHash (is the binary signed? use 'make build')", exe)
+	})
+	return codeRequirement, codeRequirementErr
+}

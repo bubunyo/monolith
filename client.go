@@ -280,7 +280,8 @@ func SendControlCommand(name string, req ControlRequest) (ControlResponse, error
 // SpawnVMDaemon starts the VM daemon as a background process.
 // It uses the same binary (os.Executable) with the hidden __vmd command.
 // Returns after the daemon has started and its socket is ready.
-func SpawnVMDaemon(name string, restore bool) error {
+// A non-empty consoleLogPath is forwarded as --log-console.
+func SpawnVMDaemon(name string, restore bool, consoleLogPath string) error {
 	exe, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("finding executable: %w", err)
@@ -307,6 +308,9 @@ func SpawnVMDaemon(name string, restore bool) error {
 	args := []string{"__vmd", name}
 	if restore {
 		args = append(args, "--restore")
+	}
+	if consoleLogPath != "" {
+		args = append(args, "--log-console", consoleLogPath)
 	}
 
 	cmd := exec.Command(exe, args...)

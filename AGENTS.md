@@ -19,6 +19,7 @@ monolith vm run [name] --network-mode shared --network lan  # join named network
 monolith vm run [name] --network-mode host --host-interface en0  # bridge to physical NIC
 monolith vm run [name] --network-mode isolated              # isolated network (macOS 26+)
 monolith vm run [name] --network-mode none                  # no network device (air-gapped)
+monolith vm run [name] --log-console PATH                  # tee raw guest console output to PATH from boot
 monolith vm attach <name>     # attach to a running VM's serial console (one client at a time)
 monolith vm pause <name>      # pause vCPUs in memory
 monolith vm resume <name>     # resume from pause or suspend
@@ -53,7 +54,7 @@ go test -run TestRun ./   # single test
 
 ## Platform Constraint
 
-macOS + aarch64 only. The entire codebase depends on Apple Virtualization.framework via `github.com/Code-Hex/vz/v3` (currently using norio-nomura's fork with `VZVmnetNetworkDeviceAttachment` support for macOS 26+, via `replace` directive in go.mod). No cross-platform build targets exist.
+macOS + aarch64 only. The entire codebase depends on Apple Virtualization.framework via upstream `github.com/Code-Hex/vz/v4`, pinned in go.mod to an untagged master commit because vmnet support (macOS 26+) only exists on master; the latest release, v3.8.0, has none. The previous `norio-nomura/vz/v3` fork was dropped: its `NewFileHandleSerialPortAttachment` always returned nil, so guest console output was silently discarded (issue 0001). No cross-platform build targets exist.
 
 ## Package Layout
 
@@ -93,8 +94,10 @@ monolith/
   console_bus.go          — drains the console PTY from boot; 64 KiB ring buffer replayed to the attached client.
   protocol.go             — wire types shared by client and daemon.
   network.go              — configureNetwork(), createNetworkAttachment(), joinNamedNetwork()
-  netd.go                 — RunNetworkDaemon(), network persistence (config, PID, socket),
-                            serialization over unix socket.
+  netd.go                 — RunNetworkDaemon() (vmnet.ShareNetwork), joinNamedNetwork()
+                            (vmnet.ReceiveNetwork), network config/PID persistence, packet monitor.
+  launchd.go              — StartNetworkDaemon()/StopNetworkDaemon(): per-network launchd job
+                            (plist, launchctl bootstrap/bootout), Mach service naming.
   kernel.go               — DefaultKernel() downloads Alpine ISO, extracts/decompresses kernel+initrd.
                             DefaultRootFS() downloads minirootfs tarball.
   storage.go              — DefaultDisk(tarball, name) creates per-VM 1 GiB ext4 disk image and
@@ -125,9 +128,9 @@ Five network modes are supported via the `--network-mode` flag on `vm run`:
 | Mode | Flag | Implementation | Requires |
 |------|------|---------------|----------|
 | `nat` (default) | `--network-mode nat` | `VZNATNetworkDeviceAttachment` | macOS 11+ |
-| `shared` | `--network-mode shared` | `vmnet.SharedMode` + `VZVmnetNetworkDeviceAttachment` | macOS 26+ |
+| `shared` | `--network-mode shared` | `vmnet.ModeShared` + `vz.NewVMNetNetworkDeviceAttachment` | macOS 26+ |
 | `host` | `--network-mode host --host-interface en0` | `VZBridgedNetworkDeviceAttachment` | `com.apple.vm.networking` entitlement (requires provisioning profile or SIP disabled) |
-| `isolated` | `--network-mode isolated` | `vmnet.HostMode` + `VZVmnetNetworkDeviceAttachment` | macOS 26+ |
+| `isolated` | `--network-mode isolated` | `vmnet.ModeHost` + `vz.NewVMNetNetworkDeviceAttachment` | macOS 26+ |
 | `none` | `--network-mode none` | No network device | - |
 
 - **nat**: Standard NAT networking. VM gets IP from macOS DHCP server. No inter-VM communication.
@@ -144,24 +147,16 @@ Named networks allow multiple VMs to share the same vmnet.Network instance, enab
 
 ### Architecture
 
-Named networks use a **daemon process** to keep the vmnet kernel resource alive:
+vz v4 shares a vmnet network between processes only through a **launchd Mach service** (`vmnet.ShareNetwork` / `vmnet.ReceiveNetwork`); the serialization is an opaque XPC object with no byte encoding. So each named network runs as a per-user launchd job:
 
-1. `monolith network create <name>` spawns a background daemon (`monolith __netd <name> <mode>`)
-2. The daemon creates a `vmnet.Network`, serializes it via `CopySerialization()`, and listens on a unix domain socket at `~/.cache/monolith/networks/<name>/daemon.sock`
-3. When a VM starts with `--network <name>`, it connects to the socket, receives the serialized network bytes, and reconstructs the `vmnet.Network` via `NewNetworkWithSerialization()`
-4. The daemon stays alive to keep the vmnet kernel resource open. Stopping the daemon tears down the network.
+1. `monolith network create|start <name>` writes `~/.cache/monolith/networks/<name>/launchd.plist` (label and Mach service `dev.monolith.network.<name>`, `ProgramArguments` = this binary + `__netd <name> <mode> [--verbose]`) and loads it with `launchctl bootstrap gui/<uid>`. Nothing is installed in `~/Library/LaunchAgents`, so jobs don't survive logout.
+2. The daemon creates the `vmnet.Network` (applying `user_subnet` via `vmnet.WithIPv4Subnet`), writes the actual subnet to `config.json`, publishes it with `vmnet.ShareNetwork`, then writes its PID file. The PID file is what `IsNetworkDaemonAlive` checks.
+3. A VM started with `--network <name>` calls `vmnet.ReceiveNetwork` on that service (5s timeout) and attaches with `vz.NewVMNetNetworkDeviceAttachment`.
+4. `monolith network stop|rm` runs `launchctl bootout`, which SIGTERMs the daemon and unregisters the service. Killing the daemon directly leaves the job loaded (`network start` boots out stale jobs first).
 
-### Serialization Protocol
+### Peer authentication
 
-Over the unix domain socket, the daemon uses a simple length-prefixed protocol:
-- **4 bytes**: big-endian uint32 length of the serialization data
-- **N bytes**: raw serialization bytes (extracted from `xpc.Dictionary` via `GetData("networkSerialization")`)
-
-The client reconstructs the XPC dictionary with `xpc.NewDictionary(xpc.KeyValue("networkSerialization", xpc.NewData(bytes)))` and passes it to `vmnet.NewNetworkWithSerialization()`.
-
-### Same-Executable Constraint
-
-The `vmnet_network_create_with_serialization` API requires the deserializing process to be the same executable as the serializing process (checked by CDHash on macOS <26.2, or path on macOS 26.2+). This is why both the daemon and VM processes use the same `monolith` binary.
+Both `ShareNetwork` and `ReceiveNetwork` require a code signing requirement for the other side. monolith uses `cdhash H"<hash>"` of its own binary (`OwnCodeRequirement()` in `entitlements.go`), so only the exact same build can join. **Rebuilding or re-signing changes the hash**: after `make build`, restart running networks (`monolith network stop <n> && monolith network start <n>`) or VMs will time out joining them.
 
 ## Boot Flow
 
@@ -202,7 +197,7 @@ The `vmnet_network_create_with_serialization` API requires the deserializing pro
     my-net/
       config.json          # {"mode":"shared","subnet":"192.168.64.0/24"}
       pid                  # daemon PID
-      daemon.sock          # unix domain socket
+      launchd.plist        # launchd job for the daemon (label dev.monolith.network.<name>)
       daemon.log           # daemon stdout/stderr
 ```
 
@@ -218,5 +213,6 @@ The `vmnet_network_create_with_serialization` API requires the deserializing pro
 - go-diskfs `recalculateBlocksize()` always picks 1024-byte blocks regardless of disk size. We call `ext4.Create()` directly with `SectorsPerBlock: 8` (4096-byte blocks) to avoid a journal allocation bug.
 - go-diskfs ext4 does not support hardlinks (`Link()` returns `ErrNotImplemented`). Tar hardlinks are handled by copying the target file's content.
 - go-diskfs `OpenFile` with `O_CREATE|O_RDWR` does not truncate existing files. `configureVM` uses `Truncate()` after writing.
-- Named network daemons must use the same binary as VMs (same-executable constraint for vmnet serialization).
+- Named network daemons and VMs must be the same build (CDHash peer requirement). Restart networks after rebuilding.
+- VMs on this dev machine have no outbound internet in any mode (NAT included, and with the old vz fork too) although VM↔VM and VM↔host traffic works; likely the host's VPN tunnels. Not a monolith bug as far as known.
 - No linter, formatter, or CI config exists. No pre-commit hooks.

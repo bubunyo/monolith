@@ -54,9 +54,10 @@ If --subnet is omitted, vmnet picks a subnet automatically.`,
 //   - Prefix length 16 <= bits <= 28.
 //   - Must overlap an allowed RFC 1918 range.
 //
-// The vendored vmnet wrapper currently only accepts subnets within
-// 192.168.0.0/16. When upstream Code-Hex/vz#205 relaxes that guard, widen
-// allowedRanges below.
+// Only 192.168.0.0/16 is allowed for now: it is the range vmnet uses for its
+// own automatic subnets and the only one exercised by the tests. vz v4 no
+// longer restricts the range, so 10/8 and 172.16/12 can be enabled once they
+// are verified against vmnet.
 func validateSubnet(s string) (netip.Prefix, error) {
 	prefix, err := netip.ParsePrefix(s)
 	if err != nil {
@@ -71,8 +72,7 @@ func validateSubnet(s string) (netip.Prefix, error) {
 
 	allowedRanges := []netip.Prefix{
 		netip.MustParsePrefix("192.168.0.0/16"),
-		// TODO(upstream Code-Hex/vz#205): widen to all RFC 1918 once the
-		// vendored vmnet wrapper relaxes its 192.168.0.0/16 guard:
+		// Not yet verified with vmnet:
 		// netip.MustParsePrefix("10.0.0.0/8"),
 		// netip.MustParsePrefix("172.16.0.0/12"),
 	}

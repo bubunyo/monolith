@@ -19,4 +19,4 @@ Each report follows the structure:
 
 | # | Title | Status |
 |---|-------|--------|
-| [0001](./0001-vm-run-appears-to-hang.md) | `vm run` appears to hang at the boot banner | Open (mitigated) |
+| [0001](./0001-vm-run-appears-to-hang.md) | `vm run` appears to hang at the boot banner | Resolved (vz fork bug; moved to vz v4) |

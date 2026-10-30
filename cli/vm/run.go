@@ -20,6 +20,7 @@ var (
 	flagNetworkMode   string
 	flagNetwork       string
 	flagHostInterface string
+	flagLogConsole    string
 )
 
 // vmCfg holds optional overrides for VM configuration, set via CLI flags.
@@ -31,6 +32,7 @@ type vmCfg struct {
 	NetworkMode   *string
 	NetworkName   *string
 	HostInterface *string
+	LogConsole    string // not persisted; applies to this boot only
 }
 
 var runCmd = &cobra.Command{
@@ -67,6 +69,7 @@ Detach from the console with Ctrl+C or Ctrl+] q. The VM keeps running in the bac
 		if cmd.Flags().Changed("host-interface") {
 			cfg.HostInterface = &flagHostInterface
 		}
+		cfg.LogConsole = flagLogConsole
 
 		return runVM(name, cfg)
 	},
@@ -105,7 +108,7 @@ func runVM(name string, cfg vmCfg) error {
 	case monolith.StatusSuspended:
 		// Restore from suspend file.
 		fmt.Printf("Restoring VM %q from suspend file...\n", name)
-		if err := monolith.SpawnVMDaemon(name, true); err != nil {
+		if err := monolith.SpawnVMDaemon(name, true, cfg.LogConsole); err != nil {
 			return err
 		}
 		fmt.Printf("VM %q restored. Attaching to console...\n", name)
@@ -147,7 +150,7 @@ func runVM(name string, cfg vmCfg) error {
 	fmt.Printf("Booting VM %q (%d vCPU, %s RAM, network: %s)...\n", name, savedCfg.CPUs, formatMemory(savedCfg.Memory), savedCfg.NetworkMode)
 
 	// Spawn the VM daemon.
-	if err := monolith.SpawnVMDaemon(name, false); err != nil {
+	if err := monolith.SpawnVMDaemon(name, false, cfg.LogConsole); err != nil {
 		return err
 	}
 
@@ -176,6 +179,7 @@ func init() {
 	runCmd.Flags().StringVar(&flagNetworkMode, "network-mode", "", `network mode: nat, shared, host, isolated, none (default: nat)`)
 	runCmd.Flags().StringVarP(&flagNetwork, "network", "n", "", `named network to join (for shared/isolated modes)`)
 	runCmd.Flags().StringVar(&flagHostInterface, "host-interface", "", `physical NIC for host mode (e.g. "en0")`)
+	runCmd.Flags().StringVar(&flagLogConsole, "log-console", "", "append guest console output to this file (from boot, even with no client attached)")
 }
 
 // isValidNetwork checks if the given string is a valid network mode.

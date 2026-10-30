@@ -43,7 +43,7 @@ func resumeVM(name string) error {
 	case monolith.StatusSuspended:
 		// VM is suspended — spawn daemon with --restore.
 		fmt.Printf("Restoring VM %q from suspend file...\n", name)
-		if err := monolith.SpawnVMDaemon(name, true); err != nil {
+		if err := monolith.SpawnVMDaemon(name, true, ""); err != nil {
 			return err
 		}
 		fmt.Printf("VM %q restored and running.\n", name)

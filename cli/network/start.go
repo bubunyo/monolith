@@ -3,9 +3,7 @@ package network
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/bubunyo/monolith"
@@ -60,51 +58,31 @@ func init() {
 	startCmd.Flags().BoolVarP(&flagStartVerbose, "verbose", "v", false, "enable packet-level logging in daemon")
 }
 
-// spawnDaemon starts the network daemon as a background process.
+// spawnDaemon loads the network's launchd job and waits for the daemon to
+// publish the network.
 func spawnDaemon(name, mode string, verbose bool) error {
-	exe, err := os.Executable()
-	if err != nil {
-		return fmt.Errorf("finding executable: %w", err)
+	if err := monolith.StartNetworkDaemon(name, mode, verbose); err != nil {
+		return err
 	}
 
-	daemonArgs := []string{"__netd", name, mode}
-	if verbose {
-		daemonArgs = append(daemonArgs, "--verbose")
-	}
-	daemonCmd := exec.Command(exe, daemonArgs...)
-
-	dir, err := monolith.NetworkDir(name)
+	logPath, err := monolith.NetworkLogPath(name)
 	if err != nil {
 		return err
 	}
-	logPath := dir + "/daemon.log"
-	logFile, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		return fmt.Errorf("opening daemon log: %w", err)
-	}
-	daemonCmd.Stdout = logFile
-	daemonCmd.Stderr = logFile
 
-	daemonCmd.SysProcAttr = &syscall.SysProcAttr{
-		Setpgid: true,
-	}
-
-	if err := daemonCmd.Start(); err != nil {
-		logFile.Close()
-		return fmt.Errorf("starting daemon: %w", err)
-	}
-	logFile.Close()
-
-	time.Sleep(500 * time.Millisecond)
-
-	if !monolith.IsNetworkDaemonAlive(name) {
-		tail := tailLog(logPath, 10)
-		if tail != "" {
-			return fmt.Errorf("daemon for network %q failed to start. Last log lines:\n%s", name, tail)
+	deadline := time.Now().Add(10 * time.Second)
+	for !monolith.IsNetworkDaemonAlive(name) {
+		if time.Now().After(deadline) {
+			// Unload the job so a failed start doesn't leave it registered.
+			monolith.StopNetworkDaemon(name)
+			tail := tailLog(logPath, 10)
+			if tail != "" {
+				return fmt.Errorf("daemon for network %q failed to start. Last log lines:\n%s", name, tail)
+			}
+			return fmt.Errorf("daemon for network %q failed to start (check %s)", name, logPath)
 		}
-		return fmt.Errorf("daemon for network %q failed to start (check %s)", name, logPath)
+		time.Sleep(100 * time.Millisecond)
 	}
-
 	return nil
 }
 

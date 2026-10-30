@@ -154,14 +154,8 @@ func waitForDaemon(t *testing.T, name string, alive bool, timeout time.Duration)
 // cleanupNetwork tears down a network best-effort. Never asserts.
 func cleanupNetwork(t *testing.T, binary, name string) {
 	t.Helper()
-	if IsNetworkDaemonAlive(name) {
-		_, _ = runMonolith(binary, "network", "stop", name)
-		// Wait briefly for the daemon to exit so the dir can be removed cleanly.
-		deadline := time.Now().Add(3 * time.Second)
-		for time.Now().Before(deadline) && IsNetworkDaemonAlive(name) {
-			time.Sleep(100 * time.Millisecond)
-		}
-	}
+	// Always unload the launchd job, even if the daemon already exited.
+	_, _ = StopNetworkDaemon(name)
 	// Last-ditch: kill by PID if still alive.
 	if pid, _ := ReadNetworkPid(name); pid > 0 {
 		_ = syscall.Kill(pid, syscall.SIGKILL)

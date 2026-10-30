@@ -18,15 +18,21 @@ const consoleRingSize = 64 * 1024
 // the daemon's single-console-client invariant). New subscribers atomically
 // receive a snapshot of the ring buffer plus a channel of subsequent live
 // chunks, with no gap between the two.
+//
+// If tee is set, every byte drained is also written to it, whether or not a
+// client is attached.
 type consoleBus struct {
+	tee io.Writer
+
 	mu     sync.Mutex
 	ring   []byte // recent output, capped at consoleRingSize
 	sub    chan []byte
 	closed bool
 }
 
-func newConsoleBus() *consoleBus {
+func newConsoleBus(tee io.Writer) *consoleBus {
 	return &consoleBus{
+		tee:  tee,
 		ring: make([]byte, 0, consoleRingSize),
 	}
 }
@@ -39,6 +45,9 @@ func (b *consoleBus) drain(r io.Reader, logger *Logger) {
 	for {
 		n, err := r.Read(buf)
 		if n > 0 {
+			if b.tee != nil {
+				b.tee.Write(buf[:n])
+			}
 			b.publish(buf[:n])
 		}
 		if err != nil {

@@ -3,7 +3,6 @@ package network
 import (
 	"fmt"
 	"os"
-	"syscall"
 
 	"github.com/bubunyo/monolith"
 	"github.com/spf13/cobra"
@@ -33,8 +32,8 @@ func stopNetwork(name string) error {
 	return nil
 }
 
-// stopDaemon sends SIGTERM to the daemon for the named network.
-// Returns true if a daemon was found and signaled, false if not running.
+// stopDaemon unloads the network's launchd job, which stops the daemon.
+// Returns true if a running daemon was stopped, false if it wasn't running.
 func stopDaemon(name string) (bool, error) {
 	dir, err := monolith.NetworkDir(name)
 	if err != nil {
@@ -43,22 +42,5 @@ func stopDaemon(name string) (bool, error) {
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
 		return false, fmt.Errorf("network %q does not exist", name)
 	}
-
-	pid, err := monolith.ReadNetworkPid(name)
-	if err != nil || pid <= 0 {
-		return false, nil
-	}
-
-	proc, err := os.FindProcess(pid)
-	if err != nil {
-		return false, nil
-	}
-
-	if err := proc.Signal(syscall.SIGTERM); err != nil {
-		// Process already dead.
-		monolith.CleanNetworkPid(name)
-		return false, nil
-	}
-
-	return true, nil
+	return monolith.StopNetworkDaemon(name)
 }

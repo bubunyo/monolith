@@ -1,6 +1,6 @@
 # 0001 — `vm run` appears to hang at the boot banner
 
-**Status**: Open (mitigated by `--log-console`; root cause not yet fixed)
+**Status**: Resolved 2026-10-30 (root cause: vz fork bug, fixed by moving to upstream `Code-Hex/vz/v4`; see §10)
 **Date filed**: 2026-04-26
 **Affected**: `monolith vm run`, `monolith vm attach`, anything that drives the guest serial console
 **Severity**: High (the VM appears unresponsive to users; actual VM is running fine in the background)
@@ -212,3 +212,30 @@ MONOLITH_TEST_CONSOLE_OUTPUT=1 go test -run TestConsoleLogTee -v
 - Affected files: `vmd.go`, `cli/vmd.go`, `cli/vm/run.go`, `cli/vm/resume.go`, `client.go`, `state.go`, `vmd_console_log_test.go`
 - Related: `AGENTS.md` § "Boot Flow", "VM Configuration"
 - Test: `go test -run TestConsoleLogTee -v -timeout 90s ./`
+
+## 10. Resolution (2026-10-30)
+
+### Root cause
+
+Not the PTY, the Alpine assets or the kernel cmdline. The `norio-nomura/vz/v3` fork pinned via `replace` in go.mod had a bug in `newVZFileHandleSerialPortAttachment` (`virtualization_11.m`). It dup'd the file descriptors and then tested the out-error *pointer* instead of the result:
+
+```objc
+NSFileHandle *fileHandleForReading = newFileHandleDupFd(readFileDescriptor, error);
+if (error != nil) {   // always true: error is the address Go passes in
+    return nil;
+}
+```
+
+So `vz.NewFileHandleSerialPortAttachment` always returned a nil attachment with no Go error, the VM booted with a Virtio console that had nothing attached, and Virtualization.framework discarded every byte the guest wrote. Upstream v3.7.1 doesn't have this code.
+
+### Evidence
+
+- An unpatched NAT VM got a DHCP lease, so kernel, init and networking all ran, while its `--log-console` file stayed at 0 bytes.
+- A scratch build of the same code with the two checks changed to `fileHandleForReading == nil` / `fileHandleForWriting == nil` logged the MOTD and `mono@<name>:~$` prompt, and a command typed over the daemon socket (`echo $((6*7))`) came back as `42`.
+- The PTY master is opened blocking (`pkg/term` uses `open()` + `os.NewFile`), which ruled out the non-blocking-fd hypothesis.
+
+### Fix
+
+monolith moved to upstream `github.com/Code-Hex/vz/v4` (pinned to an untagged master commit, the only upstream code with vmnet support). That required rewriting named-network sharing around launchd Mach services; see AGENTS.md § Named Networks. With v4, `MONOLITH_TEST_CONSOLE_OUTPUT=1 go test -run TestConsoleLogTee` passes (prompt seen after ~2.5 KB).
+
+The other follow-ups in §8 (defaulting `--log-console`, a `vm console-log` command, retrying `runPtyReader`) are still open. `runPtyReader` has since been replaced by `console_bus.go`.

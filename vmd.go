@@ -11,8 +11,9 @@ import (
 	"sync"
 	"sync/atomic"
 	"syscall"
+	"time"
 
-	"github.com/Code-Hex/vz/v3"
+	"github.com/Code-Hex/vz/v4"
 	"github.com/pkg/errors"
 	"github.com/pkg/term/termios"
 	"golang.org/x/sys/unix"
@@ -22,7 +23,10 @@ import (
 // It boots (or restores) a VM, connects its serial console to a PTY,
 // and listens on a Unix domain socket for console attachment and control
 // commands. It blocks until the VM stops or a fatal error occurs.
-func RunDaemon(name string, restore bool) error {
+//
+// If consoleLogPath is non-empty, all guest console output is appended to
+// that file from boot onward, independent of any attached client.
+func RunDaemon(name string, restore bool, consoleLogPath string) error {
 	var d *vmDaemon
 	defer func() {
 		// A suspended VM keeps its state file so the next run/resume
@@ -86,7 +90,20 @@ func RunDaemon(name string, restore bool) error {
 	// input buffer rather than being lost or backpressuring the framework.
 	// The bus keeps a ring buffer of recent output and broadcasts live
 	// bytes to any attached console client (replaying the buffer on attach).
-	bus := newConsoleBus()
+	var consoleLog *os.File
+	if consoleLogPath != "" {
+		consoleLog, err = os.OpenFile(consoleLogPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+		if err != nil {
+			return errors.Wrap(err, "opening console log")
+		}
+		defer consoleLog.Close()
+		logger.Info("tee'ing console for %q to %s", name, consoleLogPath)
+	}
+	var tee io.Writer
+	if consoleLog != nil {
+		tee = consoleLog
+	}
+	bus := newConsoleBus(tee)
 	go bus.drain(pts, NewLogger(os.Stderr))
 
 	// Boot loader.
@@ -150,6 +167,15 @@ func RunDaemon(name string, restore bool) error {
 	if err != nil {
 		return errors.Wrap(err, "vz.NewVirtualMachine")
 	}
+
+	// Subscribe before starting: notifications are not replayed, so a
+	// subscription made after Start could miss an early Stopped/Error.
+	stateCh := make(chan vz.VirtualMachineState, 8)
+	stopStateNotify, err := vm.StateChangedNotify(stateCh)
+	if err != nil {
+		return errors.Wrap(err, "StateChangedNotify")
+	}
+	defer stopStateNotify()
 
 	// Start or restore the VM.
 	if restore {
@@ -225,7 +251,12 @@ func RunDaemon(name string, restore bool) error {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 
+	// Commands like stop reply after acting, so let in-flight replies reach
+	// the client before the process exits.
+	defer d.waitForControl(2 * time.Second)
+
 	// Main event loop.
+	lastState := vm.State()
 	for {
 		select {
 		case <-sigCh:
@@ -236,7 +267,14 @@ func RunDaemon(name string, restore bool) error {
 		case conn := <-connCh:
 			go d.handleConnection(conn)
 
-		case newState := <-vm.StateChangedNotify():
+		case <-stateCh:
+			// The delivered value may be stale and intermediate states can
+			// be skipped, so act on the current state.
+			newState := vm.State()
+			if newState == lastState {
+				continue
+			}
+			lastState = newState
 			logger.Info("VM %q state changed: %v", name, newState)
 			switch newState {
 			case vz.VirtualMachineStateStopped:
@@ -269,7 +307,8 @@ type vmDaemon struct {
 	logger   *Logger
 	bus      *consoleBus
 
-	suspended atomic.Bool // set while suspending; keeps state.json on exit
+	suspended atomic.Bool    // set while suspending; keeps state.json on exit
+	controlWG sync.WaitGroup // in-flight control requests
 
 	consoleMu     sync.Mutex
 	consoleClient net.Conn      // currently attached console client (nil if none)
@@ -288,6 +327,8 @@ func (d *vmDaemon) handleConnection(conn net.Conn) {
 	case MsgConsoleAttach:
 		d.handleConsoleAttach(conn)
 	case MsgControl:
+		d.controlWG.Add(1)
+		defer d.controlWG.Done()
 		d.handleControl(conn)
 	default:
 		conn.Close()
@@ -574,6 +615,20 @@ func (d *vmDaemon) handleResize(conn net.Conn, rows, cols uint16) {
 		return
 	}
 	d.sendControlResponse(conn, ControlResponse{OK: true})
+}
+
+// waitForControl waits up to timeout for in-flight control requests to
+// finish writing their responses.
+func (d *vmDaemon) waitForControl(timeout time.Duration) {
+	done := make(chan struct{})
+	go func() {
+		d.controlWG.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(timeout):
+	}
 }
 
 // stopVM stops the VM, optionally forcefully.
