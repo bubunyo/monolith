@@ -141,6 +141,7 @@ Requirements and constraints:
 
 - Requires macOS 14+ (uses `SaveMachineStateToPath` / `RestoreMachineStateFromURL`)
 - The suspend file is encrypted and tied to the host machine
+- Restoring needs the Mac unlocked: the suspend file's key lives in the Secure Enclave and can only decrypt while the user's screen is unlocked. Suspending works while locked
 - The disk image must not be modified between suspend and resume
 - The VM must support save/restore (validated before saving)
 
@@ -588,6 +589,13 @@ For `none` and `isolated` network modes, no IP is expected.
 Suspend requires macOS 14+ and a VM configuration that supports save/restore.
 The `ValidateSaveRestoreSupport()` check must pass. This is a
 Virtualization.framework constraint.
+
+### `vm resume` fails with "the Mac is locked"
+
+Restoring decrypts the suspend file with a Secure Enclave key that macOS only
+releases while the screen is unlocked (otherwise Virtualization.framework
+reports error 12 "permission denied"). Unlock the Mac and run `vm resume`
+again; the snapshot is kept.
 
 ### `vm resume` fails with "suspend file not found"
 

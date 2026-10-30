@@ -213,6 +213,9 @@ func RunDaemon(name string, restore bool, consoleLogPath string) error {
 		logger.Info("restoring VM %q from %s", name, suspendPath)
 		if err := vm.RestoreMachineStateFromURL(suspendPath); err != nil {
 			keepState = true
+			if keybagLocked() {
+				return fmt.Errorf("%w (RestoreMachineStateFromURL: %v)", errKeybagLocked, err)
+			}
 			return errors.Wrap(err, "RestoreMachineStateFromURL")
 		}
 		// Restore puts the VM in Paused state — resume it.

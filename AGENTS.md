@@ -24,7 +24,7 @@ monolith vm run [name] --log-console PATH                  # tee raw guest conso
 monolith vm attach <name>     # attach to a running VM's serial console (one client at a time)
 monolith vm pause <name>      # pause vCPUs in memory
 monolith vm resume <name>     # resume from pause or suspend
-monolith vm suspend <name>    # snapshot VM state to disk (restore is unreliable, see Gotchas)
+monolith vm suspend <name>    # snapshot VM state to disk (restore needs the Mac unlocked, see Gotchas)
 monolith vm stop <name>       # stop: request shutdown, force after 10s (--force: immediately). On a suspended VM, discards the snapshot
 monolith vm list              # table: name, state, image, ip, net, cpus, mem, disk, uptime
 monolith vm rm <name>         # delete a VM (prompts for confirmation)
@@ -106,6 +106,7 @@ monolith/
     alpine_disk.go        — DefaultDisk(tarball, modloop, name) creates the per-VM 1 GiB ext4 disk image and
                             writes guest config files from embeddings/ (go:embed needs them inside vm/).
     paths.go              — VMsDir, VMDir, VMSockPath, VMSuspendPath, VMLogPath, VMMachineIDPath.
+    keybag.go             — keybagLocked() (MobileKeyBag via dlopen, cgo): restore is refused while the Mac is locked.
     *_test.go             — tests (boot real VMs via ../bin/monolith; image_kata_test.go also has unit tests).
   net/                    — package net: networking. Imports only the root package (never vm).
                             Callers that also use the standard library import it as `mnet`.
@@ -262,7 +263,7 @@ Each VM gets a MAC address (saved as `mac` in `config.json`) and a generic machi
 - First kata VM downloads ~65 MB from `ghcr.io`; first alpine VM downloads ~60 MB ISO + ~4 MB minirootfs from `dl-cdn.alpinelinux.org`. Later runs use the cache.
 - `vm list` treats a directory as a VM if it has `config.json` or `disk.img` (`vm.Exists`); kata VMs have no `disk.img`.
 - Neither guest acts on Virtualization.framework's stop request, so `vm stop` always ends in the forced stop after 10s (the CLI says so).
-- **Suspend/resume is unreliable.** It never worked before the kata branch. Persisting the machine identifier and MAC fixed the deterministic "invalid argument" failure, and kata and alpine have both been restored with memory intact. But restore also fails intermittently with VZ error 12 "permission denied" (seen more in the minutes after a rebuild); retrying for 15s didn't help. A failed restore keeps the VM `suspended`; `vm stop <name>` discards the snapshot.
+- **Suspend/resume needs the Mac unlocked to restore.** Virtualization.framework encrypts the snapshot with a Secure Enclave key: saving only uses the public half and works on a locked Mac, but restoring decrypts with the private half, which AppleKeyStore refuses once the user keybag locks (shortly after the screen locks; `loginwindow` logs `lockKeybagForScreenLock`). VZ then fails with error 12 "permission denied" (the VZ XPC service logs `SecKeyCreateDecryptedDataWithParameters failed ... -25308`, AKS `-536870174`). This was the "intermittent" failure: it tracked whether the screen was locked, not rebuilds or code signing. `SpawnVMDaemon` refuses to restore while `keybagLocked()` and the daemon adds the same hint if the lock races it; the snapshot is kept, so unlock and run `vm resume` again. A restore also needs the persisted machine identifier and MAC (see Per-VM identity). `vm stop <name>` discards a snapshot.
 - `vmlinuz-virt` is an EFI stub — `decompressKernel()` in `vm/alpine_kernel.go` extracts the gzip-compressed raw ARM64 Image that `VZLinuxBootLoader` requires.
 - go-diskfs `recalculateBlocksize()` always picks 1024-byte blocks regardless of disk size. We call `ext4.Create()` directly with `SectorsPerBlock: 8` (4096-byte blocks) to avoid a journal allocation bug.
 - go-diskfs ext4 does not support hardlinks (`Link()` returns `ErrNotImplemented`). Tar hardlinks are handled by copying the target file's content.

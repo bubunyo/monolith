@@ -312,6 +312,10 @@ func waitForDaemonExit(sockPath string, timeout time.Duration) error {
 // Returns after the daemon has started and its socket is ready.
 // A non-empty consoleLogPath is forwarded as --log-console.
 func SpawnVMDaemon(name string, restore bool, consoleLogPath string) error {
+	if restore && keybagLocked() {
+		return errKeybagLocked
+	}
+
 	exe, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("finding executable: %w", err)
@@ -364,19 +368,31 @@ func SpawnVMDaemon(name string, restore bool, consoleLogPath string) error {
 	}
 	logFile.Close()
 
+	// Reap the daemon if it dies early; an unreaped child stays a zombie
+	// that still answers signal 0.
+	exited := make(chan struct{})
+	go func() {
+		cmd.Wait()
+		close(exited)
+	}()
+
 	// Wait for the daemon's socket to become available.
-	for i := 0; i < 100; i++ { // up to 10 seconds
-		time.Sleep(100 * time.Millisecond)
-		if _, err := os.Stat(sockPath); err == nil {
-			return nil
-		}
-		// Check if the daemon process died.
-		if cmd.Process != nil {
-			if err := cmd.Process.Signal(syscall.Signal(0)); err != nil {
-				return fmt.Errorf("VM daemon exited unexpectedly (check %s)", logPath)
+	deadline := time.After(10 * time.Second)
+	tick := time.NewTicker(100 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		select {
+		case <-exited:
+			if _, err := os.Stat(sockPath); err == nil {
+				return nil
+			}
+			return fmt.Errorf("VM daemon exited unexpectedly (check %s)", logPath)
+		case <-deadline:
+			return fmt.Errorf("VM daemon socket not ready after 10s (check %s)", logPath)
+		case <-tick.C:
+			if _, err := os.Stat(sockPath); err == nil {
+				return nil
 			}
 		}
 	}
-
-	return fmt.Errorf("VM daemon socket not ready after 10s (check %s)", logPath)
 }
