@@ -271,7 +271,7 @@ func RunDaemon(name string, restore bool, consoleLogPath string) error {
 
 	var services *dockerServices
 	if cfg.Image == ImageDocker {
-		services, err = startDockerServices(name, userNet, logger)
+		services, err = startDockerServices(name, EngineOf(cfg), userNet, logger)
 		if err != nil {
 			return errors.Wrap(err, "docker services")
 		}

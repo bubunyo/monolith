@@ -108,7 +108,7 @@ func listVMs(wide bool) error {
 			memory:      cfg.Memory,
 			network:     cfg.NetworkMode,
 			networkName: cfg.NetworkName,
-			image:       cfg.Image,
+			image:       imageLabel(cfg),
 			uptime:      uptime,
 			cpuPercent:  status.CPUPercent,
 			memoryRSS:   status.MemoryRSS,
@@ -247,4 +247,13 @@ func formatUptime(d time.Duration) string {
 		return fmt.Sprintf("%dd", days)
 	}
 	return fmt.Sprintf("%dd%dh", days, h)
+}
+
+// imageLabel is the IMAGE column: the base image, with the container engine
+// in brackets for docker image VMs, e.g. "docker (containerd)".
+func imageLabel(cfg vm.VMConfig) string {
+	if cfg.Image == vm.ImageDocker {
+		return fmt.Sprintf("%s (%s)", cfg.Image, vm.EngineOf(cfg))
+	}
+	return cfg.Image
 }

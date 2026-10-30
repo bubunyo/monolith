@@ -1,0 +1,2 @@
+# Alpine installs the CNI plugins here, not in nerdctl's default /opt/cni/bin.
+cni_path = "/usr/libexec/cni"

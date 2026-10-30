@@ -1,5 +1,6 @@
-// Package docker implements `monolith docker`: Docker host VMs for the
-// docker CLI on the Mac, in the style of Colima.
+// Package docker implements `monolith docker`: container host VMs for the
+// docker CLI (docker engine) or nerdctl (containerd engine), in the style of
+// Colima.
 package docker
 
 import (
@@ -11,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -26,7 +28,7 @@ const (
 	defaultCPUs   = 2
 	defaultMemory = 2 << 30
 
-	// readyTimeout covers the first boot, which installs Docker.
+	// readyTimeout covers the first boot, which installs the engine.
 	readyTimeout = 10 * time.Minute
 )
 
@@ -34,14 +36,19 @@ const (
 var Cmd = &cobra.Command{
 	Use:   "docker",
 	Short: "Run Docker host VMs for the docker CLI",
-	Long: `Run Docker Engine in monolith VMs and expose each to the docker CLI on the Mac.
+	Long: `Run container engines in monolith VMs and use them from the Mac.
 
-Each Docker host is a VM with the docker image and user-mode networking, so pulls
-work wherever the Mac is online. 'start' points the docker CLI at it by creating
-and selecting the context docker-<name>. Ports published with -p are forwarded to
-localhost, and /Users is shared into the VM at the same path for -v.
+Each host is a VM with the docker image and user-mode networking, so pulls work
+wherever the Mac is online. Ports published with -p are forwarded to localhost,
+and /Users is shared into the VM at the same path for -v.
 
-Every command takes --name (default "lith-default") to pick the VM.`,
+The engine is chosen when the VM is created ('start --engine'):
+  docker      Docker Engine (default). 'start' points the docker CLI at it by
+              creating and selecting the context docker-<name>.
+  containerd  containerd with nerdctl and BuildKit, no Docker API. Use it
+              through 'monolith docker nerdctl'.
+
+Every command except list takes --name (default "docker-lith-default").`,
 }
 
 var (
@@ -49,16 +56,19 @@ var (
 	flagCPUs   uint
 	flagMemory string
 	flagForce  bool
+	flagEngine string
 )
 
 var startCmd = &cobra.Command{
 	Use:   "start",
 	Short: "Start (or resume) a Docker host VM and make its context current",
-	Long: `Start a Docker host VM, creating it on first run, wait until dockerd answers, and make
-its docker context (docker-<name>) the current one. A paused VM is resumed instead.
-The first start downloads Alpine and installs Docker in the VM, which takes a minute or so.
+	Long: `Start a Docker host VM, creating it on first run, and wait until its engine answers.
+For the docker engine, its docker context (docker-<name>) becomes the current one.
+A paused VM is resumed instead. The first start downloads Alpine and installs the
+engine in the VM, which takes a minute or so.
 
---cpus and --memory apply when the VM boots; they are saved for later starts.`,
+--engine applies when the VM is created and can't be changed later. --cpus and
+--memory apply when the VM boots; they are saved for later starts.`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return start(cmd)
@@ -118,6 +128,9 @@ var envCmd = &cobra.Command{
 	Long:  "Print the DOCKER_HOST export for a Docker host VM, for scripts that don't use contexts: eval \"$(monolith docker env)\"",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := checkEngine(flagName, vm.EngineDocker); err != nil {
+			return err
+		}
 		sock, err := vm.VMDockerSockPath(flagName)
 		if err != nil {
 			return err
@@ -130,6 +143,22 @@ var envCmd = &cobra.Command{
 func start(cmd *cobra.Command) error {
 	if err := clivm.ValidateName(flagName); err != nil {
 		return err
+	}
+	if !validEngine(flagEngine) {
+		return fmt.Errorf("invalid engine %q; must be one of: %s", flagEngine, strings.Join(vm.ValidEngines, ", "))
+	}
+	if vm.Exists(flagName) {
+		if err := checkDockerVM(flagName); err != nil {
+			return err
+		}
+		cfg, err := vm.ReadConfig(flagName)
+		if err != nil {
+			return err
+		}
+		// The engine is installed on the VM's disk when it's created.
+		if engine := vm.EngineOf(cfg); cmd.Flags().Changed("engine") && flagEngine != engine {
+			return fmt.Errorf("%q was created with the %s engine; the engine can't be changed (remove it or pick another --name)", flagName, engine)
+		}
 	}
 	status, err := vm.ReadState(flagName)
 	if err != nil {
@@ -161,6 +190,7 @@ func boot(cmd *cobra.Command) error {
 	cfg := vm.DefaultConfig()
 	cfg.CPUs = defaultCPUs
 	cfg.Memory = defaultMemory
+	cfg.Engine = flagEngine
 	if vm.Exists(flagName) {
 		if err := checkDockerVM(flagName); err != nil {
 			return err
@@ -195,12 +225,21 @@ func boot(cmd *cobra.Command) error {
 		return fmt.Errorf("preparing docker image: %w", err)
 	}
 
-	fmt.Printf("Booting Docker host %q (%d vCPU, %s RAM)...\n", flagName, cfg.CPUs, clivm.FormatMemory(cfg.Memory))
+	fmt.Printf("Booting Docker host %q (%s engine, %d vCPU, %s RAM)...\n", flagName, vm.EngineOf(cfg), cfg.CPUs, clivm.FormatMemory(cfg.Memory))
 	return vm.SpawnVMDaemon(flagName, false, "")
 }
 
-// ready waits for dockerd and makes the VM's context current.
+// ready waits for the VM's engine. For docker it then makes the VM's context
+// current.
 func ready() error {
+	cfg, err := vm.ReadConfig(flagName)
+	if err != nil {
+		return err
+	}
+	if vm.EngineOf(cfg) == vm.EngineContainerd {
+		return readyContainerd()
+	}
+
 	sock, err := vm.VMDockerSockPath(flagName)
 	if err != nil {
 		return err
@@ -224,6 +263,40 @@ func ready() error {
 	if host := os.Getenv("DOCKER_HOST"); host != "" {
 		fmt.Printf("Warning: DOCKER_HOST=%s is set in this shell and overrides the context; run 'unset DOCKER_HOST'.\n", host)
 	}
+	return nil
+}
+
+// readyContainerd waits until nerdctl answers over the VM's internal sshd.
+func readyContainerd() error {
+	fmt.Println("Waiting for containerd...")
+	deadline := time.Now().Add(readyTimeout)
+	for {
+		if _, err := runSSH(flagName, "nerdctl", "info"); err == nil {
+			break
+		}
+		if status, err := vm.ReadState(flagName); err == nil && status.State == vm.StatusStopped {
+			return fmt.Errorf("Docker host %q stopped while starting", flagName)
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("containerd did not answer within %s; see 'monolith vm attach %s' and /var/log/containerd.log in the VM", readyTimeout, flagName)
+		}
+		time.Sleep(time.Second)
+	}
+	// As waitForClock: a restored guest's clock starts out behind.
+	for end := time.Now().Add(clockSyncTimeout); time.Now().Before(end); time.Sleep(500 * time.Millisecond) {
+		out, err := runSSH(flagName, "date", "+%s")
+		if err != nil {
+			break
+		}
+		guest, err := strconv.ParseInt(strings.TrimSpace(out), 10, 64)
+		if err != nil {
+			break
+		}
+		if d := time.Now().Unix() - guest; d >= -2 && d <= 2 {
+			break
+		}
+	}
+	fmt.Printf("Containerd host %q is ready. Run nerdctl with:\n\n  monolith docker nerdctl --name %s run --rm -it busybox sh\n\nor alias it: alias nerdctl='monolith docker nerdctl --name %s'\n", flagName, flagName, flagName)
 	return nil
 }
 
@@ -345,7 +418,7 @@ func remove() error {
 	if err := os.RemoveAll(dir); err != nil {
 		return fmt.Errorf("removing %q: %w", flagName, err)
 	}
-	if err := removeContext(flagName); err != nil {
+	if err := removeContext(flagName); err != nil { // none for containerd hosts
 		fmt.Printf("Warning: removing context %s: %v\n", contextName(flagName), err)
 	}
 	fmt.Printf("Docker host %q deleted.\n", flagName)
@@ -362,6 +435,38 @@ func checkDockerVM(name string) error {
 		return fmt.Errorf("VM %q uses the %s image, not docker; pick another --name", name, cfg.Image)
 	}
 	return nil
+}
+
+// checkEngine refuses commands that need a specific engine.
+func checkEngine(name, engine string) error {
+	if !vm.Exists(name) {
+		return fmt.Errorf("Docker host %q does not exist", name)
+	}
+	if err := checkDockerVM(name); err != nil {
+		return err
+	}
+	cfg, err := vm.ReadConfig(name)
+	if err != nil {
+		return err
+	}
+	if got := vm.EngineOf(cfg); got != engine {
+		switch got {
+		case vm.EngineContainerd:
+			return fmt.Errorf("%q uses the containerd engine, which has no Docker API; use 'monolith docker nerdctl --name %s'", name, name)
+		default:
+			return fmt.Errorf("%q uses the %s engine; this command needs %s", name, got, engine)
+		}
+	}
+	return nil
+}
+
+func validEngine(engine string) bool {
+	for _, e := range vm.ValidEngines {
+		if e == engine {
+			return true
+		}
+	}
+	return false
 }
 
 // dockerClient talks to dockerd through the VM's host socket.
@@ -434,13 +539,14 @@ func confirm(question string) bool {
 }
 
 func init() {
-	Cmd.AddCommand(startCmd, stopCmd, pauseCmd, resumeCmd, listCmd, rmCmd, envCmd)
+	Cmd.AddCommand(startCmd, stopCmd, pauseCmd, resumeCmd, listCmd, rmCmd, envCmd, nerdctlCmd)
 
-	for _, c := range []*cobra.Command{startCmd, stopCmd, pauseCmd, resumeCmd, rmCmd, envCmd} {
+	for _, c := range []*cobra.Command{startCmd, stopCmd, pauseCmd, resumeCmd, rmCmd, envCmd, nerdctlCmd} {
 		c.Flags().StringVar(&flagName, "name", defaultName, "Docker host VM name")
 	}
 	startCmd.Flags().UintVarP(&flagCPUs, "cpus", "c", 0, "number of vCPUs (default: 2)")
 	startCmd.Flags().StringVarP(&flagMemory, "memory", "m", "", `RAM size, e.g. "2G", "4096M" (default: 2G)`)
+	startCmd.Flags().StringVar(&flagEngine, "engine", vm.EngineDocker, "container engine for a new VM: docker or containerd")
 	stopCmd.Flags().BoolVarP(&flagForce, "force", "f", false, "discard a paused VM's saved state without asking")
 	rmCmd.Flags().BoolVarP(&flagForce, "force", "f", false, "delete without asking")
 }

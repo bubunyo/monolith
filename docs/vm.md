@@ -178,7 +178,7 @@ Output columns:
 |--------|-------------|
 | NAME | VM name |
 | STATE | `running`, `paused`, `suspended`, or `stopped` |
-| IMAGE | Base image: `kata`, `alpine` or `docker` |
+| IMAGE | Base image: `kata`, `alpine` or `docker`; docker VMs show the engine in brackets, e.g. `docker (containerd)` |
 | IP | Guest IP address (from DHCP leases) |
 | NET | Network mode, or `mode:name` for named networks |
 | CPUS | Number of vCPUs |
@@ -243,11 +243,11 @@ name and actual disk usage of each VM to be pruned.
 
 `monolith docker` runs Docker Engine in VMs and points the docker CLI on the
 Mac at them, like Colima. Every command except `list` takes `--name`
-(default `lith-default`).
+(default `docker-lith-default`).
 
 ```bash
 monolith docker start                  # first run installs Docker in the VM (~20s)
-docker run --rm -it busybox sh         # context docker-lith-default is now current
+docker run --rm -it busybox sh         # context docker-docker-lith-default is now current
 docker run -d -p 8080:80 nginx         # http://localhost:8080
 docker run --rm -v "$PWD":/src busybox ls /src   # paths under /Users work
 monolith docker pause                  # save the whole VM to disk; frees its memory
@@ -274,6 +274,26 @@ monolith docker rm --name lith-2       # deletes the VM and its context
   forwarded.
 - `monolith vm attach <name>` opens a VM's console; dockerd logs to
   `/var/log/docker.log`.
+
+### containerd engine
+
+`--engine containerd` creates a host running containerd, nerdctl and BuildKit
+instead of dockerd. It has no Docker API, so no docker context; use nerdctl
+through monolith:
+
+```bash
+monolith docker start --name ctr --engine containerd
+monolith docker nerdctl --name ctr run --rm -it busybox sh
+monolith docker nerdctl --name ctr run -d -p 8080:80 nginx   # http://localhost:8080
+monolith docker nerdctl --name ctr build -t app .            # paths under /Users work
+monolith docker nerdctl --name ctr compose up -d
+alias nerdctl='monolith docker nerdctl --name ctr'
+```
+
+The engine is fixed when the VM is created. Pause/resume, port forwarding,
+`/Users` and `list` work the same as with the docker engine. nerdctl runs as
+root over an internal sshd that only monolith can reach; logs are in
+`/var/log/containerd.log` and `/var/log/buildkitd.log`.
 
 ## Console Interaction
 

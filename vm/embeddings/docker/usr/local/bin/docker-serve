@@ -1,21 +1,37 @@
 #!/bin/sh
-# docker-serve — long-running docker host services, respawned by init.
-#   dockerd: the Docker daemon (it starts containerd itself)
-#   relay:   forwards TCP port 2375 to dockerd's socket for the host. Only
-#            the user-mode gateway (the monolith daemon) may connect, so
-#            containers can't reach dockerd through it.
-#   clock:   keeps the system clock in step with the RTC, which follows the
-#            Mac's clock. After a restore from `monolith docker pause` the
-#            system clock is behind by however long the VM was paused.
+# docker-serve — long-running container host services, respawned by init.
+# Only the user-mode gateway (the monolith daemon, 192.168.127.1) may
+# connect to the relays, so containers can't reach them.
+#
+# docker engine:
+#   dockerd:    the Docker daemon (it starts containerd itself)
+#   relay:      forwards TCP port 2375 to dockerd's socket for the host
+# containerd engine:
+#   containerd: the containerd daemon
+#   buildkitd:  BuildKit on containerd, for `nerdctl build`
+#   sshd:       internal sshd the host runs nerdctl through
+#   ports:      answers TCP port 2377 with `nerdctl ps --format json`
+# both:
+#   clock:      keeps the system clock in step with the RTC, which follows
+#               the Mac's clock. After a restore from `monolith docker pause`
+#               the system clock is behind by however long the VM was paused.
 
 SOCK=/var/run/docker.sock
+GUEST=192.168.127.2
+GATEWAY=192.168.127.1/32
 
-case "$1" in
-dockerd)
-	if ! command -v dockerd >/dev/null; then
+# need exits (to be respawned after a pause) if the engine isn't installed,
+# so init doesn't spin.
+need() {
+	if ! command -v "$1" >/dev/null; then
 		sleep 5
 		exit 1
 	fi
+}
+
+case "$1" in
+dockerd)
+	need dockerd
 	exec dockerd --host="unix://$SOCK" >>/var/log/docker.log 2>&1
 	;;
 relay)
@@ -24,7 +40,26 @@ relay)
 	done
 	# -t: after one side half-closes (stdin EOF), keep relaying the other
 	# until it ends; socat's default closes everything after 0.5s.
-	exec socat -t 86400 TCP-LISTEN:2375,bind=192.168.127.2,range=192.168.127.1/32,reuseaddr,fork "UNIX-CONNECT:$SOCK"
+	exec socat -t 86400 TCP-LISTEN:2375,bind=$GUEST,range=$GATEWAY,reuseaddr,fork "UNIX-CONNECT:$SOCK"
+	;;
+containerd)
+	need containerd
+	exec containerd >>/var/log/containerd.log 2>&1
+	;;
+buildkitd)
+	need buildkitd
+	exec buildkitd --oci-worker=false --containerd-worker=true >>/var/log/buildkitd.log 2>&1
+	;;
+sshd)
+	need sshd
+	exec /usr/sbin/sshd -D -e -f /etc/ssh/monolith_sshd_config >>/var/log/sshd.log 2>&1
+	;;
+ports)
+	need nerdctl
+	exec socat TCP-LISTEN:2377,bind=$GUEST,range=$GATEWAY,reuseaddr,fork "EXEC:/usr/local/bin/docker-serve ports-list"
+	;;
+ports-list)
+	exec nerdctl ps --format json 2>/dev/null
 	;;
 clock)
 	while sleep 2; do
@@ -36,7 +71,7 @@ clock)
 	done
 	;;
 *)
-	echo "usage: docker-serve dockerd|relay|clock" >&2
+	echo "usage: docker-serve dockerd|relay|containerd|buildkitd|sshd|ports|clock" >&2
 	exit 2
 	;;
 esac

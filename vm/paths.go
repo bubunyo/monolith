@@ -37,3 +37,15 @@ func VMMachineIDPath(name string) (string, error) {
 func VMDockerSockPath(name string) (string, error) {
 	return monolith.CachePath("vms", name, "docker.sock")
 }
+
+// VMSSHKeyPath returns the private key for a containerd engine VM's
+// internal sshd; the public half is at the same path plus ".pub".
+func VMSSHKeyPath(name string) (string, error) {
+	return monolith.CachePath("vms", name, "ssh_key")
+}
+
+// VMSSHSockPath returns the host socket relayed to a containerd engine VM's
+// internal sshd (use with ssh -o ProxyCommand="nc -U <path>").
+func VMSSHSockPath(name string) (string, error) {
+	return monolith.CachePath("vms", name, "ssh.sock")
+}

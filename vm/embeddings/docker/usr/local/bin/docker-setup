@@ -1,11 +1,23 @@
 #!/bin/sh
-# docker-setup — prepares the monolith docker host on every boot.
-# The first boot installs Docker from the Alpine repositories.
+# docker-setup — prepares the monolith container host on every boot.
+# The first boot installs the engine from the Alpine repositories. The
+# engine is docker unless the containerd overlay wrote /etc/monolith-engine.
 
-PACKAGES="docker socat e2fsprogs"
+ENGINE=$(cat /etc/monolith-engine 2>/dev/null || echo docker)
 DATA_DISK=/dev/vdb
 
-echo "docker-setup: preparing docker host"
+case "$ENGINE" in
+containerd)
+	PACKAGES="containerd nerdctl cni-plugins buildkit buildctl iptables ip6tables openssh-server socat e2fsprogs"
+	NEEDED="containerd nerdctl buildkitd sshd socat mkfs.ext4"
+	;;
+*)
+	PACKAGES="docker socat e2fsprogs"
+	NEEDED="dockerd socat mkfs.ext4"
+	;;
+esac
+
+echo "docker-setup: preparing $ENGINE host"
 
 mkdir -p /sys/fs/cgroup
 mount -t cgroup2 cgroup2 /sys/fs/cgroup
@@ -13,21 +25,48 @@ mount -t cgroup2 cgroup2 /sys/fs/cgroup
 modprobe -a overlay br_netfilter veth virtiofs 2>/dev/null
 sysctl -qw net.ipv4.ip_forward=1
 
-if ! command -v dockerd >/dev/null || ! command -v socat >/dev/null || ! command -v mkfs.ext4 >/dev/null; then
-	echo "docker-setup: installing $PACKAGES (first boot)"
-	until apk add --no-cache $PACKAGES; do
-		echo "docker-setup: apk failed, retrying in 5s"
-		sleep 5
-	done
-fi
+for cmd in $NEEDED; do
+	if ! command -v "$cmd" >/dev/null; then
+		echo "docker-setup: installing $PACKAGES (first boot)"
+		until apk add --no-cache $PACKAGES; do
+			echo "docker-setup: apk failed, retrying in 5s"
+			sleep 5
+		done
+		break
+	fi
+done
 
 # Images and containers live on their own sparse disk, formatted on first use.
 if ! blkid "$DATA_DISK" | grep -q 'TYPE="ext4"'; then
 	echo "docker-setup: formatting $DATA_DISK"
 	mkfs.ext4 -q -L docker "$DATA_DISK"
 fi
-mkdir -p /var/lib/docker
-mount -t ext4 "$DATA_DISK" /var/lib/docker
+if [ "$ENGINE" = containerd ]; then
+	# containerd, nerdctl and buildkit each keep state under /var/lib.
+	mkdir -p /data
+	mount -t ext4 "$DATA_DISK" /data
+	for dir in containerd nerdctl buildkit; do
+		mkdir -p "/data/$dir" "/var/lib/$dir"
+		mount --bind "/data/$dir" "/var/lib/$dir"
+	done
+else
+	mkdir -p /var/lib/docker
+	mount -t ext4 "$DATA_DISK" /var/lib/docker
+fi
+
+if [ "$ENGINE" = containerd ]; then
+	# Internal sshd for `monolith docker nerdctl`: root's key comes from the
+	# kernel command line (monolith.ssh_pubkey), host keys are made once.
+	key=$(tr ' ' '\n' </proc/cmdline | sed -n 's/^monolith\.ssh_pubkey=//p')
+	mkdir -p /root/.ssh
+	chmod 700 /root/.ssh
+	echo "ssh-ed25519 $key monolith" >/root/.ssh/authorized_keys
+	chmod 600 /root/.ssh/authorized_keys
+	ssh-keygen -A >/dev/null
+	# sshd only admits root@gateway with the key; keep containers from even
+	# reaching it.
+	iptables -I INPUT -p tcp -d 192.168.127.2 --dport 22 ! -s 192.168.127.1 -j REJECT
+fi
 
 # The Mac's /Users, at the same path, so bind mounts like -v ~/src:/src work.
 mkdir -p /Users
