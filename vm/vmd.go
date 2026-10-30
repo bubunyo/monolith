@@ -269,8 +269,9 @@ func RunDaemon(name string, restore bool, consoleLogPath string) error {
 		}
 	}
 
+	var services *dockerServices
 	if cfg.Image == ImageDocker {
-		services, err := startDockerServices(name, userNet, logger)
+		services, err = startDockerServices(name, userNet, logger)
 		if err != nil {
 			return errors.Wrap(err, "docker services")
 		}
@@ -307,6 +308,7 @@ func RunDaemon(name string, restore bool, consoleLogPath string) error {
 		listener: listener,
 		logger:   logger,
 		bus:      bus,
+		docker:   services,
 	}
 
 	// Accept connections in background.
@@ -380,6 +382,7 @@ type vmDaemon struct {
 	listener net.Listener
 	logger   *monolith.Logger
 	bus      *consoleBus
+	docker   *dockerServices // nil unless the VM uses the docker image
 
 	suspended atomic.Bool    // set while suspending; keeps state.json on exit
 	controlWG sync.WaitGroup // in-flight control requests
@@ -701,7 +704,11 @@ func (d *vmDaemon) handleStatus(conn net.Conn) {
 	default:
 		status = fmt.Sprintf("vz:%d", int(state))
 	}
-	d.sendControlResponse(conn, ControlResponse{OK: true, Status: status})
+	resp := ControlResponse{OK: true, Status: status}
+	if d.docker != nil {
+		resp.Ports = d.docker.forwards()
+	}
+	d.sendControlResponse(conn, resp)
 }
 
 // handleResize records the client's terminal size on the console PTY.

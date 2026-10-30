@@ -4,6 +4,9 @@
 #   relay:   forwards TCP port 2375 to dockerd's socket for the host. Only
 #            the user-mode gateway (the monolith daemon) may connect, so
 #            containers can't reach dockerd through it.
+#   clock:   keeps the system clock in step with the RTC, which follows the
+#            Mac's clock. After a restore from `monolith docker pause` the
+#            system clock is behind by however long the VM was paused.
 
 SOCK=/var/run/docker.sock
 
@@ -23,8 +26,17 @@ relay)
 	# until it ends; socat's default closes everything after 0.5s.
 	exec socat -t 86400 TCP-LISTEN:2375,bind=192.168.127.2,range=192.168.127.1/32,reuseaddr,fork "UNIX-CONNECT:$SOCK"
 	;;
+clock)
+	while sleep 2; do
+		rtc=$(cat /sys/class/rtc/rtc0/since_epoch) || exit 1
+		drift=$((rtc - $(date +%s)))
+		if [ "$drift" -gt 2 ] || [ "$drift" -lt -2 ]; then
+			hwclock -s -u
+		fi
+	done
+	;;
 *)
-	echo "usage: docker-serve dockerd|relay" >&2
+	echo "usage: docker-serve dockerd|relay|clock" >&2
 	exit 2
 	;;
 esac

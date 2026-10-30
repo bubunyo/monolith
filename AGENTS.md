@@ -42,10 +42,14 @@ monolith network list                             # list networks with attached 
 monolith network rm <name>                        # stop daemon and delete the named network
 monolith network logs <name>                      # stream the daemon log
 
-# Docker host (Colima-style)
-monolith docker start [--cpus N --memory 2G]      # boot the "docker" VM, wait for dockerd, print DOCKER_HOST
-monolith docker stop                              # stop it (images and containers persist)
-monolith docker env                               # print: export DOCKER_HOST=unix://…/vms/docker/docker.sock
+# Docker hosts (Colima-style); every command but list takes --name (default lith-default)
+monolith docker start [--cpus N --memory 2G]      # boot (or resume) the VM, wait for dockerd, make context docker-<name> current
+monolith docker pause                             # save the whole VM to disk and stop it (vm suspend)
+monolith docker resume                            # restore it, wait for dockerd and the clock, make its context current
+monolith docker stop [--force]                    # stop it (data persists); on a paused VM, discards the snapshot after asking
+monolith docker list                              # docker VMs: state, context (* = current), cpus, mem, data, ports
+monolith docker rm [--force]                      # delete the VM and its docker context
+monolith docker env                               # print: export DOCKER_HOST=unix://…/vms/<name>/docker.sock
 ```
 
 If no name is given to `run`, one is auto-generated as `lith-NNNNN` (random 5-digit number). VM names must be lowercase alphanumeric with hyphens, max 63 characters (valid hostnames). The `network` command is also aliased as `net`.
@@ -55,6 +59,7 @@ If no name is given to `run`, one is auto-generated as `lith-NNNNN` (random 5-di
 ```bash
 go test ./...             # all tests
 go test -run TestRun ./vm # single test
+MONOLITH_TEST_DOCKER=1 go test -run TestDockerPauseResume ./vm  # docker host pause/resume (needs internet, docker CLI, unlocked Mac)
 ```
 
 **Tests boot a real VM.** They require macOS on Apple Silicon with Virtualization.framework. There is no mock/unit-only test path. Do not expect tests to pass in CI or on non-macOS hosts.
@@ -95,7 +100,9 @@ monolith/
       topology.go         — topology view helper
       style.go            — shared lipgloss styles for network output
     docker/
-      docker.go           — "docker start|stop|env": manages the VM named "docker" (image docker, user mode)
+      docker.go           — "docker start|stop|pause|resume|rm|env" for Docker host VMs (image docker, user mode)
+      context.go          — creates/selects/removes the docker CLI context docker-<name> (shells out to docker)
+      list.go             — "docker list": docker VMs with context and forwarded ports (from the daemon's status reply)
   vm/                     — package vm: everything about a single VM. Imports net and the root package.
     vmd.go                — RunDaemon(name, restore, consoleLogPath): the per-VM daemon. Owns vz.VirtualMachine,
                             listens on a unix socket, dispatches console-attach and control
@@ -235,14 +242,17 @@ Alpine guest configuration:
 
 ### Docker host
 
-`monolith docker start` manages one VM named `docker` (image `docker`, network mode `user`, default 2 vCPU / 2 GiB; `vm run --image docker` also works and defaults to user mode). It is Colima's design on monolith:
+`monolith docker` manages Docker host VMs: any VM with image `docker` and network mode `user` (default 2 vCPU / 2 GiB). `--name` picks one (default `lith-default`); commands refuse VMs with another image. `vm run --image docker` also works and defaults to user mode. It is Colima's design on monolith:
 
 - **First boot**: `docker-setup` (sysinit, after DHCP) mounts cgroup2, loads modules, runs `apk add docker socat e2fsprogs` if missing, formats `/dev/vdb` if it has no ext4, mounts it on `/var/lib/docker`, and mounts the virtio-fs tag `users` (the Mac's `/Users`) at `/Users` so `-v ~/x:/x` resolves. About 20s with a warm Alpine cache; later boots take ~3s to a ready dockerd.
 - **API**: `docker-serve relay` runs `socat TCP-LISTEN:2375,bind=192.168.127.2,range=192.168.127.1/32` → `/var/run/docker.sock`. The daemon (`vm/docker.go`) listens on `vms/docker/docker.sock` on the Mac and relays each connection through `UserNetwork.DialGuest(2375)`. `range=` admits only the user-mode gateway, so containers can't reach dockerd. vsock was tried first, but vz's `VirtioSocketConnection` can't half-close (no `CloseWrite`), which broke attach (output lost, and `docker run -i` never sees stdin EOF). socat runs with `-t 86400` because its default closes a connection 0.5s after either side half-closes.
 - **Ports**: the daemon polls `GET /containers/json` every second and keeps a `127.0.0.1:<PublicPort>` listener for each published TCP port, relaying to the same port on the guest. Ports published on a specific guest address (`-p 127.0.0.1:80:80`) and UDP ports are not forwarded; listeners bind to localhost only.
-- `docker start` waits for `GET /_ping` (10 min timeout for slow first boots) and prints the `DOCKER_HOST` export and a `docker context create` line.
-- Guest scripts are written into `disk.img` when it is created; after changing `embeddings/docker`, recreate the VM (`vm rm docker`), which also reinstalls Docker and discards images.
-- virtio-fs makes the VM ineligible for suspend (`ValidateSaveRestoreSupport` fails).
+- **Contexts**: `start`/`resume` wait for `GET /_ping` (10 min timeout for slow first boots), then create or update the docker context `docker-<name>` (endpoint `unix://…/vms/<name>/docker.sock`) and `docker context use` it, which sets `currentContext` in `~/.docker/config.json` for all shells. `rm` deletes the context, switching to `default` first if it is current. They shell out to the `docker` CLI with `DOCKER_HOST`/`DOCKER_CONTEXT` removed from its environment; without the CLI on PATH, `start` just prints the socket. `start` warns when `DOCKER_HOST` is set, since it overrides contexts. `env` remains for scripts.
+- **Several hosts**: each VM has its own private user-mode network (all use guest IP `192.168.127.2`), socket and context. Host ports are first come, first served: a port another VM already forwards is retried every poll, logged once, and reported with its bind error in the daemon's `status` reply (`ControlResponse.Ports`), which `docker list` shows as `8080!`.
+- **Pause/resume** are `vm suspend`/restore: the whole VM, virtio-fs share and file-handle NIC included, saves and restores (snapshot ≈ guest memory in use, ~100 MB for an idle 2 GiB host; restore ~3s). Containers carry on mid-instruction. The user-mode network stack lives in the daemon, which exits on pause, so TCP connections open through it (a `docker logs -f`, a container's outbound connection) are dropped on resume. `start` on a paused VM resumes it; `stop` on one discards the snapshot (asks unless `--force`). Restoring needs the Mac unlocked (see Gotchas). Don't touch `disk.img`/`data.img` while paused.
+- **Clock**: a restored guest's system clock is behind by the paused time; the RTC (pl031) follows the Mac's clock. `docker-serve clock` checks `/sys/class/rtc/rtc0/since_epoch` every 2s and runs `hwclock -s -u` when they differ by more than 2s. `resume` also waits (up to 10s) until dockerd's `/info` `SystemTime` is within 2s of the Mac's, so commands run right after it see the right time.
+- **Port forwards** are re-created by the restored daemon's first poll, which runs immediately.
+- Guest scripts are written into `disk.img` when it is created; after changing `embeddings/docker`, recreate the VM (`docker rm --name <n>`), which also reinstalls Docker and discards images.
 
 ### Per-VM identity
 
@@ -264,7 +274,7 @@ Each VM gets a MAC address (saved as `mac` in `config.json`) and a generic machi
     my-dev-box/
       disk.img             # alpine and docker only
       data.img             # docker only: /var/lib/docker, sparse 64 GiB
-      docker.sock          # docker only: dockerd API relay (DOCKER_HOST)
+      docker.sock          # docker only: dockerd API relay (docker context docker-<name>)
       config.json          # {"cpus":1,"memory":536870912,"network_mode":"nat","image":"alpine","mac":"..."}
       machine-identifier   # generic machine identifier, created on first boot
       state.json           # {"pid":12345,"mac":"...","started_at":..., "status":"running"}

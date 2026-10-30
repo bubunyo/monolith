@@ -24,9 +24,11 @@
 # Installs Docker on first boot, then mounts its data disk and /Users.
 ::sysinit:/usr/local/bin/docker-setup
 
-# dockerd, and the vsock relay the host's docker.sock connects through.
+# dockerd, the TCP relay the host's docker.sock connects through, and the
+# clock sync that corrects the time after a restore.
 ::respawn:/usr/local/bin/docker-serve dockerd
 ::respawn:/usr/local/bin/docker-serve relay
+::respawn:/usr/local/bin/docker-serve clock
 
 hvc0::respawn:/sbin/getty -n -l /usr/local/bin/autologin 0 hvc0
 

@@ -94,11 +94,8 @@ func runVM(name string, cfg vmCfg) error {
 			return err
 		}
 	}
-	if len(name) > 63 {
-		return fmt.Errorf("VM name %q is too long (max 63 characters)", name)
-	}
-	if !namePattern.MatchString(name) {
-		return fmt.Errorf("VM name %q is invalid (must be lowercase alphanumeric with hyphens, e.g. my-vm-01)", name)
+	if err := ValidateName(name); err != nil {
+		return err
 	}
 
 	// Check current state.
@@ -249,6 +246,17 @@ Workaround: use --network-mode nat (default), shared, or isolated.`, monolith.En
 	}
 	if cfg.NetworkName != "" && cfg.NetworkMode != mnet.NetworkShared && cfg.NetworkMode != mnet.NetworkIsolated {
 		return fmt.Errorf("--network is only valid with --network-mode shared or --network-mode isolated")
+	}
+	return nil
+}
+
+// ValidateName checks that name is a valid VM name (a valid hostname).
+func ValidateName(name string) error {
+	if len(name) > 63 {
+		return fmt.Errorf("VM name %q is too long (max 63 characters)", name)
+	}
+	if !namePattern.MatchString(name) {
+		return fmt.Errorf("VM name %q is invalid (must be lowercase alphanumeric with hyphens, e.g. my-vm-01)", name)
 	}
 	return nil
 }

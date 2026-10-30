@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"sync"
 	"time"
@@ -34,7 +35,7 @@ type dockerServices struct {
 
 	mu     sync.Mutex
 	ports  map[int]net.Listener // published host port -> localhost listener
-	failed map[int]bool         // ports already logged as unavailable
+	failed map[int]string       // published ports that couldn't be bound -> error
 }
 
 // startDockerServices starts the docker.sock relay and the port forwarder.
@@ -60,7 +61,7 @@ func startDockerServices(name string, user *mnet.UserNetwork, logger *monolith.L
 		listener: listener,
 		cancel:   cancel,
 		ports:    map[int]net.Listener{},
-		failed:   map[int]bool{},
+		failed:   map[int]string{},
 	}
 	s.client = &http.Client{
 		Timeout: 5 * time.Second,
@@ -115,52 +116,74 @@ type publishedPort struct {
 // forwardPorts keeps one localhost listener per published TCP port. dockerd
 // publishes on the guest; each listener relays to the same port on the
 // guest through the user-mode network.
+// The first sync runs immediately, so after a restore the forwards are back
+// as soon as dockerd answers.
 func (s *dockerServices) forwardPorts(ctx context.Context) {
 	ticker := time.NewTicker(portPollInterval)
 	defer ticker.Stop()
 	for {
+		s.syncPorts(ctx)
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
 		}
-		want, err := s.publishedPorts()
-		if err != nil {
-			continue // dockerd not up yet, or restarting
-		}
-		s.mu.Lock()
-		for port := range s.failed {
-			if !want[port] {
-				delete(s.failed, port)
-			}
-		}
-		for port, l := range s.ports {
-			if !want[port] {
-				l.Close()
-				delete(s.ports, port)
-				s.logger.Info("stopped forwarding localhost:%d", port)
-			}
-		}
-		for port := range want {
-			if _, ok := s.ports[port]; ok {
-				continue
-			}
-			l, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
-			if err != nil {
-				// Retried on every poll; log only the first failure.
-				if !s.failed[port] {
-					s.failed[port] = true
-					s.logger.Warn("cannot forward localhost:%d: %v", port, err)
-				}
-				continue
-			}
-			delete(s.failed, port)
-			s.ports[port] = l
-			go s.servePort(ctx, l, port)
-			s.logger.Info("forwarding localhost:%d to %s:%d", port, mnet.UserGuestIP, port)
-		}
-		s.mu.Unlock()
 	}
+}
+
+func (s *dockerServices) syncPorts(ctx context.Context) {
+	want, err := s.publishedPorts()
+	if err != nil {
+		return // dockerd not up yet, or restarting
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for port := range s.failed {
+		if !want[port] {
+			delete(s.failed, port)
+		}
+	}
+	for port, l := range s.ports {
+		if !want[port] {
+			l.Close()
+			delete(s.ports, port)
+			s.logger.Info("stopped forwarding localhost:%d", port)
+		}
+	}
+	for port := range want {
+		if _, ok := s.ports[port]; ok {
+			continue
+		}
+		l, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+		if err != nil {
+			// Retried on every poll; log only the first failure.
+			if _, logged := s.failed[port]; !logged {
+				s.logger.Warn("cannot forward localhost:%d: %v", port, err)
+			}
+			s.failed[port] = err.Error()
+			continue
+		}
+		delete(s.failed, port)
+		s.ports[port] = l
+		go s.servePort(ctx, l, port)
+		s.logger.Info("forwarding localhost:%d to %s:%d", port, mnet.UserGuestIP, port)
+	}
+}
+
+// forwards lists the published ports, sorted, with the bind error for any
+// that couldn't be forwarded (typically another VM already holds the port).
+func (s *dockerServices) forwards() []PortForward {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []PortForward
+	for port := range s.ports {
+		out = append(out, PortForward{Port: port})
+	}
+	for port, msg := range s.failed {
+		out = append(out, PortForward{Port: port, Error: msg})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Port < out[j].Port })
+	return out
 }
 
 // publishedPorts returns the host ports published on all guest interfaces.

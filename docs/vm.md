@@ -241,24 +241,39 @@ name and actual disk usage of each VM to be pruned.
 
 ## Docker Host
 
-`monolith docker` runs Docker Engine in a VM named `docker` and exposes it
-to the docker CLI on the Mac, like Colima:
+`monolith docker` runs Docker Engine in VMs and points the docker CLI on the
+Mac at them, like Colima. Every command except `list` takes `--name`
+(default `lith-default`).
 
 ```bash
-monolith docker start            # first run installs Docker in the VM (~20s)
-eval "$(monolith docker env)"    # export DOCKER_HOST=unix://~/.cache/monolith/vms/docker/docker.sock
-docker run --rm -it busybox sh
-docker run -d -p 8080:80 nginx   # http://localhost:8080
+monolith docker start                  # first run installs Docker in the VM (~20s)
+docker run --rm -it busybox sh         # context docker-lith-default is now current
+docker run -d -p 8080:80 nginx         # http://localhost:8080
 docker run --rm -v "$PWD":/src busybox ls /src   # paths under /Users work
+monolith docker pause                  # save the whole VM to disk; frees its memory
+monolith docker resume                 # containers carry on where they were
+monolith docker start --name lith-2    # a second host; context docker-lith-2
+monolith docker list
 monolith docker stop
+monolith docker rm --name lith-2       # deletes the VM and its context
 ```
 
-`start` takes `--cpus` (default 2) and `--memory` (default `2G`). The VM uses
-the `docker` image and `user` network mode; images and containers live on a
-64 GiB sparse `data.img` and survive restarts. Published TCP ports are
-forwarded to `127.0.0.1` on the Mac; UDP ports and ports bound to a specific
-address (`-p 127.0.0.1:80:80`) are not. `monolith vm attach docker` opens the
-VM's console; dockerd logs to `/var/log/docker.log`.
+- `start` creates the context `docker-<name>` and makes it current (like
+  `docker context use`). It resumes a paused VM. It takes `--cpus` (default 2)
+  and `--memory` (default `2G`). If `DOCKER_HOST` is set in your shell, it
+  overrides the context; `start` warns about it.
+- `pause` is `vm suspend`: memory and devices go to `suspend.vmstate`.
+  Resuming needs the Mac unlocked. Connections open at pause time are dropped
+  on resume, and the guest clock is corrected within seconds.
+- `stop` on a paused VM discards its saved state (it asks first, or pass
+  `--force`); images and volumes stay.
+- Images and containers live on a 64 GiB sparse `data.img` per VM.
+- Published TCP ports are forwarded to `127.0.0.1`. If two VMs publish the same
+  port, the first one keeps it; `docker list` marks the other with `!`. UDP
+  ports and ports bound to a specific address (`-p 127.0.0.1:80:80`) aren't
+  forwarded.
+- `monolith vm attach <name>` opens a VM's console; dockerd logs to
+  `/var/log/docker.log`.
 
 ## Console Interaction
 
