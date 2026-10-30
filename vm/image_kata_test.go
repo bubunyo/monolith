@@ -40,6 +40,9 @@ func TestKataCommandLine(t *testing.T) {
 // that the guest reaches the agent's root shell on the console. It downloads
 // the Kata assets (~65 MB) on first run. Requires macOS on Apple Silicon.
 func TestRunDaemonKata(t *testing.T) {
+	if testing.Short() {
+		t.Skip("boots a VM; skipped with -short (CI runners can't run nested VMs)")
+	}
 	binary := "../bin/monolith"
 	if _, err := os.Stat(binary); err != nil {
 		t.Skipf("binary not found at %s — run 'make build' first", binary)

@@ -12,7 +12,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"syscall"
 
 	"github.com/bubunyo/monolith"
@@ -476,16 +475,4 @@ func ipv6ProtoName(proto byte) string {
 	default:
 		return fmt.Sprintf("%d", proto)
 	}
-}
-
-// formatHexDump returns a hex dump of the first n bytes for debugging.
-func formatHexDump(data []byte, maxLen int) string {
-	if len(data) > maxLen {
-		data = data[:maxLen]
-	}
-	parts := make([]string, len(data))
-	for i, b := range data {
-		parts[i] = fmt.Sprintf("%02x", b)
-	}
-	return strings.Join(parts, " ")
 }

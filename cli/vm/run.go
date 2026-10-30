@@ -271,7 +271,7 @@ func ParseMemory(s string) (uint64, error) {
 
 	// Check for suffix.
 	upper := strings.ToUpper(s)
-	var multiplier uint64 = 1
+	var multiplier uint64
 	numStr := s
 
 	switch {

@@ -37,3 +37,6 @@ go.work.sum
 ./bin
 
 bin/*
+
+# Release archives (make dist)
+dist/

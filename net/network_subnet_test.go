@@ -45,6 +45,9 @@ func equalPrefix(t *testing.T, want, got string) {
 // Skipped on non-darwin/arm64, when the binary is missing, or when running
 // as root (vmnet requires the calling user's session).
 func TestNetworkCustomSubnet(t *testing.T) {
+	if testing.Short() {
+		t.Skip("creates vmnet networks; skipped with -short (CI runners can't run nested VMs)")
+	}
 	if runtime.GOOS != "darwin" || runtime.GOARCH != "arm64" {
 		t.Skip("requires darwin/arm64")
 	}
