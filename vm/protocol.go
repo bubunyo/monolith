@@ -23,6 +23,10 @@ const (
 	CmdStop    = "stop"
 	CmdStatus  = "status"
 	CmdResize  = "resize"
+
+	// CmdKubeconfig returns k3s's kubeconfig in Data (docker image VMs
+	// with Kubernetes on).
+	CmdKubeconfig = "kubeconfig"
 )
 
 // ControlRequest is a JSON-encoded command sent from client to daemon.
@@ -43,6 +47,9 @@ type ControlResponse struct {
 	// Ports is reported by status for docker image VMs: published container
 	// ports and whether each is forwarded to the Mac's localhost.
 	Ports []PortForward `json:"ports,omitempty"`
+
+	// Data carries a command's payload, e.g. the kubeconfig.
+	Data string `json:"data,omitempty"`
 }
 
 // PortForward is a container port published to localhost on the Mac. Error

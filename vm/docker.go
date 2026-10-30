@@ -49,8 +49,9 @@ type dockerServices struct {
 }
 
 // startDockerServices starts the engine's socket relays and the port
-// forwarder.
-func startDockerServices(name, engine string, user *mnet.UserNetwork, logger *monolith.Logger) (*dockerServices, error) {
+// forwarder, plus the Kubernetes API forward when k3s is on.
+func startDockerServices(name string, cfg VMConfig, user *mnet.UserNetwork, logger *monolith.Logger) (*dockerServices, error) {
+	engine := EngineOf(cfg)
 	if user == nil {
 		return nil, fmt.Errorf("the docker image requires user-mode networking")
 	}
@@ -93,6 +94,35 @@ func startDockerServices(name, engine string, user *mnet.UserNetwork, logger *mo
 		s.close()
 		return nil, err
 	}
+	if cfg.Kubernetes {
+		if cfg.KubePort == 0 {
+			s.close()
+			return nil, fmt.Errorf("kubernetes is on but no kube_port is configured")
+		}
+		l, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(cfg.KubePort)))
+		if err != nil {
+			s.close()
+			return nil, fmt.Errorf("forwarding the Kubernetes API on localhost:%d: %w", cfg.KubePort, err)
+		}
+		s.listeners = append(s.listeners, l)
+		go s.serveListener(ctx, l, KubeAPIPort)
+		engineHostPorts := s.publishedPorts
+		s.publishedPorts = func() (map[int]bool, error) {
+			ports, err := engineHostPorts()
+			if err != nil {
+				return nil, err
+			}
+			// Services come and go with k3s; the engine's ports still
+			// count while it's starting or restarting.
+			if svc, err := s.kubeServicePorts(); err == nil {
+				for p := range svc {
+					ports[p] = true
+				}
+			}
+			return ports, nil
+		}
+		logger.Info("Kubernetes API for %q on localhost:%d", name, cfg.KubePort)
+	}
 
 	go s.forwardPorts(ctx)
 	logger.Info("%s engine for %q: %s relays to guest port %d", engine, name, sockPath, sockPort)
@@ -119,23 +149,101 @@ func (s *dockerServices) relaySocket(ctx context.Context, path string, port int)
 	}
 	s.sockets = append(s.sockets, path)
 	s.listeners = append(s.listeners, l)
-	go func() {
-		for {
-			conn, err := l.Accept()
-			if err != nil {
-				return // listener closed
-			}
-			go func() {
-				guest, err := s.dialGuest(ctx, port)
-				if err != nil {
-					conn.Close()
-					return
-				}
-				relay(conn, guest)
-			}()
-		}
-	}()
+	go s.serveListener(ctx, l, port)
 	return nil
+}
+
+// serveListener relays each connection accepted on l to port on the guest.
+func (s *dockerServices) serveListener(ctx context.Context, l net.Listener, port int) {
+	for {
+		conn, err := l.Accept()
+		if err != nil {
+			return // listener closed
+		}
+		go func() {
+			guest, err := s.dialGuest(ctx, port)
+			if err != nil {
+				conn.Close()
+				return
+			}
+			relay(conn, guest)
+		}()
+	}
+}
+
+// k8sInfo asks the guest's k8s-info relay for "kubeconfig" or "services".
+func (s *dockerServices) k8sInfo(what string) ([]byte, error) {
+	conn, err := s.dialGuest(context.Background(), K8sInfoPort)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(10 * time.Second))
+	if _, err := io.WriteString(conn, what+"\n"); err != nil {
+		return nil, err
+	}
+	data, err := io.ReadAll(conn)
+	if err != nil {
+		return nil, err
+	}
+	if len(data) == 0 {
+		return nil, fmt.Errorf("k3s returned no %s (still starting?)", what)
+	}
+	return data, nil
+}
+
+// kubeconfig returns k3s's admin kubeconfig as written in the guest (server
+// https://127.0.0.1:6443).
+func (s *dockerServices) kubeconfig() ([]byte, error) {
+	return s.k8sInfo("kubeconfig")
+}
+
+// kubeServicePorts returns the ports Kubernetes services expose on the node:
+// LoadBalancer ports (served by k3s's servicelb on the node) and NodePorts.
+func (s *dockerServices) kubeServicePorts() (map[int]bool, error) {
+	data, err := s.k8sInfo("services")
+	if err != nil {
+		return nil, err
+	}
+	return parseKubeServicePorts(data)
+}
+
+func parseKubeServicePorts(data []byte) (map[int]bool, error) {
+	var list struct {
+		Items []struct {
+			Spec struct {
+				Type  string `json:"type"`
+				Ports []struct {
+					Protocol string `json:"protocol"`
+					Port     int    `json:"port"`
+					NodePort int    `json:"nodePort"`
+				} `json:"ports"`
+			} `json:"spec"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(data, &list); err != nil {
+		return nil, fmt.Errorf("kubectl get svc: %w", err)
+	}
+	ports := map[int]bool{}
+	for _, svc := range list.Items {
+		for _, p := range svc.Spec.Ports {
+			if p.Protocol != "" && p.Protocol != "TCP" {
+				continue
+			}
+			switch svc.Spec.Type {
+			case "LoadBalancer":
+				ports[p.Port] = true
+				if p.NodePort > 0 {
+					ports[p.NodePort] = true
+				}
+			case "NodePort":
+				if p.NodePort > 0 {
+					ports[p.NodePort] = true
+				}
+			}
+		}
+	}
+	return ports, nil
 }
 
 // publishedPort is the subset of GET /containers/json we use.
@@ -197,7 +305,7 @@ func (s *dockerServices) syncPorts(ctx context.Context) {
 		}
 		delete(s.failed, port)
 		s.ports[port] = l
-		go s.servePort(ctx, l, port)
+		go s.serveListener(ctx, l, port)
 		s.logger.Info("forwarding localhost:%d to %s:%d", port, mnet.UserGuestIP, port)
 	}
 }
@@ -303,25 +411,6 @@ func parseNerdctlPorts(data []byte) (map[int]bool, error) {
 		}
 	}
 	return ports, nil
-}
-
-func (s *dockerServices) servePort(ctx context.Context, l net.Listener, port int) {
-	for {
-		conn, err := l.Accept()
-		if err != nil {
-			return // listener closed
-		}
-		go func() {
-			dialCtx, cancel := context.WithTimeout(ctx, dialTimeout)
-			defer cancel()
-			guest, err := s.user.DialGuest(dialCtx, port)
-			if err != nil {
-				conn.Close()
-				return
-			}
-			relay(conn, guest)
-		}()
-	}
 }
 
 // close stops all listeners and removes the host sockets.

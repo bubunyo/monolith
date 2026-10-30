@@ -46,6 +46,9 @@ monolith network logs <name>                      # stream the daemon log
 monolith docker start [--cpus N --memory 2G]      # boot (or resume) the VM, wait for dockerd, make context docker-<name> current
 monolith docker start --engine containerd         # new VM with containerd + nerdctl + BuildKit instead of dockerd (fixed at creation)
 monolith docker nerdctl [--name N] run -d nginx   # run nerdctl in a containerd host (args pass through; -it gets a TTY)
+monolith docker start --kubernetes [--k3s-version v1.36.5+k3s1]  # run k3s on the engine; merges kubectl context k3s-<name> and makes it current
+monolith docker start --kubernetes=false          # turn k3s off on the next boot (data kept; kubectl context removed)
+monolith docker kubeconfig                        # print the standalone kubeconfig (context k3s-<name>)
 monolith docker pause                             # save the whole VM to disk and stop it (vm suspend)
 monolith docker resume                            # restore it, wait for dockerd and the clock, make its context current
 monolith docker stop [--force]                    # stop it (data persists); on a paused VM, discards the snapshot after asking
@@ -62,6 +65,7 @@ If no name is given to `run`, one is auto-generated as `lith-NNNNN` (random 5-di
 go test ./...             # all tests
 go test -run TestRun ./vm # single test
 MONOLITH_TEST_DOCKER=1 go test -run TestDockerPauseResume ./vm  # docker host pause/resume (needs internet, docker CLI, unlocked Mac)
+MONOLITH_TEST_K8S=1 go test -run TestKubernetesPauseResume ./vm  # k3s on both engines: LB service, pause/resume (needs internet, kubectl, unlocked Mac)
 ```
 
 **Tests boot a real VM.** They require macOS on Apple Silicon with Virtualization.framework. There is no mock/unit-only test path. Do not expect tests to pass in CI or on non-macOS hosts.
@@ -104,6 +108,7 @@ monolith/
     docker/
       docker.go           — "docker start|stop|pause|resume|rm|env" for Docker host VMs (image docker, user mode), --engine
       ssh.go              — "docker nerdctl": execs ssh to the containerd host's internal sshd via ssh.sock
+      kube.go             — "docker kubeconfig", kubeconfig fetch/rewrite, merge into $KUBECONFIG or ~/.kube/config, readiness
       context.go          — creates/selects/removes the docker CLI context docker-<name> (shells out to docker)
       list.go             — "docker list": docker VMs with context and forwarded ports (from the daemon's status reply)
   vm/                     — package vm: everything about a single VM. Imports net and the root package.
@@ -122,6 +127,7 @@ monolith/
     image_docker.go       — docker image: alpine + embeddings/docker overlay (+ embeddings/containerd for that engine),
                             sparse data.img, /Users virtio-fs share; EngineDocker/EngineContainerd, EngineOf.
     sshkey.go             — per-VM ed25519 key for the containerd engine's internal sshd.
+    k3s.go                — k3s download/verify into the cache (ensureK3s), DefaultK3sVersion, GuestLayout, FreeLocalPort.
     docker.go             — daemon-side services: engine socket relay (docker.sock or ssh.sock) and published-port
                             forwarding (ports from dockerd's API or `nerdctl ps --format json`).
     alpine_kernel.go      — DefaultKernel() downloads Alpine ISO, extracts/decompresses kernel+initrd.
@@ -272,6 +278,19 @@ Alpine guest configuration:
 - **Readiness**: `start`/`resume` poll `nerdctl info` over ssh, then wait for the guest clock (`date +%s` over ssh) like the docker engine does through `/info`.
 - Pause/resume, `/Users`, the clock loop, port clash reporting and `rm` work as for the docker engine.
 
+#### Kubernetes (k3s)
+
+`start --kubernetes` runs a single-node k3s server on the VM's engine (Colima-style), so images built with `docker build` or `nerdctl build` are usable in pods without a registry. It's saved in `config.json` (`kubernetes`, `k3s_version`, `kube_port`) and can be turned on or off on any start of a stopped VM; `start` refuses to change it on a running or paused one (it changes the VM's devices and boot arguments). New VMs created with `--kubernetes` default to 4 GiB.
+
+- **k3s binary**: `ensureK3s` downloads `k3s-arm64` for the pinned version (`DefaultK3sVersion`, override with `--k3s-version`) from GitHub releases into `~/.cache/monolith/k3s/<version>/k3s`, verified against the release's `sha256sum-arm64.txt`. That directory is shared read-only over virtio-fs (tag `k3s`, mounted at `/opt/monolith/k3s`), so every VM reuses one download, and `monolith.k3s=1` goes on the kernel command line. Turning Kubernetes off drops both.
+- **Guest layout**: the k3s services live in the inittab written when the disk is created, so `config.json` records `guest_layout` (`vm.GuestLayout`, currently 1) for new docker image VMs. VMs created earlier have none and are refused `--kubernetes` with a hint to recreate them.
+- **Guest**: with `monolith.k3s=1`, `docker-setup` loads `vxlan`, makes `/` rshared, mounts the share, and bind-mounts `/var/lib/rancher` and `/var/lib/kubelet` from the data disk (`/var/lib/docker/.monolith/…` for docker, `/data/…` for containerd). `docker-serve k3s` runs `k3s server --disable=traefik --node-name=<vm> --write-kubeconfig-mode=600` with `--docker` (k3s's built-in cri-dockerd) or `--container-runtime-endpoint=unix:///run/containerd/containerd.sock`. For containerd, `docker-setup` also points the CRI's CNI `bin_dir`/`conf_dir` at k3s's flannel (`/var/lib/rancher/k3s/data/current/bin`, `/var/lib/rancher/k3s/agent/etc/cni/net.d`) because nerdctl's own conflist sits in `/etc/cni/net.d`, and sets nerdctl's and BuildKit's namespace to `k8s.io` so built images are visible to pods; turning Kubernetes off reverts both. Without the flag, `docker-serve k3s|k8s-info` just sleep.
+- **API**: the daemon forwards `127.0.0.1:<kube_port>` (chosen once with `FreeLocalPort`, so several clusters coexist) to guest port 6443. k3s's serving certificate already covers 127.0.0.1.
+- **kubeconfig**: `docker-serve k8s-info` (guest port 2378, gateway only) answers a one-line request: `kubeconfig` → `/etc/rancher/k3s/k3s.yaml`, `services` → `k3s kubectl get svc -A -o json`. The daemon's `kubeconfig` control command returns the first; the CLI renames cluster/user/context to `k3s-<name>`, points the server at `kube_port`, and merges the entries into the first file in `$KUBECONFIG` (else `~/.kube/config`) as a generic YAML document, keeping other fields and saving the previous file as `<file>.monolith.bak`, then sets `current-context`. `rm` and `--kubernetes=false` remove the entries (clearing `current-context` if it was this VM's). `docker kubeconfig` prints the standalone file.
+- **Readiness**: after the engine, `start`/`resume` wait (up to 10 min; the first start pulls k3s's system images, ~25s on a warm cache) for the kubeconfig, `/readyz`, and the node's Ready condition, using the kubeconfig's client certificate.
+- **Service ports**: every poll the daemon adds Kubernetes service ports to the engine's: LoadBalancer ports (k3s's servicelb serves them on the node) and NodePorts, TCP only (`parseKubeServicePorts`). They're forwarded to localhost like container ports, with the same clash rules.
+- **list**: `docker list` has a K8S column with the k3s version; `vm list` shows `docker (docker+k3s)`.
+
 ### Per-VM identity
 
 Each VM gets a MAC address (saved as `mac` in `config.json`) and a generic machine identifier (`vms/<name>/machine-identifier`) on first boot, reused on every later boot. Restoring a saved state requires both to match what it was saved with (a fresh random machine identifier made every restore fail with "invalid argument"); the stable MAC also keeps the VM's DHCP address stable.
@@ -284,6 +303,7 @@ Each VM gets a MAC address (saved as `mac` in `config.json`) and a generic machi
     vmlinuz-virt
     initramfs-virt
     minirootfs.tar.gz
+  k3s/v1.36.5+k3s1/k3s     — k3s binary, shared read-only into VMs with --kubernetes
   kata/4.3.1/              — shared Kata assets (read-only for VMs)
     vmlinux
     rootfs.img
