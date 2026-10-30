@@ -34,8 +34,12 @@ const (
 
 	// GuestLayout is the version of the guest files written into a docker
 	// image VM's disk when it's created. Layout 1 has the k3s services;
-	// Kubernetes needs at least that.
-	GuestLayout = 1
+	// layout 2 adds clean shutdown, Rosetta and file-change events.
+	GuestLayout = 2
+
+	// Minimum GuestLayout for each feature that needs guest files.
+	GuestLayoutKubernetes = 1
+	GuestLayoutRosetta    = 2 // also clean shutdown and file-change events
 
 	k3sShareTag       = "k3s"
 	k3sCmdlineArg     = "monolith.k3s"

@@ -55,8 +55,9 @@ type ControlResponse struct {
 // PortForward is a container port published to localhost on the Mac. Error
 // is set when the daemon couldn't bind it, e.g. another VM holds the port.
 type PortForward struct {
-	Port  int    `json:"port"`
-	Error string `json:"error,omitempty"`
+	Port     int    `json:"port"`
+	Protocol string `json:"protocol,omitempty"` // "tcp" or "udp"
+	Error    string `json:"error,omitempty"`
 }
 
 // MarshalControlRequest encodes a control request to JSON bytes.

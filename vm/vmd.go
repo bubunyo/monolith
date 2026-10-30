@@ -176,6 +176,18 @@ func RunDaemon(name string, restore bool, consoleLogPath string) error {
 		fsConfig.SetDirectoryShare(share)
 		shareDevices = append(shareDevices, fsConfig)
 	}
+	if spec.Rosetta {
+		share, err := vz.NewLinuxRosettaDirectoryShare()
+		if err != nil {
+			return errors.Wrap(err, "Rosetta directory share")
+		}
+		fsConfig, err := vz.NewVirtioFileSystemDeviceConfiguration(rosettaShareTag)
+		if err != nil {
+			return errors.Wrap(err, "Rosetta virtio-fs device")
+		}
+		fsConfig.SetDirectoryShare(share)
+		shareDevices = append(shareDevices, fsConfig)
+	}
 	if len(shareDevices) > 0 {
 		vmCfg.SetDirectorySharingDevicesVirtualMachineConfiguration(shareDevices)
 	}
@@ -310,6 +322,11 @@ func RunDaemon(name string, restore bool, consoleLogPath string) error {
 		bus:        bus,
 		docker:     services,
 		kubernetes: cfg.Kubernetes,
+
+		stopTimeout: gracefulStopTimeout,
+	}
+	if spec.HandlesStop {
+		d.stopTimeout = cleanStopTimeout
 	}
 
 	// Accept connections in background.
@@ -385,6 +402,8 @@ type vmDaemon struct {
 	bus        *consoleBus
 	docker     *dockerServices // nil unless the VM uses the docker image
 	kubernetes bool            // k3s runs in the guest
+
+	stopTimeout time.Duration // wait for a clean shutdown before forcing
 
 	suspended atomic.Bool    // set while suspending; keeps state.json on exit
 	controlWG sync.WaitGroup // in-flight control requests
@@ -655,12 +674,12 @@ func (d *vmDaemon) handleStop(conn net.Conn, force bool) {
 				return
 			}
 		}
-	} else if d.requestStopAndWait(gracefulStopTimeout) {
+	} else if d.requestStopAndWait(d.stopTimeout) {
 		d.sendControlResponse(conn, ControlResponse{OK: true, Status: StatusStopped})
 		return
 	} else if d.vm.CanStop() {
 		// The guest ignored the request (neither image handles it today).
-		d.logger.Info("VM %q did not stop within %s; forcing", d.name, gracefulStopTimeout)
+		d.logger.Info("VM %q did not stop within %s; forcing", d.name, d.stopTimeout)
 		if err := d.vm.Stop(); err != nil {
 			d.sendControlResponse(conn, ControlResponse{OK: false, Error: fmt.Sprintf("force stop after timeout failed: %v", err)})
 			return
@@ -673,8 +692,13 @@ func (d *vmDaemon) handleStop(conn net.Conn, force bool) {
 }
 
 // gracefulStopTimeout is how long `vm stop` waits for the guest to shut
-// down after a stop request before forcing it.
-const gracefulStopTimeout = 10 * time.Second
+// down after a stop request before forcing it. Guests that don't act on the
+// request just wait it out; guests that do (BootSpec.HandlesStop) get
+// cleanStopTimeout, enough for the engine to stop its containers.
+const (
+	gracefulStopTimeout = 10 * time.Second
+	cleanStopTimeout    = 30 * time.Second
+)
 
 // requestStopAndWait asks the guest to shut down and reports whether the VM
 // reached the stopped state within timeout.

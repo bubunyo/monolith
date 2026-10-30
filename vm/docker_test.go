@@ -120,7 +120,7 @@ func TestParseNerdctlPorts(t *testing.T) {
 `
 	ports, err := parseNerdctlPorts([]byte(out))
 	require.NoError(t, err)
-	require.Equal(t, map[int]bool{8080: true, 8443: true, 8444: true}, ports)
+	require.Equal(t, map[portKey]bool{{"tcp", 8080}: true, {"udp", 5353}: true, {"tcp", 8443}: true, {"tcp", 8444}: true}, ports)
 
 	_, err = parseNerdctlPorts([]byte("not json\n"))
 	require.Error(t, err)
@@ -134,5 +134,5 @@ func TestParseKubeServicePorts(t *testing.T) {
 ]}`
 	ports, err := parseKubeServicePorts([]byte(out))
 	require.NoError(t, err)
-	require.Equal(t, map[int]bool{8080: true, 31000: true, 30080: true}, ports)
+	require.Equal(t, map[portKey]bool{{"tcp", 8080}: true, {"tcp", 31000}: true, {"udp", 53}: true, {"udp", 31001}: true, {"tcp", 30080}: true}, ports)
 }

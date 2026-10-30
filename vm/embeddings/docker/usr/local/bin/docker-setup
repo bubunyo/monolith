@@ -9,15 +9,19 @@ DATA_DISK=/dev/vdb
 # binary (virtio-fs tag k3s).
 K8S=$(tr ' ' '\n' </proc/cmdline | grep -cx 'monolith\.k3s=1')
 K3S_DIR=/opt/monolith/k3s
+# Rosetta runs x86-64 binaries when the host passes monolith.rosetta=1 and
+# shares Rosetta (virtio-fs tag rosetta).
+ROSETTA=$(tr ' ' '\n' </proc/cmdline | grep -cx 'monolith\.rosetta=1')
 
+# libgpiod's gpiomon watches the power button (docker-serve power).
 case "$ENGINE" in
 containerd)
-	PACKAGES="containerd nerdctl cni-plugins buildkit buildctl iptables ip6tables openssh-server socat e2fsprogs"
-	NEEDED="containerd nerdctl buildkitd sshd socat mkfs.ext4"
+	PACKAGES="containerd nerdctl cni-plugins buildkit buildctl iptables ip6tables openssh-server socat e2fsprogs libgpiod"
+	NEEDED="containerd nerdctl buildkitd sshd socat mkfs.ext4 gpiomon"
 	;;
 *)
-	PACKAGES="docker socat e2fsprogs"
-	NEEDED="dockerd socat mkfs.ext4"
+	PACKAGES="docker socat e2fsprogs libgpiod"
+	NEEDED="dockerd socat mkfs.ext4 gpiomon"
 	;;
 esac
 
@@ -26,7 +30,8 @@ echo "docker-setup: preparing $ENGINE host"
 mkdir -p /sys/fs/cgroup
 mount -t cgroup2 cgroup2 /sys/fs/cgroup
 
-modprobe -a overlay br_netfilter veth virtiofs 2>/dev/null
+# gpio-pl061 drives the GPIO controller the VM's power button is wired to.
+modprobe -a overlay br_netfilter veth virtiofs gpio-pl061 binfmt_misc 2>/dev/null
 sysctl -qw net.ipv4.ip_forward=1
 
 for cmd in $NEEDED; do
@@ -36,6 +41,7 @@ for cmd in $NEEDED; do
 			echo "docker-setup: apk failed, retrying in 5s"
 			sleep 5
 		done
+		sync # a forced stop right after must not leave empty files
 		break
 	fi
 done
@@ -104,6 +110,18 @@ if [ "$K8S" = 1 ]; then
 		mkdir -p "$base/$dir" "/var/lib/$dir"
 		mount --bind "$base/$dir" "/var/lib/$dir"
 	done
+fi
+
+if [ "$ROSETTA" = 1 ]; then
+	# Register Rosetta for x86-64 ELF binaries: flag F opens the
+	# interpreter now, so it works inside containers too; C keeps setuid.
+	# printf %s keeps the \x escapes literal; the kernel decodes them.
+	mkdir -p /mnt/rosetta
+	mount -t virtiofs -o ro rosetta /mnt/rosetta || echo "docker-setup: mounting rosetta failed"
+	mount -t binfmt_misc binfmt_misc /proc/sys/fs/binfmt_misc 2>/dev/null
+	if [ ! -e /proc/sys/fs/binfmt_misc/rosetta ]; then
+		printf '%s\n' ':rosetta:M::\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x3e\x00:\xff\xff\xff\xff\xff\xfe\xfe\x00\xff\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff:/mnt/rosetta/rosetta:CF' >/proc/sys/fs/binfmt_misc/register
+	fi
 fi
 
 # The Mac's /Users, at the same path, so bind mounts like -v ~/src:/src work.

@@ -29,6 +29,10 @@ type BootSpec struct {
 	DiskReadOnly bool   // true when the disk is a base image shared by all VMs
 	DataDiskPath string // optional second writable disk, attached as /dev/vdb
 	Shares       []Share
+	Rosetta      bool // share Rosetta (virtio-fs tag "rosetta") to run x86-64 binaries
+	// HandlesStop is true when the guest shuts down cleanly on the VM's
+	// stop request, so the daemon can wait longer before forcing it.
+	HandlesStop bool
 }
 
 // Share is a host directory exposed to the guest over virtio-fs; the guest

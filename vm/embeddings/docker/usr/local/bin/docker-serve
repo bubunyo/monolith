@@ -15,6 +15,16 @@
 #   k3s:        single-node k3s server on the VM's engine
 #   k8s-info:   answers TCP port 2378 with k3s's kubeconfig or services
 # both:
+#   power:      powers off cleanly when the VM's power button is pressed
+#               (Virtualization.framework's stop request): GPIO line 6 of
+#               the PL061 controller, as described by the device tree's
+#               gpio-keys node. Alpine's kernel has no gpio_keys driver, so
+#               gpiomon watches the line instead.
+#   shutdown:   run by init on poweroff, before it kills everything: stops
+#               k3s and the engine so containers exit cleanly, then syncs.
+#   fsnotify:   answers TCP port 2379 with a loop that touches each path
+#               sent to it, so files changed on the Mac raise inotify events
+#               for watchers in the VM and its containers.
 #   clock:      keeps the system clock in step with the RTC, which follows
 #               the Mac's clock. After a restore from `monolith docker pause`
 #               the system clock is behind by however long the VM was paused.
@@ -96,6 +106,47 @@ k8s-info-reply)
 	services) exec "$K3S" kubectl get svc -A -o json ;;
 	esac
 	;;
+power)
+	need gpiomon
+	gpiomon --edges=rising --num-events=1 -c gpiochip0 6 >/dev/null || exit 1
+	echo "docker-serve: power button pressed, shutting down" >/dev/console
+	exec poweroff
+	;;
+shutdown)
+	# Stop k3s first so it doesn't restart pods while the engine stops.
+	pkill -TERM -x k3s 2>/dev/null
+	stop_wait() { # stop_wait <process> <seconds>
+		pkill -TERM -x "$1" 2>/dev/null || return 0
+		i=0
+		while pgrep -x "$1" >/dev/null && [ $i -lt "$2" ]; do
+			sleep 1
+			i=$((i + 1))
+		done
+	}
+	if [ "$ENGINE" = containerd ]; then
+		for ns in default k8s.io; do
+			ids=$(nerdctl -n $ns ps -q 2>/dev/null)
+			[ -n "$ids" ] && nerdctl -n $ns stop -t 10 $ids >/dev/null 2>&1
+		done
+		stop_wait buildkitd 5
+		stop_wait containerd 10
+	else
+		# dockerd stops its containers (10s each, in parallel) on SIGTERM.
+		stop_wait dockerd 20
+	fi
+	stop_wait k3s 5
+	sync
+	;;
+fsnotify)
+	exec socat TCP-LISTEN:2379,bind=$GUEST,range=$GATEWAY,reuseaddr,fork "EXEC:/usr/local/bin/docker-serve touch-paths"
+	;;
+touch-paths)
+	# Touch in place: the times stay as the Mac set them, the inotify
+	# IN_ATTRIB event is what watchers need.
+	while IFS= read -r path; do
+		[ -e "$path" ] && touch -c -r "$path" "$path"
+	done
+	;;
 clock)
 	while sleep 2; do
 		rtc=$(cat /sys/class/rtc/rtc0/since_epoch) || exit 1
@@ -106,7 +157,7 @@ clock)
 	done
 	;;
 *)
-	echo "usage: docker-serve dockerd|relay|containerd|buildkitd|sshd|ports|k3s|k8s-info|clock" >&2
+	echo "usage: docker-serve dockerd|relay|containerd|buildkitd|sshd|ports|k3s|k8s-info|power|shutdown|fsnotify|clock" >&2
 	exit 2
 	;;
 esac
