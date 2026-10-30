@@ -11,12 +11,6 @@ const (
 	rosettaCmdlineArg = "monolith.rosetta"
 )
 
-// RosettaAvailable reports whether Rosetta for Linux is installed on the
-// Mac, so new docker image VMs can turn it on by default.
-func RosettaAvailable() bool {
-	return vz.LinuxRosettaDirectoryShareAvailability() == vz.LinuxRosettaAvailabilityInstalled
-}
-
 // CheckRosetta explains why Rosetta can't be shared into a VM, if it can't.
 func CheckRosetta() error {
 	switch vz.LinuxRosettaDirectoryShareAvailability() {

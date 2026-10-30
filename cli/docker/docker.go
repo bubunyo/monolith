@@ -204,8 +204,6 @@ func boot(cmd *cobra.Command) error {
 	if flagKube {
 		cfg.Memory = defaultKubeMemory
 	}
-	// New hosts run x86-64 images through Rosetta when the Mac has it.
-	cfg.Rosetta = vm.RosettaAvailable()
 	if vm.Exists(flagName) {
 		if err := checkDockerVM(flagName); err != nil {
 			return err
@@ -628,7 +626,7 @@ func init() {
 	startCmd.Flags().StringVar(&flagEngine, "engine", vm.EngineDocker, "container engine for a new VM: docker or containerd")
 	startCmd.Flags().BoolVar(&flagKube, "kubernetes", false, "run Kubernetes (k3s) on the engine; --kubernetes=false turns it off (saved)")
 	startCmd.Flags().StringVar(&flagK3s, "k3s-version", vm.DefaultK3sVersion, "k3s release for --kubernetes (saved)")
-	startCmd.Flags().BoolVar(&flagRosetta, "rosetta", true, "run x86-64 (amd64) images with Rosetta; on by default for new VMs when installed (saved)")
+	startCmd.Flags().BoolVar(&flagRosetta, "rosetta", true, "run x86-64 (amd64) images with Rosetta (opt-in; saved); --rosetta=false turns it off again")
 	stopCmd.Flags().BoolVarP(&flagForce, "force", "f", false, "discard a paused VM's saved state without asking")
 	rmCmd.Flags().BoolVarP(&flagForce, "force", "f", false, "delete without asking")
 }
