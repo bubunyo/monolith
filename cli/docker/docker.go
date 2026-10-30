@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	defaultName   = "lith-default"
+	defaultName   = "docker-lith-default"
 	defaultCPUs   = 2
 	defaultMemory = 2 << 30
 
