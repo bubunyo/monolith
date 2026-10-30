@@ -9,7 +9,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/bubunyo/monolith"
+	mnet "github.com/bubunyo/monolith/net"
+	"github.com/bubunyo/monolith/vm"
+
 	"github.com/charmbracelet/bubbles/progress"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -112,8 +114,8 @@ type tickMsg time.Time
 
 type model struct {
 	name   string
-	cfg    monolith.VMConfig
-	state  *monolith.VMState
+	cfg    vm.VMConfig
+	state  *vm.VMState
 	vmenet string // cached vmenet interface name
 
 	// Current tick values
@@ -158,7 +160,7 @@ type model struct {
 }
 
 func newModel(name string) model {
-	cfg, _ := monolith.ReadConfig(name)
+	cfg, _ := vm.ReadConfig(name)
 
 	cpuBar := progress.New(
 		progress.WithSolidFill("255"),
@@ -219,7 +221,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *model) gatherStats() {
 	// Re-read raw state to check VM is still running.
-	state, err := monolith.ReadRawState(m.name)
+	state, err := vm.ReadRawState(m.name)
 	if err != nil {
 		m.stopped = true
 		return
@@ -227,7 +229,7 @@ func (m *model) gatherStats() {
 	m.state = state
 
 	// Process stats.
-	cpuRaw, rssBytes, cpuTime := monolith.ProcessStatsEx(state.PID)
+	cpuRaw, rssBytes, cpuTime := vm.ProcessStatsEx(state.PID)
 	m.memRSS = rssBytes
 	m.cpuTime = cpuTime
 
@@ -256,7 +258,7 @@ func (m *model) gatherStats() {
 	}
 
 	// Disk stats.
-	dir, err := vmsDir()
+	dir, err := vm.VMsDir()
 	if err == nil {
 		diskPath := filepath.Join(dir, m.name, "disk.img")
 		if info, err := os.Stat(diskPath); err == nil {
@@ -271,13 +273,13 @@ func (m *model) gatherStats() {
 	// Network stats.
 	// For "none" mode there's no network device.
 	// For "host" mode the VM uses a bridged physical NIC; no per-VM vmenet exists.
-	hasVmenet := m.cfg.NetworkMode != monolith.NetworkNone && m.cfg.NetworkMode != monolith.NetworkHost
+	hasVmenet := m.cfg.NetworkMode != mnet.NetworkNone && m.cfg.NetworkMode != mnet.NetworkHost
 	if hasVmenet {
 		if m.vmenet == "" {
-			m.vmenet = monolith.VmenetForMAC(state.MAC)
+			m.vmenet = mnet.VmenetForMAC(state.MAC)
 		}
 		if m.vmenet != "" {
-			ns := monolith.NetworkStats(m.vmenet)
+			ns := mnet.NetworkStats(m.vmenet)
 			now := time.Now()
 			if m.hasPrev {
 				dt := now.Sub(m.prevTick).Seconds()
@@ -436,12 +438,12 @@ func (m model) View() string {
 	// ── Network box ──
 	var netBox string
 	switch m.cfg.NetworkMode {
-	case monolith.NetworkNone:
+	case mnet.NetworkNone:
 		netBox = boxStyle.Render(
 			titleStyle.Render("  Network") + "\n" +
 				"  " + dimStyle.Render("No network (--network none)"),
 		)
-	case monolith.NetworkHost:
+	case mnet.NetworkHost:
 		netBox = boxStyle.Render(
 			titleStyle.Render("  Network") + "\n" +
 				fmt.Sprintf("  %s %s  %s %s",
@@ -527,9 +529,9 @@ func formatRate(bytesPerSec float64) string {
 // lookupIPForTop picks the right IP discovery strategy for the top view.
 func lookupIPForTop(network, mac string) string {
 	switch network {
-	case monolith.NetworkNone, monolith.NetworkIsolated:
+	case mnet.NetworkNone, mnet.NetworkIsolated:
 		return ""
 	default:
-		return monolith.LookupIPByMAC(mac)
+		return mnet.LookupIPByMAC(mac)
 	}
 }

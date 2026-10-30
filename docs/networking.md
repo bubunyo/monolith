@@ -363,7 +363,7 @@ launchd job.
 #### Daemon Details
 
 `monolith network create` validates the name, mode and subnet, writes an
-initial `config.json`, then calls `monolith.StartNetworkDaemon` (`launchd.go`),
+initial `config.json`, then calls `net.StartNetworkDaemon` (`net/launchd.go`),
 which:
 
 1. Writes `launchd.plist` in the network directory: label and Mach service
@@ -675,11 +675,12 @@ See [docs/codesigning.md](codesigning.md) for instructions.
 
 | File | Purpose |
 |------|---------|
-| `config.go` | `VMConfig` struct, network mode constants, read/write config |
-| `network.go` | `configureNetwork()`, `createNetworkAttachment()` |
-| `netd.go` | `RunNetworkDaemon()` (ShareNetwork), `joinNamedNetwork()` (ReceiveNetwork), persistence helpers, packet monitor |
-| `launchd.go` | `StartNetworkDaemon()`, `StopNetworkDaemon()`, plist rendering, service naming |
-| `state.go` | `lookupIPForMode()`, `LookupIPByMAC()`, `VmenetForMAC()`, `NetworkStats()` |
+| `net/modes.go` | Network mode constants, `ValidNetworkModes` |
+| `net/network.go` | `ConfigureNetwork()`, `createNetworkAttachment()` |
+| `net/netd.go` | `RunNetworkDaemon()` (ShareNetwork), `joinNamedNetwork()` (ReceiveNetwork), persistence helpers, packet monitor |
+| `net/launchd.go` | `StartNetworkDaemon()`, `StopNetworkDaemon()`, plist rendering, service naming |
+| `net/ip.go` | `LookupIPForMode()`, `LookupIPByMAC()`, `VmenetForMAC()`, `NetworkStats()` |
+| `vm/config.go` | `VMConfig` (persists `network_mode`, `network_name`, `host_interface`) |
 | `cli/vm/run.go` | `--network-mode`, `--network`, `--host-interface` flags and validation |
 | `cli/vm/list.go` | NET column display (`mode` or `mode:name`) |
 | `cli/network/create.go` | Subnet validation, network creation |
@@ -687,5 +688,5 @@ See [docs/codesigning.md](codesigning.md) for instructions.
 | `cli/network/list.go` | Network listing with VM cross-reference |
 | `cli/network/rm.go` | Daemon termination and cleanup |
 | `cli/netd.go` | Hidden `__netd` command for daemon process |
-| `osfiles/etc/inittab.tmpl` | Guest-side network init (modprobe, ifconfig, udhcpc) |
+| `vm/embeddings/etc/inittab.tmpl` | Guest-side network init (modprobe, ifconfig, udhcpc) |
 | `entitlements.plist` | Code signing entitlements |

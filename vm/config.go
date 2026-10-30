@@ -1,25 +1,15 @@
-package monolith
+package vm
 
 import (
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+
+	mnet "github.com/bubunyo/monolith/net"
 )
 
 const configFileName = "config.json"
-
-// Network mode constants.
-const (
-	NetworkNAT      = "nat"
-	NetworkShared   = "shared"
-	NetworkHost     = "host"
-	NetworkIsolated = "isolated"
-	NetworkNone     = "none"
-)
-
-// ValidNetworkModes is the set of accepted --network-mode values.
-var ValidNetworkModes = []string{NetworkNAT, NetworkShared, NetworkHost, NetworkIsolated, NetworkNone}
 
 // VMConfig holds the per-VM hardware configuration.
 type VMConfig struct {
@@ -35,14 +25,14 @@ func DefaultConfig() VMConfig {
 	return VMConfig{
 		CPUs:        1,
 		Memory:      512 * 1024 * 1024,
-		NetworkMode: NetworkNAT,
+		NetworkMode: mnet.NetworkNAT,
 	}
 }
 
 // ReadConfig reads the VM configuration from its config file.
 // If the file does not exist, default values are returned.
 func ReadConfig(name string) (VMConfig, error) {
-	dir, err := vmDir(name)
+	dir, err := VMDir(name)
 	if err != nil {
 		return DefaultConfig(), nil
 	}
@@ -68,7 +58,7 @@ func ReadConfig(name string) (VMConfig, error) {
 		cfg.Memory = 512 * 1024 * 1024
 	}
 	if cfg.NetworkMode == "" {
-		cfg.NetworkMode = NetworkNAT
+		cfg.NetworkMode = mnet.NetworkNAT
 	}
 
 	return cfg, nil
@@ -76,7 +66,7 @@ func ReadConfig(name string) (VMConfig, error) {
 
 // WriteConfig persists the VM configuration to its config file.
 func WriteConfig(name string, cfg VMConfig) error {
-	dir, err := vmDir(name)
+	dir, err := VMDir(name)
 	if err != nil {
 		return err
 	}

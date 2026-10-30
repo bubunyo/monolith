@@ -4,7 +4,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/bubunyo/monolith"
+	mnet "github.com/bubunyo/monolith/net"
+
 	"github.com/spf13/cobra"
 )
 
@@ -35,12 +36,12 @@ func stopNetwork(name string) error {
 // stopDaemon unloads the network's launchd job, which stops the daemon.
 // Returns true if a running daemon was stopped, false if it wasn't running.
 func stopDaemon(name string) (bool, error) {
-	dir, err := monolith.NetworkDir(name)
+	dir, err := mnet.NetworkDir(name)
 	if err != nil {
 		return false, err
 	}
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
 		return false, fmt.Errorf("network %q does not exist", name)
 	}
-	return monolith.StopNetworkDaemon(name)
+	return mnet.StopNetworkDaemon(name)
 }

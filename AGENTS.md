@@ -47,7 +47,7 @@ If no name is given to `run`, one is auto-generated as `lith-NNNNN` (random 5-di
 
 ```bash
 go test ./...             # all tests
-go test -run TestRun ./   # single test
+go test -run TestRun ./vm # single test
 ```
 
 **Tests boot a real VM.** They require macOS on Apple Silicon with Virtualization.framework. There is no mock/unit-only test path. Do not expect tests to pass in CI or on non-macOS hosts.
@@ -58,7 +58,7 @@ macOS + aarch64 only. The entire codebase depends on Apple Virtualization.framew
 
 ## Package Layout
 
-The repo is a single Go module split into a library package (`monolith`, repo root) and a `cli/` package tree. The CLI never touches `vz` directly — it spawns and talks to per-VM daemons over unix sockets.
+The repo is a single Go module: package `vm` (VM daemon, client, state, disk/kernel), package `net` (vmnet, named-network daemons, IP discovery), a small root package `monolith` with code both share (logging, cache paths, process and codesign helpers), and the `cli/` package tree. Imports go one way: `vm` → `net` → `monolith`. The CLI never touches `vz` directly — it spawns and talks to per-VM daemons over unix sockets.
 
 ```
 monolith/
@@ -87,29 +87,39 @@ monolith/
       logs.go             — "network logs <name>" tails the daemon log
       topology.go         — topology view helper
       style.go            — shared lipgloss styles for network output
-  vmd.go                  — RunDaemon(name, restore) is the per-VM daemon. Owns vz.VirtualMachine,
+  vm/                     — package vm: everything about a single VM. Imports net and the root package.
+    vmd.go                — RunDaemon(name, restore, consoleLogPath): the per-VM daemon. Owns vz.VirtualMachine,
                             listens on a unix socket, dispatches console-attach and control
-                            (pause/resume/suspend/stop/status) requests.
-  client.go               — client side of the VM daemon protocol used by the CLI.
-  console_bus.go          — drains the console PTY from boot; 64 KiB ring buffer replayed to the attached client.
-  protocol.go             — wire types shared by client and daemon.
-  network.go              — configureNetwork(), createNetworkAttachment(), joinNamedNetwork()
-  netd.go                 — RunNetworkDaemon() (vmnet.ShareNetwork), joinNamedNetwork()
-                            (vmnet.ReceiveNetwork), network config/PID persistence, packet monitor.
-  launchd.go              — StartNetworkDaemon()/StopNetworkDaemon(): per-network launchd job
-                            (plist, launchctl bootstrap/bootout), Mach service naming.
-  kernel.go               — DefaultKernel() downloads Alpine ISO, extracts/decompresses kernel+initrd.
-                            DefaultRootFS() downloads minirootfs tarball.
-  storage.go              — DefaultDisk(tarball, name) creates per-VM 1 GiB ext4 disk image and
-                            writes Alpine config files.
-  config.go               — VMConfig (CPUs, Memory, NetworkMode, NetworkName, HostInterface).
+                            (pause/resume/suspend/stop/status/resize) requests.
+    client.go             — client side of the daemon protocol (AttachConsole, SendControlCommand, SpawnVMDaemon).
+    console_bus.go        — drains the console PTY from boot; 64 KiB ring buffer replayed to the attached client.
+    protocol.go           — wire types shared by client and daemon.
+    config.go             — VMConfig (CPUs, Memory, NetworkMode, NetworkName, HostInterface).
                             Per-VM config at vms/<name>/config.json. Defaults: 1 vCPU, 512 MiB, NAT.
-  state.go                — VMState/VMStatus, IP discovery (DHCP leases + ARP fallback),
-                            per-VM network stats via vmenet.
-  logger.go / logs.go     — daemon log file management.
-  entitlements.go         — runtime entitlement checks.
+    state.go              — VMState/VMStatus, state.json lifecycle, host-side process stats.
+    kernel.go             — DefaultKernel() downloads Alpine ISO, extracts/decompresses kernel+initrd.
+                            DefaultRootFS() downloads minirootfs tarball.
+    storage.go            — DefaultDisk(tarball, modloop, name) creates the per-VM 1 GiB ext4 disk image and
+                            writes guest config files from embeddings/ (go:embed needs them inside vm/).
+    paths.go              — VMsDir, VMDir, VMSockPath, VMSuspendPath, VMLogPath.
+    vmd_test.go / vmd_console_log_test.go — tests (boot real VMs via ../bin/monolith).
+  net/                    — package net: networking. Imports only the root package (never vm).
+                            Callers that also use the standard library import it as `mnet`.
+    modes.go              — network mode constants (NetworkNAT, NetworkShared, …) and ValidNetworkModes.
+    network.go            — ConfigureNetwork(vmCfg, mode, networkName, hostInterface): builds a VM's
+                            network device (NAT, vmnet shared/isolated, bridged, or none).
+    netd.go               — RunNetworkDaemon() (vmnet.ShareNetwork), joinNamedNetwork()
+                            (vmnet.ReceiveNetwork), network config/PID persistence, packet monitor.
+    launchd.go            — StartNetworkDaemon()/StopNetworkDaemon(): per-network launchd job
+                            (plist, launchctl bootstrap/bootout), Mach service naming.
+    ip.go                 — LookupIPForMode (DHCP leases + ARP fallback), VmenetForMAC, NetworkStats.
+    paths.go              — NetworksDir, NetworkDir, NetworkLogPath.
+    network_subnet_test.go — named-network subnet tests (via ../bin/monolith).
+  paths.go                — CachePath(): root of every ~/.cache/monolith path.
+  process.go              — ProcessAlive(pid).
+  logger.go / logs.go     — Logger and log-file streaming used by both daemons and `logs` commands.
+  entitlements.go         — runtime entitlement checks and OwnCodeRequirement() (CDHash of this binary).
   entitlements.plist      — codesigning entitlements (com.apple.security.virtualization).
-  vmd_test.go / vmd_console_log_test.go / network_subnet_test.go — tests (boot real VMs).
   docs/                   — codesigning.md, networking.md, vm.md (deeper references).
 ```
 

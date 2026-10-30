@@ -1,4 +1,4 @@
-package monolith
+package vm
 
 import (
 	"os"
@@ -22,7 +22,7 @@ import (
 // MONOLITH_TEST_CONSOLE_OUTPUT=1 to avoid flaking when the underlying
 // console pipeline is broken for unrelated reasons.
 func TestConsoleLogTee(t *testing.T) {
-	binary := "./bin/monolith"
+	binary := "../bin/monolith"
 	if _, err := os.Stat(binary); err != nil {
 		t.Skipf("binary not found at %s — run 'make build' first", binary)
 	}

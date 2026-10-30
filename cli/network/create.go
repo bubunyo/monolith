@@ -6,7 +6,8 @@ import (
 	"os"
 	"regexp"
 
-	"github.com/bubunyo/monolith"
+	mnet "github.com/bubunyo/monolith/net"
+
 	"github.com/spf13/cobra"
 )
 
@@ -89,7 +90,7 @@ func validateSubnet(s string) (netip.Prefix, error) {
 // name each subnet belongs to. It looks at both the requested UserSubnet
 // and the actual Subnet so that running and stopped networks both count.
 func existingSubnets(excludeName string) (map[string]netip.Prefix, error) {
-	dir, err := monolith.NetworksDir()
+	dir, err := mnet.NetworksDir()
 	if err != nil {
 		return nil, err
 	}
@@ -105,7 +106,7 @@ func existingSubnets(excludeName string) (map[string]netip.Prefix, error) {
 		if !e.IsDir() || e.Name() == excludeName {
 			continue
 		}
-		cfg, err := monolith.ReadNetworkConfig(e.Name())
+		cfg, err := mnet.ReadNetworkConfig(e.Name())
 		if err != nil {
 			continue
 		}
@@ -133,7 +134,7 @@ func createNetwork(cfg networkCfg) error {
 		return fmt.Errorf("network name %q is invalid (must be lowercase alphanumeric with hyphens)", cfg.Name)
 	}
 
-	if cfg.Mode != monolith.NetworkShared && cfg.Mode != monolith.NetworkIsolated {
+	if cfg.Mode != mnet.NetworkShared && cfg.Mode != mnet.NetworkIsolated {
 		return fmt.Errorf("named networks only support shared or isolated modes, got %q", cfg.Mode)
 	}
 
@@ -155,11 +156,11 @@ func createNetwork(cfg networkCfg) error {
 		userSubnet = want.String()
 	}
 
-	if monolith.IsNetworkDaemonAlive(cfg.Name) {
+	if mnet.IsNetworkDaemonAlive(cfg.Name) {
 		return fmt.Errorf("network %q already exists and is running", cfg.Name)
 	}
 
-	dir, err := monolith.NetworkDir(cfg.Name)
+	dir, err := mnet.NetworkDir(cfg.Name)
 	if err != nil {
 		return err
 	}
@@ -167,11 +168,11 @@ func createNetwork(cfg networkCfg) error {
 		return fmt.Errorf("network %q already exists (use 'network start' to restart it)", cfg.Name)
 	}
 
-	netCfg := monolith.NetworkConfig{
+	netCfg := mnet.NetworkConfig{
 		Mode:       cfg.Mode,
 		UserSubnet: userSubnet,
 	}
-	if err := monolith.WriteNetworkConfig(cfg.Name, netCfg); err != nil {
+	if err := mnet.WriteNetworkConfig(cfg.Name, netCfg); err != nil {
 		return fmt.Errorf("writing network config: %w", err)
 	}
 
@@ -182,7 +183,7 @@ func createNetwork(cfg networkCfg) error {
 		return err
 	}
 
-	netCfg, err = monolith.ReadNetworkConfig(cfg.Name)
+	netCfg, err = mnet.ReadNetworkConfig(cfg.Name)
 	if err != nil {
 		fmt.Printf("Network %q created (mode: %s)\n", cfg.Name, cfg.Mode)
 	} else {
@@ -193,7 +194,7 @@ func createNetwork(cfg networkCfg) error {
 }
 
 func init() {
-	createCmd.Flags().StringVar(&flagMode, "mode", monolith.NetworkShared, `network mode: shared or isolated (default: shared)`)
+	createCmd.Flags().StringVar(&flagMode, "mode", mnet.NetworkShared, `network mode: shared or isolated (default: shared)`)
 	createCmd.Flags().StringVar(&flagSubnet, "subnet", "", `IPv4 subnet in CIDR (e.g. 192.168.77.0/24); must not overlap an existing named network`)
 	createCmd.Flags().BoolVarP(&flagCreateVerbose, "verbose", "v", false, "enable packet-level logging in daemon")
 }

@@ -3,7 +3,8 @@ package vm
 import (
 	"fmt"
 
-	"github.com/bubunyo/monolith"
+	"github.com/bubunyo/monolith/vm"
+
 	"github.com/spf13/cobra"
 )
 
@@ -19,21 +20,21 @@ var attachCmd = &cobra.Command{
 
 // attachVM connects to the serial console of a running or paused VM.
 func attachVM(name string) error {
-	status, err := monolith.ReadState(name)
+	status, err := vm.ReadState(name)
 	if err != nil {
 		return fmt.Errorf("reading VM state: %w", err)
 	}
 
 	switch status.State {
-	case monolith.StatusRunning, monolith.StatusPaused:
+	case vm.StatusRunning, vm.StatusPaused:
 		// OK — attach.
-	case monolith.StatusSuspended:
+	case vm.StatusSuspended:
 		return fmt.Errorf("VM %q is suspended; use 'vm resume %s' to restore it first", name, name)
 	default:
 		return fmt.Errorf("VM %q is not running", name)
 	}
 
-	escapeCmd, err := monolith.AttachConsole(name)
+	escapeCmd, err := vm.AttachConsole(name)
 	if err != nil {
 		return err
 	}

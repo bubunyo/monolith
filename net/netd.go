@@ -1,4 +1,4 @@
-package monolith
+package net
 
 import (
 	"context"
@@ -15,6 +15,8 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/bubunyo/monolith"
+
 	"github.com/Code-Hex/vz/v4/vmnet"
 )
 
@@ -24,38 +26,11 @@ const (
 	networkLogFileName    = "daemon.log"
 )
 
-// NetworkLogPath returns the path to the network daemon's log file.
-func NetworkLogPath(name string) (string, error) {
-	dir, err := NetworkDir(name)
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, networkLogFileName), nil
-}
-
 // NetworkConfig holds the persisted configuration for a named network.
 type NetworkConfig struct {
 	Mode       string `json:"mode"`                  // "shared" or "isolated"
 	Subnet     string `json:"subnet"`                // actual IPv4 subnet allocated by vmnet (e.g. "192.168.64.0/24"), filled after creation
 	UserSubnet string `json:"user_subnet,omitempty"` // caller-requested IPv4 subnet (CIDR); empty means vmnet picks
-}
-
-// NetworkDir returns the path to the named network's directory.
-func NetworkDir(name string) (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".cache", "monolith", "networks", name), nil
-}
-
-// NetworksDir returns the parent directory for all named networks.
-func NetworksDir() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".cache", "monolith", "networks"), nil
 }
 
 // ReadNetworkConfig reads a named network's configuration.
@@ -136,7 +111,7 @@ func IsNetworkDaemonAlive(name string) bool {
 	if err != nil || pid <= 0 {
 		return false
 	}
-	return processAlive(pid)
+	return monolith.ProcessAlive(pid)
 }
 
 // RunNetworkDaemon is the main loop for the network daemon process. It is
@@ -147,7 +122,7 @@ func IsNetworkDaemonAlive(name string) bool {
 func RunNetworkDaemon(name, mode string, verbose bool) error {
 	signal.Ignore(syscall.SIGPIPE)
 
-	logger := NewLogger(os.Stderr)
+	logger := monolith.NewLogger(os.Stderr)
 
 	var vmnetMode vmnet.Mode
 	switch mode {
@@ -199,7 +174,7 @@ func RunNetworkDaemon(name, mode string, verbose bool) error {
 		return fmt.Errorf("writing network config: %w", err)
 	}
 
-	requirement, err := OwnCodeRequirement()
+	requirement, err := monolith.OwnCodeRequirement()
 	if err != nil {
 		return fmt.Errorf("computing code requirement for clients: %w", err)
 	}
@@ -246,7 +221,7 @@ func joinNamedNetwork(name string) (*vmnet.Network, error) {
 		return nil, fmt.Errorf("network daemon for %q is not running (start it with 'monolith network start %s')", name, name)
 	}
 
-	requirement, err := OwnCodeRequirement()
+	requirement, err := monolith.OwnCodeRequirement()
 	if err != nil {
 		return nil, fmt.Errorf("computing code requirement for network daemon: %w", err)
 	}
@@ -266,7 +241,7 @@ func joinNamedNetwork(name string) (*vmnet.Network, error) {
 
 // monitorPackets reads frames from a monitor interface on the network and
 // logs them at TRC level until ctx is cancelled.
-func monitorPackets(ctx context.Context, logger *Logger, networkName string, iface *vmnet.Interface) {
+func monitorPackets(ctx context.Context, logger *monolith.Logger, networkName string, iface *vmnet.Interface) {
 	frames := make([][]byte, 32)
 	for i := range frames {
 		frames[i] = make([]byte, iface.MaxPacketSize())
@@ -287,7 +262,7 @@ func monitorPackets(ctx context.Context, logger *Logger, networkName string, ifa
 }
 
 // logEthernetFrame parses and logs an Ethernet frame.
-func logEthernetFrame(logger *Logger, networkName string, frame []byte) {
+func logEthernetFrame(logger *monolith.Logger, networkName string, frame []byte) {
 	if len(frame) < 14 {
 		return
 	}
@@ -318,7 +293,7 @@ func logEthernetFrame(logger *Logger, networkName string, frame []byte) {
 }
 
 // logARP parses and logs an ARP packet.
-func logARP(logger *Logger, networkName, srcMAC, dstMAC string, payload []byte) {
+func logARP(logger *monolith.Logger, networkName, srcMAC, dstMAC string, payload []byte) {
 	if len(payload) < 28 {
 		logger.Trace("[%s] ARP %s -> %s  (truncated)", networkName, srcMAC, dstMAC)
 		return
@@ -340,7 +315,7 @@ func logARP(logger *Logger, networkName, srcMAC, dstMAC string, payload []byte) 
 }
 
 // logIPv4 parses and logs an IPv4 packet, with special handling for DHCP/UDP.
-func logIPv4(logger *Logger, networkName, srcMAC, dstMAC string, payload []byte) {
+func logIPv4(logger *monolith.Logger, networkName, srcMAC, dstMAC string, payload []byte) {
 	if len(payload) < 20 {
 		return
 	}
@@ -404,7 +379,7 @@ func logIPv4(logger *Logger, networkName, srcMAC, dstMAC string, payload []byte)
 }
 
 // logDHCP parses and logs a DHCP packet.
-func logDHCP(logger *Logger, networkName, srcMAC, dstMAC, srcIP, dstIP string, srcPort uint16, payload []byte) {
+func logDHCP(logger *monolith.Logger, networkName, srcMAC, dstMAC, srcIP, dstIP string, srcPort uint16, payload []byte) {
 	if len(payload) < 240 {
 		logger.Trace("[%s] DHCP %s -> %s  %s > %s  (truncated, %d bytes)",
 			networkName, srcMAC, dstMAC, srcIP, dstIP, len(payload))

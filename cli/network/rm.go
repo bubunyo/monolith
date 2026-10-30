@@ -6,7 +6,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/bubunyo/monolith"
+	mnet "github.com/bubunyo/monolith/net"
+
 	"github.com/spf13/cobra"
 )
 
@@ -23,7 +24,7 @@ var rmCmd = &cobra.Command{
 
 // removeNetwork stops the daemon and deletes a named network after confirmation.
 func removeNetwork(name string) error {
-	dir, err := monolith.NetworkDir(name)
+	dir, err := mnet.NetworkDir(name)
 	if err != nil {
 		return err
 	}

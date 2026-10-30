@@ -1,8 +1,10 @@
-package monolith
+package vm
 
 import (
 	"io"
 	"sync"
+
+	"github.com/bubunyo/monolith"
 )
 
 // consoleRingSize is the maximum number of bytes of recent console output
@@ -40,7 +42,7 @@ func newConsoleBus(tee io.Writer) *consoleBus {
 // drain reads from r forever, appending bytes into the ring buffer and
 // fanning them out to the current subscriber (if any). It returns when r
 // returns an error (typically EOF after the PTY closes).
-func (b *consoleBus) drain(r io.Reader, logger *Logger) {
+func (b *consoleBus) drain(r io.Reader, logger *monolith.Logger) {
 	buf := make([]byte, 4096)
 	for {
 		n, err := r.Read(buf)

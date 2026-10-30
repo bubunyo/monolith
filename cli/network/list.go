@@ -5,7 +5,9 @@ import (
 	"os"
 	"text/tabwriter"
 
-	"github.com/bubunyo/monolith"
+	mnet "github.com/bubunyo/monolith/net"
+	"github.com/bubunyo/monolith/vm"
+
 	"github.com/spf13/cobra"
 )
 
@@ -34,7 +36,7 @@ func init() {
 
 // listNetworks lists all named networks with their status and attached VMs.
 func listNetworks() error {
-	dir, err := monolith.NetworksDir()
+	dir, err := mnet.NetworksDir()
 	if err != nil {
 		return err
 	}
@@ -63,13 +65,13 @@ func listNetworks() error {
 		}
 		name := e.Name()
 
-		cfg, err := monolith.ReadNetworkConfig(name)
+		cfg, err := mnet.ReadNetworkConfig(name)
 		if err != nil {
 			continue
 		}
 
 		state := "stopped"
-		if monolith.IsNetworkDaemonAlive(name) {
+		if mnet.IsNetworkDaemonAlive(name) {
 			state = "running"
 		}
 
@@ -119,7 +121,7 @@ func listNetworks() error {
 // findVMsOnNetwork scans all VMs and returns the names of those
 // whose config references the given network name.
 func findVMsOnNetwork(networkName string) []string {
-	vmsDir, err := monolith.VMsDir()
+	vmsDir, err := vm.VMsDir()
 	if err != nil {
 		return nil
 	}
@@ -134,7 +136,7 @@ func findVMsOnNetwork(networkName string) []string {
 		if !e.IsDir() {
 			continue
 		}
-		cfg, err := monolith.ReadConfig(e.Name())
+		cfg, err := vm.ReadConfig(e.Name())
 		if err != nil {
 			continue
 		}

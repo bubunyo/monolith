@@ -76,8 +76,8 @@ func newStyles(w io.Writer) styles {
 	s.stateSuspended = lipgloss.NewStyle().Foreground(lipgloss.Color("147")) // soft purple
 	s.stateMissing = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))   // red
 
-	s.addr = lipgloss.NewStyle().Foreground(lipgloss.Color("110"))   // soft blue (VM IPs)
-	s.subnet = lipgloss.NewStyle().Foreground(lipgloss.Color("25"))  // darker blue (network subnets)
+	s.addr = lipgloss.NewStyle().Foreground(lipgloss.Color("110"))  // soft blue (VM IPs)
+	s.subnet = lipgloss.NewStyle().Foreground(lipgloss.Color("25")) // darker blue (network subnets)
 	return s
 }
 

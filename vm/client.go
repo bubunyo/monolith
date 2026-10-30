@@ -1,4 +1,4 @@
-package monolith
+package vm
 
 import (
 	"encoding/binary"
@@ -287,7 +287,7 @@ func SpawnVMDaemon(name string, restore bool, consoleLogPath string) error {
 		return fmt.Errorf("finding executable: %w", err)
 	}
 
-	dir, err := vmDir(name)
+	dir, err := VMDir(name)
 	if err != nil {
 		return err
 	}

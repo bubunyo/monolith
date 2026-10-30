@@ -8,7 +8,8 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/bubunyo/monolith"
+	"github.com/bubunyo/monolith/vm"
+
 	"github.com/spf13/cobra"
 )
 
@@ -26,7 +27,7 @@ var listCmd = &cobra.Command{
 
 // listVMs lists all VMs with their current status, config, and resource usage.
 func listVMs(wide bool) error {
-	vmsPath, err := vmsDir()
+	vmsPath, err := vm.VMsDir()
 	if err != nil {
 		return err
 	}
@@ -75,16 +76,16 @@ func listVMs(wide bool) error {
 		}
 
 		// Read runtime state (running/stopped + IP + stats).
-		status, err := monolith.ReadState(e.Name())
+		status, err := vm.ReadState(e.Name())
 		if err != nil {
-			status = &monolith.VMStatus{State: monolith.StatusStopped}
+			status = &vm.VMStatus{State: vm.StatusStopped}
 		}
 
 		// Read per-VM hardware config.
-		cfg, _ := monolith.ReadConfig(e.Name())
+		cfg, _ := vm.ReadConfig(e.Name())
 
 		var uptime time.Duration
-		if (status.State == monolith.StatusRunning || status.State == monolith.StatusPaused) && !status.StartedAt.IsZero() {
+		if (status.State == vm.StatusRunning || status.State == vm.StatusPaused) && !status.StartedAt.IsZero() {
 			uptime = time.Since(status.StartedAt)
 		}
 
@@ -118,33 +119,33 @@ func listVMs(wide bool) error {
 		fmt.Fprintln(w, "NAME\tSTATE\tIP\tNET\tCPUS\tMEM\tDISK\tUPTIME")
 	}
 
-	for _, vm := range vms {
-		ip := dash(vm.ip)
+	for _, row := range vms {
+		ip := dash(row.ip)
 		uptime := dash("")
-		if (vm.state == monolith.StatusRunning || vm.state == monolith.StatusPaused) && vm.uptime > 0 {
-			uptime = formatUptime(vm.uptime)
+		if (row.state == vm.StatusRunning || row.state == vm.StatusPaused) && row.uptime > 0 {
+			uptime = formatUptime(row.uptime)
 		}
 
-		disk := formatDisk(vm.actualSize, vm.logicalSize)
-		net := dash(vm.network)
-		if vm.networkName != "" {
-			net = fmt.Sprintf("%s:%s", vm.network, vm.networkName)
+		disk := formatDisk(row.actualSize, row.logicalSize)
+		net := dash(row.network)
+		if row.networkName != "" {
+			net = fmt.Sprintf("%s:%s", row.network, row.networkName)
 		}
 
 		if wide {
 			cpuPct := dash("")
 			rss := dash("")
-			if vm.state == monolith.StatusRunning || vm.state == monolith.StatusPaused {
-				cpuPct = fmt.Sprintf("%.1f%%", vm.cpuPercent)
-				rss = formatSize(vm.memoryRSS)
+			if row.state == vm.StatusRunning || row.state == vm.StatusPaused {
+				cpuPct = fmt.Sprintf("%.1f%%", row.cpuPercent)
+				rss = formatSize(row.memoryRSS)
 			}
 			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\n",
-				vm.name,
-				vm.state,
+				row.name,
+				row.state,
 				ip,
 				net,
-				vm.cpus,
-				formatSize(int64(vm.memory)),
+				row.cpus,
+				formatSize(int64(row.memory)),
 				disk,
 				uptime,
 				cpuPct,
@@ -153,12 +154,12 @@ func listVMs(wide bool) error {
 			)
 		} else {
 			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\n",
-				vm.name,
-				vm.state,
+				row.name,
+				row.state,
 				ip,
 				net,
-				vm.cpus,
-				formatSize(int64(vm.memory)),
+				row.cpus,
+				formatSize(int64(row.memory)),
 				disk,
 				uptime,
 			)
@@ -169,15 +170,6 @@ func listVMs(wide bool) error {
 
 func init() {
 	listCmd.Flags().BoolVarP(&flagWide, "wide", "w", false, "show additional columns (CPU%, RSS, OS)")
-}
-
-// vmsDir returns the path to the VMs directory.
-func vmsDir() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".cache", "monolith", "vms"), nil
 }
 
 // dash returns "-" if s is empty, otherwise returns s.

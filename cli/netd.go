@@ -1,7 +1,7 @@
 package cli
 
 import (
-	"github.com/bubunyo/monolith"
+	mnet "github.com/bubunyo/monolith/net"
 	"github.com/spf13/cobra"
 )
 
@@ -17,7 +17,7 @@ var netdCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name := args[0]
 		mode := args[1]
-		return monolith.RunNetworkDaemon(name, mode, netdVerbose)
+		return mnet.RunNetworkDaemon(name, mode, netdVerbose)
 	},
 }
 

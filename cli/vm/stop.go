@@ -3,7 +3,8 @@ package vm
 import (
 	"fmt"
 
-	"github.com/bubunyo/monolith"
+	"github.com/bubunyo/monolith/vm"
+
 	"github.com/spf13/cobra"
 )
 
@@ -24,8 +25,8 @@ to shut down cleanly. Use this if the guest is unresponsive.`,
 
 // stopVM stops a running or paused VM, optionally with force.
 func stopVM(name string, force bool) error {
-	resp, err := monolith.SendControlCommand(name, monolith.ControlRequest{
-		Cmd:   monolith.CmdStop,
+	resp, err := vm.SendControlCommand(name, vm.ControlRequest{
+		Cmd:   vm.CmdStop,
 		Force: force,
 	})
 	if err != nil {

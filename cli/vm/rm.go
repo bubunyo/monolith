@@ -7,7 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/bubunyo/monolith"
+	"github.com/bubunyo/monolith/vm"
+
 	"github.com/spf13/cobra"
 )
 
@@ -24,7 +25,7 @@ var rmCmd = &cobra.Command{
 
 // removeVM stops (if running) and deletes a VM after user confirmation.
 func removeVM(name string) error {
-	dir, err := vmsDir()
+	dir, err := vm.VMsDir()
 	if err != nil {
 		return err
 	}
@@ -35,11 +36,11 @@ func removeVM(name string) error {
 	}
 
 	// Check if the VM is currently running or paused — stop it first.
-	status, _ := monolith.ReadState(name)
-	if status != nil && (status.State == monolith.StatusRunning || status.State == monolith.StatusPaused) {
+	status, _ := vm.ReadState(name)
+	if status != nil && (status.State == vm.StatusRunning || status.State == vm.StatusPaused) {
 		fmt.Printf("VM %q is %s. Stopping it first...\n", name, status.State)
-		resp, err := monolith.SendControlCommand(name, monolith.ControlRequest{
-			Cmd:   monolith.CmdStop,
+		resp, err := vm.SendControlCommand(name, vm.ControlRequest{
+			Cmd:   vm.CmdStop,
 			Force: true,
 		})
 		if err != nil {
