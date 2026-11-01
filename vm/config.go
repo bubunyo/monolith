@@ -18,7 +18,7 @@ type VMConfig struct {
 	NetworkMode   string `json:"network_mode"`             // "nat", "shared", "host", "isolated", "none"
 	NetworkName   string `json:"network_name,omitempty"`   // named network to join (for shared/isolated modes)
 	HostInterface string `json:"host_interface,omitempty"` // physical NIC for "host" mode (e.g. "en0")
-	Image         string `json:"image,omitempty"`          // base image: "kata", "alpine" or "docker"
+	Image         string `json:"image,omitempty"`          // base image: "kata", "alpine", "docker" or "container"
 	Engine        string `json:"engine,omitempty"`         // docker image only: "docker" (default) or "containerd"
 	Kubernetes    bool   `json:"kubernetes,omitempty"`     // docker image only: run k3s on the engine
 	K3sVersion    string `json:"k3s_version,omitempty"`    // k3s release, e.g. "v1.36.5+k3s1" (default DefaultK3sVersion)
@@ -28,7 +28,9 @@ type VMConfig struct {
 
 	// Sandbox makes a docker image VM a repo sandbox (`monolith sandbox`).
 	Sandbox *SandboxConfig `json:"sandbox,omitempty"`
-	MAC     string         `json:"mac,omitempty"` // assigned on first boot, then reused
+	// Container makes the VM a container (`monolith container`).
+	Container *ContainerConfig `json:"container,omitempty"`
+	MAC       string           `json:"mac,omitempty"` // assigned on first boot, then reused
 }
 
 // DefaultConfig returns the default VM configuration: 1 vCPU, 512 MiB RAM,

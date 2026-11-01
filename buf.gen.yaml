@@ -1,0 +1,8 @@
+version: v2
+plugins:
+  - local: protoc-gen-go
+    out: containerinit/agentpb
+    opt: paths=source_relative
+  - local: protoc-gen-go-ttrpc
+    out: containerinit/agentpb
+    opt: paths=source_relative

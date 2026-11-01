@@ -9,6 +9,8 @@ make lint    # gofmt check + go vet (CI also runs golangci-lint with .golangci.y
 make test    # unit tests: go test -short (skips tests that boot VMs)
 make test-vm # build, then every test, including VM-booting ones
 make dist    # dist/monolith_<version>_darwin_arm64.tar.gz + checksums.txt from bin/monolith
+make init    # cross-compile monolith-init (container VMs' PID 1) into vm/guestinit/files; build runs it
+make proto   # regenerate containerinit/agentpb from agent.proto (needs only Go: buf + plugins via go run/install)
 ```
 
 `make build` stamps `VERSION` (default `git describe --tags --always --dirty`) into `monolith --version` via `-X github.com/bubunyo/monolith/cli.version`. `CODESIGN_FLAGS` adds codesign options (releases use `--options runtime --timestamp`, which notarization needs; VMs, the docker host and k3s were verified to work under the hardened runtime).
@@ -35,7 +37,7 @@ monolith vm suspend <name>    # snapshot VM state to disk (restore needs the Mac
 monolith vm stop <name>       # stop: request shutdown, force after 10s (--force: immediately). On a suspended VM, discards the snapshot
 monolith vm list              # table: name, state, image, ip, net, cpus, mem, disk, uptime
 monolith vm rm <name>         # delete a VM (prompts for confirmation)
-monolith vm prune             # remove all stopped VMs
+monolith vm prune             # remove all stopped VMs (not containers: container prune)
 monolith vm top <name>        # bubbletea TUI dashboard for a running VM
 monolith vm logs <name>       # stream the daemon log for a VM
 
@@ -70,6 +72,18 @@ monolith docker stop [--force]                    # stop it (data persists); on 
 monolith docker list                              # docker VMs: state, engine, context (* = current), cpus, mem, data, ports
 monolith docker rm [--force]                      # delete the VM and its docker context
 monolith docker env                               # print: export DOCKER_HOST=unix://…/vms/<name>/docker.sock
+
+# Containers, each in its own VM (alias c); images pulled and converted into ~/.cache/monolith/images
+monolith container run [-d] [-it] [--rm] [--name N] [-e K=V] [--env-file F] [-w DIR] [-u USER] [--entrypoint E] [--cpus N] [-m 512M] [--disk 8G] [--pull missing|always|never] IMAGE [CMD...]
+monolith container ps [-a] [-q]                   # NAME IMAGE COMMAND CREATED STATUS (Up …, Exited (N) …, Created)
+monolith container logs [-f] [-n N] NAME          # the container's console output (console.log)
+monolith container stop [-t 10] NAME...           # the image's STOPSIGNAL (default SIGTERM), SIGKILL after -t
+monolith container start [-a] NAME...             # boot again with the same disk; -a attaches and exits with the code
+monolith container attach NAME                    # -t containers: Ctrl+P Ctrl+Q detaches
+monolith container rm [-f] NAME...                # -f kills running ones first
+monolith container prune [-f]                     # remove stopped containers (asks; size = what each wrote)
+monolith container image prune [-a] [-f]          # untagged images (-a: every image no container uses) + unused layers
+monolith container pull IMAGE | images | rmi [-f] IMAGE...
 ```
 
 If no name is given to `run`, one is auto-generated as `lith-NNNNN` (random 5-digit number). VM names must be lowercase alphanumeric with hyphens, max 63 characters (valid hostnames). The `network` command is also aliased as `net`.
@@ -82,6 +96,7 @@ go test -run TestRun ./vm # single test
 MONOLITH_TEST_DOCKER=1 go test -run TestDockerPauseResume ./vm  # docker host pause/resume (needs internet, docker CLI, unlocked Mac)
 MONOLITH_TEST_K8S=1 go test -run TestKubernetesPauseResume ./vm  # k3s on both engines: LB service, pause/resume (needs internet, kubectl, unlocked Mac)
 MONOLITH_TEST_SANDBOX=1 go test -run TestSandboxIsolation ./cli/sandbox  # hostile script in a real sandbox (needs docker CLI, unlocked Mac)
+MONOLITH_TEST_CONTAINER=1 go test -run TestContainerRun ./cli/container  # container VMs: exit codes, config, network, lifecycle (needs internet)
 ```
 
 **Many tests boot a real VM.** They require macOS on Apple Silicon with Virtualization.framework and the signed `bin/monolith`. Those tests skip under `go test -short` (`make test`), which is what CI runs: GitHub's macOS runners are VMs without nested virtualization. The remaining unit tests (parsers, command lines) run anywhere monolith builds.
@@ -108,7 +123,7 @@ The repo is a single Go module: package `vm` (VM daemon, client, state, disk/ker
 monolith/
   cmd/monolith/main.go   — CLI entry point, calls cli.Execute()
   cli/
-    root.go               — root cobra command, registers vm + network + docker subcommands
+    root.go               — root cobra command, registers vm + network + docker + sandbox + container subcommands
     netd.go               — hidden "__netd" command, entry point for the network daemon process
     vmd.go                — hidden "__vmd" command, entry point for the per-VM daemon process
     vm/
@@ -140,6 +155,13 @@ monolith/
       firewall.go         — network policy as iptables rules applied in the VM via a privileged helper container
       devcontainer.go     — shell image from --image, .devcontainer (image or build.dockerfile, JSONC), or the default
       layer.go            — "sandbox diff|apply|reset": the overlay's writable layer vs the Mac's copy
+    container/
+      container.go        — "container" parent command (alias c); container listing/lookup, STATUS text
+      run.go              — "container run": resolve/pull the image, build the spec (entrypoint/cmd/env/user/workdir),
+                            CreateContainer, boot, attach in the foreground (exit code, --rm)
+      manage.go           — "container ps|logs|stop|start|rm|attach"
+      images.go           — "container pull|images|rmi"
+      prune.go            — "container prune", "container image prune"
       kube.go             — "docker kubeconfig", kubeconfig fetch/rewrite, merge into $KUBECONFIG or ~/.kube/config, readiness
       context.go          — creates/selects/removes the docker CLI context docker-<name> (shells out to docker)
       list.go             — "docker list": docker VMs with context and forwarded ports (from the daemon's status reply)
@@ -164,6 +186,11 @@ monolith/
     rosetta.go            — CheckRosetta (vz Rosetta availability); share tag and cmdline arg.
     fswatch.go            — relayFileEvents: FSEvents on /Users → guest port 2379, which touches each path (inotify).
     sandbox.go            — SandboxConfig (repo, image, network, allow), policies, parseListeningPorts, GuestLayoutSandbox.
+    container.go          — ContainerConfig, ImageContainer (Prepare: Kata kernel + initrd + rootfs.img clone), CreateContainer
+                            (clonefile), exit.json, containerAgent (the daemon's vsock side of monolith-init).
+    container_attach.go   — AttachContainer (tty: raw, Ctrl+P Ctrl+Q; no tty: signals forwarded), WaitContainerExit.
+    container_agent.go    — containerAgent: the daemon's ttRPC client of monolith-init (Start/Wait/Shutdown, Signal, ResizeTTY).
+    guestinit/            — embeds monolith-init (files/, built by `make init`) and writes the shared cpio initrd.
     docker.go             — daemon-side services: engine socket relay (docker.sock or ssh.sock) and published-port
                             forwarding (ports from dockerd's API or `nerdctl ps --format json`).
     alpine_kernel.go      — DefaultKernel() downloads Alpine ISO, extracts/decompresses kernel+initrd.
@@ -175,6 +202,15 @@ monolith/
                             VMSSHKeyPath, VMSSHSockPath.
     keybag.go             — keybagLocked() (MobileKeyBag via dlopen, cgo): restore is refused while the Mac is locked.
     *_test.go             — tests (boot real VMs via ../bin/monolith; image_kata_test.go also has unit tests).
+  oci/                    — image store (~/.cache/monolith/images): pull (go-containerregistry, Docker keychain),
+                            refs, Lookup by ref or ID prefix, Remove; Convert flattens layers into a sparse ext4 disk.
+  containerinit/          — shared by monolith-init and the daemon: Spec, Command (entrypoint/cmd), env, ResolveUser,
+                            LookPath, ResolvConf, LinuxSignal, VsockPort. No Linux-only code.
+    agentpb/              — the Agent ttRPC API: agent.proto, and agent.pb.go / agent_ttrpc.pb.go generated by
+                            `make proto` (buf with protoc-gen-go and protoc-gen-go-ttrpc, pinned; buf.yaml,
+                            buf.gen.yaml at the root). Generated code is committed.
+  cmd/monolith-init/      — PID 1 of container VMs (linux/arm64, static): main_linux.go (setup, mounts, reaping, shutdown),
+                            agent_linux.go (the Agent ttRPC service), grow_linux.go; main_other.go is a stub for the Mac.
   net/                    — package net: networking. Imports only the root package (never vm).
                             Callers that also use the standard library import it as `mnet`.
     modes.go              — network mode constants (NetworkNAT, NetworkShared, …) and ValidNetworkModes.
@@ -189,6 +225,7 @@ monolith/
     paths.go              — NetworksDir, NetworkDir, NetworkLogPath.
     network_subnet_test.go — named-network subnet tests (via ../bin/monolith).
   paths.go                — CachePath(): root of every ~/.cache/monolith path.
+  privatesize.go          — PrivateSize(path): a file's bytes not shared with its APFS clones.
   process.go              — ProcessAlive(pid).
   logger.go / logs.go     — Logger and log-file streaming used by both daemons and `logs` commands.
   entitlements.go         — runtime entitlement checks and OwnCodeRequirement() (CDHash of this binary).
@@ -346,6 +383,19 @@ Alpine guest configuration:
 - **Sessions**: `activate`/`exec`/`diff`/`apply` register `vms/<name>/sessions/<pid>`; the last one out pauses the VM (`vm suspend`) if it wasn't running before (`activate` always pauses unless `--keep-running`). `reset` refuses while sessions are open.
 - **diff/apply** (`layer.go`): deletions are found in the VM by listing, for every directory in the upper layer that exists in the lower, the lower entries missing from the merged view (covers whiteouts and opaque directories). Additions and modifications come from a tar of the upper layer streamed through the helper, compared on the Mac (size, exec bit, sha256; symlink targets). New directories are collapsed. `apply` writes via temp file + rename, refuses paths escaping the repo or crossing a symlinked directory on the Mac, skips symlinks pointing outside, and never deletes a path it also writes (or its parent).
 
+### Containers
+
+`monolith container` (docs/container.md) runs each container in its own VM, like Apple's container tool. A container is a VM with image `container` and a `container` section in `config.json` (image ref and ID, the process spec, stop signal, `attach`, `auto_remove`); `vm list` shows it as `container (<image>)`.
+
+- **Pull** (`oci/store.go`, `layers.go`, `progress.go`): layers download 8 at a time into the blob cache `images/blobs/sha256/<hex>` (compressed, digest-verified by go-containerregistry's reader before the rename), so re-pulls and images sharing base layers skip them ("Already exists (<image that has it>)"); conversion then reads the cached blobs (`cachedLayer` only implements `Uncompressed`, the one method `mutate.Extract` calls; gzip or zstd by magic) and reports bytes per layer and in total. Progress looks like `docker pull`: per-layer lines plus a conversion line, redrawn in place on a terminal (cursor up + `ESC[2K`, cut to the width before colouring; colours off with `NO_COLOR`/`TERM=dumb`), or one line per status change otherwise. Each image records its layer digests; `rmi` deletes blobs no image uses and reports the layers it kept for others. The store lock is held for the whole pull, so pulls of different images run one after another.
+- **Images** (`oci/`): pulled for linux/arm64 and flattened (`mutate.Extract`, whiteouts applied) into `images/<config digest>/rootfs.img`, a sparse ext4 written with go-diskfs and sized to fit (`EstimateDiskSize`: 4× the compressed layers + 512 MiB, at least 1 GiB, doubled and retried if go-diskfs runs out of blocks or inodes). go-diskfs gaps, all worked around in `Convert`: no hard links (the target is read back and copied), no device nodes (skipped; devtmpfs provides /dev), no xattrs (dropped: file capabilities are lost), and writes into a directory reset the mode/owner of inodes written earlier, so all metadata is applied in a final pass. Its mkfs writes every inode table out, so zero 64 KiB runs are punched (`F_PUNCHHOLE`): alpine ends up ~14 MB on disk, node ~265 MB. Its reserved GDT blocks (resize_inode) are misplaced (`reserve_backup_gdb: reserved block … not at offset …`), so images are created without them (`WithFeatureReservedGDTBlocksForExpansion(false)`); the kernel then grows the filesystem online by converting it to meta_bg.
+- **Disk**: `CreateContainer` APFS-clones the image disk to `vms/<name>/rootfs.img` (instant, copy-on-write) and extends the clone to `--disk` (default 8G, at least the image's filesystem size; sparse). At boot monolith-init compares `/sys/block/vda/size` with the superblock's block count and grows the mounted root with `EXT4_IOC_RESIZE_FS` (~ms, even to 100G). Writes persist across `start`, and `rm` deletes the clone.
+- **Boot**: Kata's kernel (shared with the kata image), one initrd for all containers (`guestinit.Initrd`: just `/init` = monolith-init, cached as `container/initrd-<hash of the init>.img`), `/dev/vda` = the clone, user-mode network, vsock. Command line `console=hvc0 quiet loglevel=1 ip=dhcp rdinit=/init panic=-1`: the kernel configures eth0 by DHCP, so images need no client, and the init turns `/proc/net/pnp` into resolv.conf.
+- **monolith-init** (`cmd/monolith-init`): mounts devtmpfs/proc in the initrd, the disk at /newroot plus proc, sys, dev, devpts, shm, mqueue, cgroup2; creates the /dev links runc makes (`/dev/stdout`, `stderr`, `stdin`, `fd`, `ptmx`); writes hostname, hosts, resolv.conf; moves into the disk (MS_MOVE + chroot). Then it serves the **Agent ttRPC API** (protobuf, `containerinit/agentpb/agent.proto`) on vsock 1025 via `mdlayher/vsock`; a setup failure is kept and reported by `Wait`. `Start(spec)` writes hostname/hosts/resolv.conf, resolves user/groups from the image's passwd/group (runc semantics), builds the env (PATH, HOME, HOSTNAME, TERM for -t), looks up the command (127 not found, 126 not executable, 125 init errors), sets RLIMIT_NOFILE 1048576, and runs it on `/dev/hvc0` (a terminal with -t, raw otherwise, stdin /dev/null without -t). A process that can't run "exits" at once with its code, so `Start` only fails if called twice. It reaps everything; `Signal` and `ResizeTTY` act on the process and hvc0; `Wait` blocks until the exit. When the main process exits the init kills the rest, remounts / read-only and waits (2s) for `Shutdown`, which the daemon sends once it has `Wait`'s reply, before powering off. Every failure becomes exit 125 and a normal power-off: a crash in PID 1 panics the kernel.
+- **Daemon** (`containerAgent`, `vm/container_agent.go`): dials vsock 1025 after boot and makes a ttRPC client on the vz connection. It calls `Start` (with the spec from `config.json`) at once, or (with `attach`) when the first console client attaches, so a foreground run sees all output (30s cap); then `Wait`, then `Shutdown`. The exit is written to `exit.json` before the daemon's socket is removed (clients take the socket going away to mean the status is there). `stop` sends the image's STOPSIGNAL (Linux numbers via `LinuxSignal`), SIGKILL after the timeout, then forces the VM off; a VM that stops without a `Wait` reply records 137 if a stop was asked for, else 255. `CmdSignal` calls `Signal`; `CmdResize` also calls `ResizeTTY`. `TestContainerAgentProtocol` runs the client against a fake init over a pipe. Suspend to disk is refused for containers for now (vsock doesn't survive a restore). The console is always logged to `console.log`.
+- **Prune** (`cli/container/prune.go`): `container prune` removes containers that aren't running, paused or suspended; `container image prune` removes untagged images, or with `-a` every image no container's `image_id` points at, through `Store.Remove` (which also drops unused layers). Sizes use `monolith.PrivateSize` (`getattrlist` `ATTR_CMNEXT_PRIVATESIZE`): an APFS clone's blocks it doesn't share, i.e. what deleting it gives back (`du` counts shared blocks). `Store.Reclaimable` estimates an image prune: private disk bytes plus layers only those images use. `vm prune` skips containers.
+- **CLI**: foreground runs attach with `AttachContainer`; `--rm` is removed by the CLI after reading the exit code, `-d --rm` by the daemon on exit. `-i` needs `-t` for now (the console can't signal end-of-file; stdin EOF with -t sends Ctrl+D).
+
 ### Per-VM identity
 
 Each VM gets a MAC address (saved as `mac` in `config.json`) and a generic machine identifier (`vms/<name>/machine-identifier`) on first boot, reused on every later boot. Restoring a saved state requires both to match what it was saved with (a fresh random machine identifier made every restore fail with "invalid argument"); the stable MAC also keeps the VM's DHCP address stable.
@@ -359,7 +409,10 @@ Each VM gets a MAC address (saved as `mac` in `config.json`) and a generic machi
     initramfs-virt
     minirootfs.tar.gz
   k3s/v1.36.5+k3s1/k3s     — k3s binary, shared read-only into VMs with --kubernetes
-  kata/4.3.1/              — shared Kata assets (read-only for VMs)
+  images/                  — container images (oci): refs.json, <config digest>/{rootfs.img, image.json},
+                             blobs/sha256/<hex> (layer cache, shared between images)
+  container/initrd-<hash>.img — the container VMs' initrd (monolith-init), one per init build
+  kata/4.3.1/              — shared Kata assets (read-only for VMs; container VMs use vmlinux)
     vmlinux
     rootfs.img
     root_hash.txt
@@ -375,6 +428,10 @@ Each VM gets a MAC address (saved as `mac` in `config.json`) and a generic machi
       state.json           # {"pid":12345,"mac":"...","started_at":..., "status":"running"}
       daemon.sock          # unix domain socket the per-VM daemon listens on
       daemon.log           # daemon stdout/stderr (consumed by `vm logs`)
+    nginx-3f9a/            # a container
+      rootfs.img           # APFS clone of the image disk
+      console.log          # the container's output (`container logs`)
+      exit.json            # {"code":0,"finished_at":...} after it exits
     lith-48271/
       disk.img
   networks/                — named networks
@@ -392,6 +449,7 @@ Each VM gets a MAC address (saved as `mac` in `config.json`) and a generic machi
 
 ## Gotchas
 
+- Container VMs need monolith-init embedded: `make build` (or `make init`) cross-compiles it into `vm/guestinit/files/`. A bare `go build` produces a monolith whose `container run` fails with "built without monolith-init".
 - First kata VM downloads ~65 MB from `ghcr.io`; first alpine VM downloads ~60 MB ISO + ~4 MB minirootfs from `dl-cdn.alpinelinux.org`. Later runs use the cache.
 - `vm list` treats a directory as a VM if it has `config.json` or `disk.img` (`vm.Exists`); kata VMs have no `disk.img`.
 - Only docker image VMs with guest layout ≥ 2 act on Virtualization.framework's stop request (see Docker host → Clean shutdown). For alpine, kata and older docker VMs `vm stop` ends in the forced stop after 10s (the CLI says so); data written just before can be lost.

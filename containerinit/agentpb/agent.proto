@@ -1,0 +1,70 @@
+// The API monolith-init (PID 1 of a container VM) serves over ttRPC on
+// vsock port 1025. The VM daemon is the client.
+//
+// The init mounts the container's disk and serves. The daemon calls Start
+// with the process spec (holding it until a console client attaches for a
+// foreground run), Wait for the exit, then Shutdown, after which the init
+// powers the VM off. The init waits for Shutdown (briefly) so the Wait
+// reply is delivered before the VM disappears.
+syntax = "proto3";
+
+package monolith.agent.v1;
+
+option go_package = "github.com/bubunyo/monolith/containerinit/agentpb;agentpb";
+
+service Agent {
+	// Start runs the container's process. It fails only if a process was
+	// already started; a process that can't run (not found, not
+	// executable, bad user) "exits" at once with Docker's code (127, 126,
+	// 125), which Wait reports.
+	rpc Start(StartRequest) returns (StartResponse);
+
+	// Wait blocks until the process exits.
+	rpc Wait(WaitRequest) returns (WaitResponse);
+
+	// Signal delivers a signal (Linux numbering) to the process.
+	rpc Signal(SignalRequest) returns (Empty);
+
+	// ResizeTTY sets the console's size; the kernel sends SIGWINCH.
+	rpc ResizeTTY(ResizeTTYRequest) returns (Empty);
+
+	// Shutdown powers the VM off once the process has exited and the
+	// filesystem is clean. Before that it only records the request.
+	rpc Shutdown(Empty) returns (Empty);
+}
+
+message Empty {}
+
+// Spec describes the container's process.
+message Spec {
+	repeated string args = 1; // command and arguments; args[0] is looked up in PATH
+	repeated string env = 2;  // KEY=VALUE: the image's env, then the user's
+	string workdir = 3;       // default "/"
+	string user = 4;          // "", "name", "uid", "name:group" or "uid:gid"
+	string hostname = 5;
+	bool tty = 6;             // run on a terminal (the console) with stdin attached
+}
+
+message StartRequest {
+	Spec spec = 1;
+}
+
+message StartResponse {
+	uint32 pid = 1; // 0 if the process couldn't run
+}
+
+message WaitRequest {}
+
+message WaitResponse {
+	int32 exit_code = 1;
+	string error = 2; // why the process couldn't run, if it couldn't
+}
+
+message SignalRequest {
+	uint32 signal = 1;
+}
+
+message ResizeTTYRequest {
+	uint32 rows = 1;
+	uint32 cols = 2;
+}

@@ -16,7 +16,7 @@ import (
 var pruneCmd = &cobra.Command{
 	Use:   "prune",
 	Short: "Remove all stopped VMs",
-	Long:  "Delete all virtual machines that are not currently running. This action is irreversible.",
+	Long:  "Delete all virtual machines that are not currently running. This action is irreversible. Containers are left to 'monolith container prune'.",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return pruneVMs()
@@ -44,6 +44,7 @@ func pruneVMs() error {
 		diskSize string
 	}
 	var stale []staleVM
+	containers := 0 // stopped containers left to `container prune`
 
 	for _, e := range entries {
 		if !e.IsDir() {
@@ -54,6 +55,11 @@ func pruneVMs() error {
 		// Skip VMs that are not stopped (running, paused, or suspended).
 		status, _ := vm.ReadState(name)
 		if status != nil && status.State != vm.StatusStopped {
+			continue
+		}
+		// Containers are VMs too, but `container prune` handles them.
+		if cfg, err := vm.ReadConfig(name); err == nil && cfg.Container != nil {
+			containers++
 			continue
 		}
 
@@ -71,6 +77,9 @@ func pruneVMs() error {
 		stale = append(stale, staleVM{name: name, diskSize: diskSize})
 	}
 
+	if containers > 0 {
+		defer fmt.Printf("Skipped %d stopped container(s); use 'monolith container prune'.\n", containers)
+	}
 	if len(stale) == 0 {
 		fmt.Println("Nothing to prune.")
 		return nil
