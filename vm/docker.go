@@ -90,6 +90,11 @@ func startDockerServices(name string, cfg VMConfig, user *mnet.UserNetwork, logg
 		cancel()
 		return nil, err
 	}
+	if cfg.Sandbox != nil {
+		// The sandbox shell runs with the VM's network, so its servers
+		// show up as listening sockets, not published container ports.
+		s.publishedPorts = s.listeningPorts
+	}
 	if err := s.relaySocket(ctx, sockPath, sockPort); err != nil {
 		s.close()
 		return nil, err
@@ -125,7 +130,11 @@ func startDockerServices(name string, cfg VMConfig, user *mnet.UserNetwork, logg
 	}
 
 	go s.forwardPorts(ctx)
-	go s.relayFileEvents(ctx, "/Users")
+	if cfg.Sandbox != nil {
+		go s.relayFileEvents(ctx, cfg.Sandbox.Repo, true)
+	} else {
+		go s.relayFileEvents(ctx, "/Users", false)
+	}
 	logger.Info("%s engine for %q: %s relays to guest port %d", engine, name, sockPath, sockPort)
 	return s, nil
 }
@@ -393,6 +402,23 @@ func (s *dockerServices) dockerPorts() (map[portKey]bool, error) {
 
 func allInterfaces(ip string) bool {
 	return ip == "" || ip == "0.0.0.0" || ip == "::" || ip == "[::]"
+}
+
+// listeningPorts returns the TCP ports a sandbox's processes listen on (all
+// interfaces), from the guest's /proc/net/tcp{,6} served on
+// ListeningPortsPort.
+func (s *dockerServices) listeningPorts() (map[portKey]bool, error) {
+	conn, err := s.dialGuest(context.Background(), ListeningPortsPort)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(5 * time.Second))
+	data, err := io.ReadAll(conn)
+	if err != nil {
+		return nil, err
+	}
+	return parseListeningPorts(data), nil
 }
 
 // nerdctlPorts returns the TCP and UDP ports published on all guest

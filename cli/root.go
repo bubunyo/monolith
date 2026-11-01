@@ -6,6 +6,7 @@ import (
 
 	"github.com/bubunyo/monolith/cli/docker"
 	"github.com/bubunyo/monolith/cli/network"
+	"github.com/bubunyo/monolith/cli/sandbox"
 	"github.com/bubunyo/monolith/cli/vm"
 	"github.com/spf13/cobra"
 )
@@ -33,4 +34,5 @@ func init() {
 	rootCmd.AddCommand(vm.Cmd)
 	rootCmd.AddCommand(network.Cmd)
 	rootCmd.AddCommand(docker.Cmd)
+	rootCmd.AddCommand(sandbox.Cmd)
 }

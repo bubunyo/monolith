@@ -34,8 +34,9 @@ const (
 
 	// GuestLayout is the version of the guest files written into a docker
 	// image VM's disk when it's created. Layout 1 has the k3s services;
-	// layout 2 adds clean shutdown, Rosetta and file-change events.
-	GuestLayout = 2
+	// layout 2 adds clean shutdown, Rosetta and file-change events; layout 3
+	// adds the sandbox pieces (repo overlay, listening-ports relay).
+	GuestLayout = 3
 
 	// Minimum GuestLayout for each feature that needs guest files.
 	GuestLayoutKubernetes = 1

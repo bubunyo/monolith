@@ -124,8 +124,13 @@ if [ "$ROSETTA" = 1 ]; then
 	fi
 fi
 
-# The Mac's /Users, at the same path, so bind mounts like -v ~/src:/src work.
-mkdir -p /Users
-mount -t virtiofs users /Users || echo "docker-setup: mounting /Users failed"
+if tr ' ' '\n' </proc/cmdline | grep -q '^monolith\.sandbox='; then
+	# A sandbox gets only its repo (read-only, overlaid), never /Users.
+	/usr/local/bin/sandbox-mount || echo "docker-setup: mounting the sandbox repo failed"
+else
+	# The Mac's /Users, at the same path, so bind mounts like -v ~/src:/src work.
+	mkdir -p /Users
+	mount -t virtiofs users /Users || echo "docker-setup: mounting /Users failed"
+fi
 
 echo "docker-setup: done"

@@ -54,27 +54,33 @@ type UserNetwork struct {
 
 // NewUserNetwork creates the virtual network and starts serving it. mac is
 // the VM's MAC address, which gets the static DHCP lease UserGuestIP.
-func NewUserNetwork(mac string) (*UserNetwork, error) {
+// hostAccess maps UserHostIP (and host.docker.internal) to the Mac's
+// 127.0.0.1; sandboxes leave it off so guests can't reach services that
+// listen only on the Mac's loopback.
+func NewUserNetwork(mac string, hostAccess bool) (*UserNetwork, error) {
 	// gvisor-tap-vsock logs every connection at info level.
 	logrus.SetLevel(logrus.WarnLevel)
 
-	vn, err := virtualnetwork.New(&types.Configuration{
+	cfg := &types.Configuration{
 		MTU:               userMTU,
 		Subnet:            UserSubnet,
 		GatewayIP:         UserGatewayIP,
 		GatewayMacAddress: userGatewayMAC,
 		DHCPStaticLeases:  map[string]string{UserGuestIP: mac},
-		NAT:               map[string]string{UserHostIP: "127.0.0.1"},
-		GatewayVirtualIPs: []string{UserHostIP},
-		DNS: []types.Zone{{
+		Protocol:          types.VfkitProtocol,
+	}
+	if hostAccess {
+		cfg.NAT = map[string]string{UserHostIP: "127.0.0.1"}
+		cfg.GatewayVirtualIPs = []string{UserHostIP}
+		cfg.DNS = []types.Zone{{
 			Name: "docker.internal.",
 			Records: []types.Record{
 				{Name: strings.TrimSuffix(UserHostName, ".docker.internal"), IP: net.ParseIP(UserHostIP)},
 				{Name: strings.TrimSuffix(UserGatewayName, ".docker.internal"), IP: net.ParseIP(UserHostIP)},
 			},
-		}},
-		Protocol: types.VfkitProtocol,
-	})
+		}}
+	}
+	vn, err := virtualnetwork.New(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("creating user-mode network: %w", err)
 	}

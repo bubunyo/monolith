@@ -136,3 +136,16 @@ func TestParseKubeServicePorts(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, map[portKey]bool{{"tcp", 8080}: true, {"tcp", 31000}: true, {"udp", 53}: true, {"udp", 31001}: true, {"tcp", 30080}: true}, ports)
 }
+
+func TestParseListeningPorts(t *testing.T) {
+	out := `  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
+   0: 00000000:1FA1 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 1
+   1: 0100007F:1F90 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 2
+   2: 0200A8C0:0947 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 3
+   3: 00000000:0016 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 4
+   4: 00000000:1388 0100007F:9C40 01 00000000:00000000 00:00000000 00000000     0        0 5
+  sl  local_address                         remote_address                        st
+   0: 00000000000000000000000000000000:0BB8 00000000000000000000000000000000:0000 0A 0
+`
+	require.Equal(t, map[portKey]bool{{"tcp", 8097}: true, {"tcp", 3000}: true}, parseListeningPorts([]byte(out)))
+}

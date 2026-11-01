@@ -198,7 +198,7 @@ func RunDaemon(name string, restore bool, consoleLogPath string) error {
 	if cfg.MAC == "" && restore {
 		cfg.MAC = suspendedMAC(name)
 	}
-	macStr, userNet, err := mnet.ConfigureNetwork(vmCfg, cfg.NetworkMode, cfg.NetworkName, cfg.HostInterface, cfg.MAC)
+	macStr, userNet, err := mnet.ConfigureNetwork(vmCfg, cfg.NetworkMode, cfg.NetworkName, cfg.HostInterface, cfg.MAC, cfg.Sandbox == nil)
 	if err != nil {
 		return errors.Wrap(err, "configureNetwork")
 	}
