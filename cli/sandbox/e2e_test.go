@@ -88,4 +88,18 @@ echo changed > a.txt; echo new > b.txt; rm keep.txt
 	require.NoError(t, err, out)
 	require.NotContains(t, out, "b.txt")
 	require.True(t, strings.Contains(out, "M a.txt") && strings.Contains(out, "D keep.txt"), out)
+
+	// After a pause to disk the repo still reads: the restored VM's virtio-fs
+	// handles are new, and the overlay must not serve stale ones.
+	require.NoError(t, os.MkdirAll(filepath.Join(repo, "src", "api"), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "src", "api", "f.txt"), []byte("deep\n"), 0644))
+	out, err = monolith("exec", "--", "cat", "src/api/f.txt")
+	require.NoError(t, err, out)
+	out, err = monolith("status")
+	require.NoError(t, err, out)
+	require.Contains(t, out, "on disk", "exec pauses the sandbox to disk")
+	out, err = monolith("exec", "--", "sh", "-c", "cd src/api && cat f.txt && cat ../../a.txt")
+	require.NoError(t, err, out)
+	require.Contains(t, out, "deep")
+	require.Contains(t, out, "changed")
 }

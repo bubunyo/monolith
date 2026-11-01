@@ -57,6 +57,10 @@ looks for `.git` itself rather than running `git`, since an untrusted repo's
 
 ## Notes
 
+- The prompt shows where you are relative to the repo, in bold yellow:
+  `lith:some-repo/src`. `⊘net` or `allow` follows it when the network is
+  restricted. Set `NO_COLOR` for a plain prompt.
+
 - Servers the code starts on `0.0.0.0` are forwarded to `localhost` on the
   Mac. Servers bound to `127.0.0.1` inside the sandbox aren't reachable; start
   them with `--host 0.0.0.0` (or the tool's equivalent).

@@ -260,6 +260,16 @@ func (s *sandbox) ensureRunning() (wasRunning bool, err error) {
 		if err := vm.SpawnVMDaemon(s.name, true, ""); err != nil {
 			return false, err
 		}
+		if err := s.waitDocker(); err != nil {
+			return false, err
+		}
+		// The restored VM talks to a new virtio-fs server, so the file
+		// handles the overlay cached for the repo are stale (ESTALE, or
+		// files that seem to be missing). Plain virtio-fs revalidates by
+		// itself; overlayfs doesn't. Dropping the dentry and inode caches
+		// makes it look everything up again. Processes whose working
+		// directory is inside the repo keep a stale one.
+		return false, s.helper("sync; echo 2 >/proc/sys/vm/drop_caches")
 	default:
 		image, err := vm.LookupImage(vm.ImageDocker)
 		if err != nil {
@@ -381,6 +391,22 @@ func (s *sandbox) ensureShell(cfg vm.VMConfig) error {
 		network = "none"
 	}
 	want := img + "|" + network
+	if err := s.runShell(img, network, want); err != nil {
+		return err
+	}
+	// Rewritten every time: the prompt shows the network policy, which can
+	// change (outbound to allow) without recreating the container.
+	cmd := s.docker("exec", "-i", shellName, "sh", "-c", "cat > /etc/monolith-sandbox.rc")
+	cmd.Stdin = strings.NewReader(shellRC(s.repo, cfg.Sandbox.NetworkOf()))
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("configuring the sandbox shell: %v: %s", err, out)
+	}
+	return nil
+}
+
+// runShell starts the shell container, creating it (again) unless it was
+// made with the same image and network (want).
+func (s *sandbox) runShell(img, network, want string) error {
 	if got, err := s.dockerOutput("inspect", "--format", `{{index .Config.Labels "monolith.shell"}}`, shellName); err == nil {
 		if got == want {
 			if running, _ := s.dockerOutput("inspect", "--format", "{{.State.Running}}", shellName); running != "true" {
@@ -394,21 +420,12 @@ func (s *sandbox) ensureShell(cfg vm.VMConfig) error {
 			return err
 		}
 	}
-	_, err = s.dockerOutput("run", "--detach", "--name", shellName, "--init",
+	_, err := s.dockerOutput("run", "--detach", "--name", shellName, "--init",
 		"--hostname", "lith", "--network", network,
 		"--label", "monolith.shell="+want,
 		"--volume", s.repo+":"+s.repo, "--workdir", s.repo,
 		img, "tail", "-f", "/dev/null")
-	if err != nil {
-		return err
-	}
-	rc := fmt.Sprintf("PS1='(lith:%s) \\w \\$ '\ndeactivate() { exit 0; }\n", filepath.Base(s.repo))
-	cmd := s.docker("exec", "-i", shellName, "sh", "-c", "cat > /etc/monolith-sandbox.rc")
-	cmd.Stdin = strings.NewReader(rc)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("configuring the sandbox shell: %v: %s", err, out)
-	}
-	return nil
+	return err
 }
 
 // prepare gets the sandbox ready to run commands: VM up, firewall applied,
@@ -539,8 +556,12 @@ pauses the sandbox to disk, unless another session is still open or --keep-runni
 		}
 		banner(s, cfg)
 
-		shell := s.docker("exec", "-it", "-e", "TERM="+os.Getenv("TERM"), "-w", s.workdir(), shellName,
-			"sh", "-c", `if command -v bash >/dev/null; then exec bash --rcfile /etc/monolith-sandbox.rc -i; else ENV=/etc/monolith-sandbox.rc exec sh -i; fi`)
+		env := []string{"-e", "TERM=" + os.Getenv("TERM")}
+		if v, ok := os.LookupEnv("NO_COLOR"); ok {
+			env = append(env, "-e", "NO_COLOR="+v)
+		}
+		shell := s.docker(append(append([]string{"exec", "-it"}, env...), "-w", s.workdir(), shellName,
+			"sh", "-c", `if command -v bash >/dev/null; then exec bash --rcfile /etc/monolith-sandbox.rc -i; else ENV=/etc/monolith-sandbox.rc exec sh -i; fi`)...)
 		shell.Stdin, shell.Stdout, shell.Stderr = os.Stdin, os.Stdout, os.Stderr
 		runErr := shell.Run()
 

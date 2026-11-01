@@ -537,7 +537,7 @@ virtualization. The guest boots from:
 mono@my-vm:~$
 ```
 
-The prompt format is `mono@<vm-name>:<cwd>$`, set via `PS1` in `.profile`.
+The prompt format is `mono@<vm-name>:<cwd>$` (`user@host` in green, red for root; the directory in blue), set by `/etc/profile.d/monolith-prompt.sh` for every login shell. Set `NO_COLOR` for a plain prompt.
 
 ### MOTD
 

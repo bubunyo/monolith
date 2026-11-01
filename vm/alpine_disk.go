@@ -426,13 +426,13 @@ func configureVM(ext4fs filesystem.FileSystem, name string, overlays []string) e
 		}
 	}
 
-	// .profile stays inline — embed.FS ignores dotfiles by default.
+	// .profile stays inline — embed.FS ignores dotfiles by default. The
+	// prompt comes from /etc/profile.d/monolith-prompt.sh (root's too).
 	profilePath := "home/mono/.profile"
-	profileData := fmt.Sprintf(`[ -f /etc/motd ] && cat /etc/motd
+	profileData := `[ -f /etc/motd ] && cat /etc/motd
 export HOME=/home/mono
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-export PS1='mono@%s:\w\$ '
-`, name)
+`
 
 	if dir := filepath.Dir(profilePath); dir != "." {
 		if err := ext4fs.Mkdir(dir); err != nil {
