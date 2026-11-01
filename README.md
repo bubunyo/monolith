@@ -16,6 +16,9 @@ hosts.
 - `monolith sandbox`: run a repo you don't trust in a lith, like a virtualenv:
   only the repo is visible (read-only, changes reviewed with `diff`/`apply`),
   and the code can reach the internet but not your Mac or local network.
+- `monolith container`: run OCI images with each container in its own small
+  VM (Kata's kernel, monolith's own init), Docker-style: `run`, `ps`, `logs`,
+  `stop`, `rm`. See [docs/container.md](docs/container.md).
 - `monolith network`: named networks shared between VMs.
 
 ## Install

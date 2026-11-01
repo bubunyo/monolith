@@ -250,8 +250,12 @@ func formatUptime(d time.Duration) string {
 }
 
 // imageLabel is the IMAGE column: the base image, with the container engine
-// in brackets for docker image VMs, e.g. "docker (containerd)".
+// in brackets for docker image VMs, e.g. "docker (containerd)", and the
+// container image for containers, e.g. "container (nginx:1.29)".
 func imageLabel(cfg vm.VMConfig) string {
+	if cfg.Container != nil {
+		return fmt.Sprintf("%s (%s)", cfg.Image, cfg.Container.Image)
+	}
 	if cfg.Image == vm.ImageDocker {
 		engine := vm.EngineOf(cfg)
 		if cfg.Kubernetes {

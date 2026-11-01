@@ -24,6 +24,9 @@ const (
 	CmdStatus  = "status"
 	CmdResize  = "resize"
 
+	// CmdSignal delivers Signal to a container's process.
+	CmdSignal = "signal"
+
 	// CmdKubeconfig returns k3s's kubeconfig in Data (docker image VMs
 	// with Kubernetes on).
 	CmdKubeconfig = "kubeconfig"
@@ -35,6 +38,9 @@ type ControlRequest struct {
 	Force bool   `json:"force,omitempty"` // for stop: forceful termination
 	Rows  uint16 `json:"rows,omitempty"`  // for resize: terminal rows
 	Cols  uint16 `json:"cols,omitempty"`  // for resize: terminal columns
+
+	Signal  int `json:"signal,omitempty"`  // for signal: the signal number
+	Timeout int `json:"timeout,omitempty"` // for stop: seconds before killing a container (0: default)
 }
 
 // ControlResponse is a JSON-encoded reply from daemon to client.

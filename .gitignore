@@ -40,3 +40,5 @@ bin/*
 
 # Release archives (make dist)
 dist/
+# monolith-init, cross-compiled by `make build` (see vm/guestinit).
+vm/guestinit/files/monolith-init

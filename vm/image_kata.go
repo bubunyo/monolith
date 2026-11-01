@@ -49,17 +49,13 @@ func (kataImage) Prepare(name string) (*BootSpec, error) {
 	if err != nil {
 		return nil, err
 	}
-	kernel := filepath.Join(dir, kataKernelFile)
+	kernel, err := kataKernel()
+	if err != nil {
+		return nil, err
+	}
 	rootfs := filepath.Join(dir, kataRootfsFile)
 	rootHash := filepath.Join(dir, kataRootHashFile)
 
-	if !exists(kernel) {
-		if err := fetchKataArtifact("kernel", "kata-static-kernel.tar.zst", map[string]string{
-			kataKernelFile: "vmlinux-",
-		}, dir); err != nil {
-			return nil, fmt.Errorf("fetching Kata kernel: %w", err)
-		}
-	}
 	if !exists(rootfs) || !exists(rootHash) {
 		if err := fetchKataArtifact("rootfs-image", "kata-static-rootfs-image.tar.zst", map[string]string{
 			kataRootfsFile:   ".image",
@@ -94,6 +90,24 @@ func (kataImage) Prepare(name string) (*BootSpec, error) {
 		DiskPath:     rootfs,
 		DiskReadOnly: true,
 	}, nil
+}
+
+// kataKernel returns Kata's guest kernel, downloading it on first use. Kata
+// and container VMs both boot it.
+func kataKernel() (string, error) {
+	dir, err := kataCacheDir()
+	if err != nil {
+		return "", err
+	}
+	kernel := filepath.Join(dir, kataKernelFile)
+	if !exists(kernel) {
+		if err := fetchKataArtifact("kernel", "kata-static-kernel.tar.zst", map[string]string{
+			kataKernelFile: "vmlinux-",
+		}, dir); err != nil {
+			return "", fmt.Errorf("fetching Kata kernel: %w", err)
+		}
+	}
+	return kernel, nil
 }
 
 func kataCacheDir() (string, error) {

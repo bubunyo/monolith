@@ -63,6 +63,8 @@ func LookupImage(name string) (Image, error) {
 		return alpineImage{}, nil
 	case ImageDocker:
 		return dockerImage{}, nil
+	case ImageContainer:
+		return containerImage{}, nil
 	default:
 		return nil, fmt.Errorf("unknown image %q; must be one of: %s", name, strings.Join(ValidImages, ", "))
 	}

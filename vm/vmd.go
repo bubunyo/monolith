@@ -52,6 +52,18 @@ func RunDaemon(name string, restore bool, consoleLogPath string) error {
 	if err != nil {
 		return errors.Wrap(err, "ReadConfig")
 	}
+	if cfg.Container != nil {
+		if restore {
+			return fmt.Errorf("containers can't be restored from disk yet")
+		}
+		if cfg.Container.AutoRemove {
+			defer func() {
+				if d == nil || !d.suspended.Load() {
+					removeContainer(name)
+				}
+			}()
+		}
+	}
 
 	image, err := LookupImage(cfg.Image)
 	if err != nil {
@@ -230,6 +242,15 @@ func RunDaemon(name string, restore bool, consoleLogPath string) error {
 	}
 	vmCfg.SetEntropyDevicesVirtualMachineConfiguration([]*vz.VirtioEntropyDeviceConfiguration{entropyConfig})
 
+	// vsock: the control channel to a container's monolith-init.
+	if cfg.Container != nil {
+		vsockCfg, err := vz.NewVirtioSocketDeviceConfiguration()
+		if err != nil {
+			return errors.Wrap(err, "vz.NewVirtioSocketDeviceConfiguration")
+		}
+		vmCfg.SetSocketDevicesVirtualMachineConfiguration([]vz.SocketDeviceConfiguration{vsockCfg})
+	}
+
 	// Validate.
 	validated, err := vmCfg.Validate()
 	if !validated || err != nil {
@@ -281,6 +302,13 @@ func RunDaemon(name string, restore bool, consoleLogPath string) error {
 		}
 	}
 
+	var agent *containerAgent
+	if cfg.Container != nil {
+		agent = newContainerAgent(name, cfg.Container, logger)
+		go agent.connect(vm)
+		defer agent.finish()
+	}
+
 	var services *dockerServices
 	if cfg.Image == ImageDocker {
 		services, err = startDockerServices(name, cfg, userNet, logger)
@@ -322,6 +350,7 @@ func RunDaemon(name string, restore bool, consoleLogPath string) error {
 		bus:        bus,
 		docker:     services,
 		kubernetes: cfg.Kubernetes,
+		container:  agent,
 
 		stopTimeout: gracefulStopTimeout,
 	}
@@ -373,6 +402,11 @@ func RunDaemon(name string, restore bool, consoleLogPath string) error {
 			switch newState {
 			case vz.VirtualMachineStateStopped:
 				logger.Info("VM %q stopped", name)
+				if agent != nil {
+					// Before the socket goes: clients take its removal to
+					// mean the exit status is there.
+					agent.finish()
+				}
 				return nil
 			case vz.VirtualMachineStateError:
 				return fmt.Errorf("VM %q entered error state", name)
@@ -402,6 +436,7 @@ type vmDaemon struct {
 	bus        *consoleBus
 	docker     *dockerServices // nil unless the VM uses the docker image
 	kubernetes bool            // k3s runs in the guest
+	container  *containerAgent // nil unless the VM is a container
 
 	stopTimeout time.Duration // wait for a clean shutdown before forcing
 
@@ -458,6 +493,9 @@ func (d *vmDaemon) handleConsoleAttach(conn net.Conn) {
 	//   2. Returns a channel that receives all subsequent live bytes.
 	// This guarantees no bytes are lost between replay and live stream.
 	replay, liveCh, unsubscribe := d.bus.subscribe()
+	if d.container != nil {
+		d.container.consoleAttached()
+	}
 
 	// Send the boot replay first so the user sees the kernel/init log.
 	if len(replay) > 0 {
@@ -565,13 +603,15 @@ func (d *vmDaemon) handleControl(conn net.Conn) {
 	case CmdSuspend:
 		d.handleSuspend(conn)
 	case CmdStop:
-		d.handleStop(conn, req.Force)
+		d.handleStop(conn, req)
 	case CmdStatus:
 		d.handleStatus(conn)
 	case CmdResize:
 		d.handleResize(conn, req.Rows, req.Cols)
 	case CmdKubeconfig:
 		d.handleKubeconfig(conn)
+	case CmdSignal:
+		d.handleSignal(conn, req.Signal)
 	default:
 		d.sendControlResponse(conn, ControlResponse{OK: false, Error: fmt.Sprintf("unknown command: %s", req.Cmd)})
 	}
@@ -602,6 +642,10 @@ func (d *vmDaemon) handleResume(conn net.Conn) {
 }
 
 func (d *vmDaemon) handleSuspend(conn net.Conn) {
+	if d.container != nil {
+		d.sendControlResponse(conn, ControlResponse{OK: false, Error: "containers can't be suspended to disk yet; use pause"})
+		return
+	}
 	// Mark suspended before pausing so the main loop's Paused handler never
 	// overwrites the suspended status. Every failure path clears it.
 	d.suspended.Store(true)
@@ -664,8 +708,24 @@ func (d *vmDaemon) handleSuspend(conn net.Conn) {
 	}
 }
 
-func (d *vmDaemon) handleStop(conn net.Conn, force bool) {
+func (d *vmDaemon) handleStop(conn net.Conn, req ControlRequest) {
+	force := req.Force
 	d.detachConsoleClient()
+
+	if d.container != nil {
+		d.container.markStopping()
+	}
+	if d.container != nil && !force {
+		timeout := gracefulStopTimeout
+		if req.Timeout > 0 {
+			timeout = time.Duration(req.Timeout) * time.Second
+		}
+		if d.container.stop(d.vm, timeout) {
+			d.sendControlResponse(conn, ControlResponse{OK: true, Status: StatusStopped})
+			return
+		}
+		force = true
+	}
 
 	if force {
 		if d.vm.CanStop() {
@@ -753,11 +813,27 @@ func (d *vmDaemon) handleKubeconfig(conn net.Conn) {
 	d.sendControlResponse(conn, ControlResponse{OK: true, Data: string(data)})
 }
 
+// handleSignal delivers a signal to a container's process.
+func (d *vmDaemon) handleSignal(conn net.Conn, sig int) {
+	if d.container == nil {
+		d.sendControlResponse(conn, ControlResponse{OK: false, Error: "not a container"})
+		return
+	}
+	if sig <= 0 || sig > 64 || !d.container.signal(unix.Signal(sig)) {
+		d.sendControlResponse(conn, ControlResponse{OK: false, Error: "couldn't deliver the signal"})
+		return
+	}
+	d.sendControlResponse(conn, ControlResponse{OK: true})
+}
+
 // handleResize records the client's terminal size on the console PTY.
 func (d *vmDaemon) handleResize(conn net.Conn, rows, cols uint16) {
 	if rows == 0 || cols == 0 {
 		d.sendControlResponse(conn, ControlResponse{OK: false, Error: "resize requires non-zero rows and cols"})
 		return
+	}
+	if d.container != nil {
+		d.container.resize(rows, cols)
 	}
 	ws := &unix.Winsize{Row: rows, Col: cols}
 	if err := unix.IoctlSetWinsize(int(d.pts.Fd()), unix.TIOCSWINSZ, ws); err != nil {
@@ -784,6 +860,9 @@ func (d *vmDaemon) waitForControl(timeout time.Duration) {
 // stopVM stops the VM, optionally forcefully.
 func (d *vmDaemon) stopVM(force bool) {
 	d.detachConsoleClient()
+	if d.container != nil && !force && d.container.stop(d.vm, gracefulStopTimeout) {
+		return
+	}
 	if force && d.vm.CanStop() {
 		d.vm.Stop()
 	} else if d.vm.CanRequestStop() {

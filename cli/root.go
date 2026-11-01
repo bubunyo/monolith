@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/bubunyo/monolith/cli/container"
 	"github.com/bubunyo/monolith/cli/docker"
 	"github.com/bubunyo/monolith/cli/network"
 	"github.com/bubunyo/monolith/cli/sandbox"
@@ -35,4 +36,5 @@ func init() {
 	rootCmd.AddCommand(network.Cmd)
 	rootCmd.AddCommand(docker.Cmd)
 	rootCmd.AddCommand(sandbox.Cmd)
+	rootCmd.AddCommand(container.Cmd)
 }
