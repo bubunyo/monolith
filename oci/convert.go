@@ -3,6 +3,7 @@ package oci
 import (
 	"archive/tar"
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -19,10 +20,28 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// DiskSize is the size of an image's ext4 filesystem. The file is sparse:
-// it only takes the space of its contents. Containers get APFS clones of
-// it, so their writes have this much room.
-const DiskSize = 8 << 30
+// An image's filesystem is sized to fit its contents with some room
+// (EstimateDiskSize); a container's clone of it is then made as big as
+// its --disk and monolith-init grows the filesystem to match at boot.
+const (
+	minDiskSize  = 1 << 30
+	diskSizeStep = 256 << 20
+)
+
+// errFull means the filesystem ran out of blocks or inodes while
+// converting; Pull retries with a bigger one.
+var errFull = errors.New("image filesystem too small")
+
+// EstimateDiskSize sizes an image's filesystem from its compressed layers:
+// four times their size (layers rarely compress better than that) plus
+// 512 MiB, at least 1 GiB, in 256 MiB steps.
+func EstimateDiskSize(compressed int64) int64 {
+	size := 4*compressed + 512<<20
+	if size < minDiskSize {
+		size = minDiskSize
+	}
+	return (size + diskSizeStep - 1) / diskSizeStep * diskSizeStep
+}
 
 // ConvertStats describes a conversion.
 type ConvertStats struct {
@@ -39,21 +58,24 @@ type inodeMeta struct {
 }
 
 // Convert flattens img's layers (whiteouts applied) into a new ext4 disk
-// image at diskPath.
+// image of size bytes at diskPath. It fails with errFull if they don't fit.
 //
 // go-diskfs has gaps this works around: it has no hard links (the target's
 // content is copied), no device nodes (skipped) and no extended attributes
 // (dropped, which loses file capabilities). Writing to a directory also
 // resets the mode and owner of inodes written before, so all metadata is
 // applied in a final pass. Its mkfs writes out every inode table, so the
-// zero runs are punched out of the file at the end.
-func Convert(img v1.Image, diskPath string) (ConvertStats, error) {
+// zero runs are punched out of the file at the end. Its reserved GDT
+// blocks (resize_inode) are misplaced, which makes the kernel refuse to
+// grow the filesystem, so they're left out: without them the kernel grows
+// it by switching to meta_bg.
+func Convert(img v1.Image, diskPath string, size int64) (ConvertStats, error) {
 	var st ConvertStats
 	f, err := os.Create(diskPath)
 	if err != nil {
 		return st, err
 	}
-	if err := f.Truncate(DiskSize); err != nil {
+	if err := f.Truncate(size); err != nil {
 		f.Close()
 		return st, err
 	}
@@ -65,7 +87,11 @@ func Convert(img v1.Image, diskPath string) (ConvertStats, error) {
 	}
 	// 4 KiB blocks: go-diskfs picks 1 KiB by default, whose journal
 	// allocation fails on large filesystems.
-	fs, err := ext4.Create(backend, DiskSize, 0, 512, &ext4.Params{SectorsPerBlock: 8, VolumeName: "rootfs"})
+	fs, err := ext4.Create(backend, size, 0, 512, &ext4.Params{
+		SectorsPerBlock: 8,
+		VolumeName:      "rootfs",
+		Features:        []ext4.FeatureOpt{ext4.WithFeatureReservedGDTBlocksForExpansion(false)},
+	})
 	if err != nil {
 		backend.Close()
 		return st, fmt.Errorf("creating ext4 filesystem: %w", err)
@@ -74,6 +100,9 @@ func Convert(img v1.Image, diskPath string) (ConvertStats, error) {
 	rc := mutate.Extract(img)
 	err = extract(fs, tar.NewReader(rc), &st)
 	rc.Close()
+	if err != nil && isFull(err) {
+		err = fmt.Errorf("%w (%s): %v", errFull, HumanSize(size), err)
+	}
 	if cerr := backend.Close(); err == nil {
 		err = cerr
 	}
@@ -186,6 +215,12 @@ func extract(fs *ext4.FileSystem, tr *tar.Reader, st *ConvertStats) error {
 		}
 	}
 	return nil
+}
+
+// isFull recognizes go-diskfs's out-of-space errors.
+func isFull(err error) bool {
+	msg := err.Error()
+	return strings.Contains(msg, "blocks free, requires") || strings.Contains(msg, "no free inodes")
 }
 
 // cleanPath makes a tar name a go-diskfs path: relative, no "./" or "..".

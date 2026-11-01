@@ -191,6 +191,10 @@ func setup() (ci.Spec, error) {
 			logf("mounting /%s: %v", m.dst, err)
 		}
 	}
+	if err := growRoot(newRoot); err != nil {
+		logf("growing the root filesystem: %v", err)
+	}
+
 	// The links runc creates in every container's /dev (devtmpfs has none):
 	// images log to /dev/stdout and /dev/stderr. /dev/ptmx goes through the
 	// container's devpts instance.

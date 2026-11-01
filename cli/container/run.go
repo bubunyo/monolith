@@ -35,6 +35,7 @@ var (
 	flagEntrypoint  string
 	flagCPUs        uint
 	flagMemory      string
+	flagDisk        string
 	flagPull        string
 )
 
@@ -72,6 +73,7 @@ func init() {
 	f.StringVar(&flagEntrypoint, "entrypoint", "", "override the image's entrypoint")
 	f.UintVar(&flagCPUs, "cpus", 1, "number of vCPUs")
 	f.StringVarP(&flagMemory, "memory", "m", "512M", "memory limit of the container VM")
+	f.StringVar(&flagDisk, "disk", "8G", "size of the container's disk, image included (sparse: only what's written takes space)")
 	f.StringVar(&flagPull, "pull", "missing", "pull the image: missing, always or never")
 }
 
@@ -88,6 +90,10 @@ func run(cmd *cobra.Command, ref string, cmdArgs []string) error {
 	}
 	if flagCPUs == 0 {
 		return errors.New("--cpus must be at least 1")
+	}
+	disk, err := clivm.ParseMemory(flagDisk)
+	if err != nil {
+		return fmt.Errorf("--disk: %w", err)
 	}
 	env, err := userEnv()
 	if err != nil {
@@ -142,6 +148,10 @@ func run(cmd *cobra.Command, ref string, cmdArgs []string) error {
 	if err != nil {
 		return err
 	}
+	if minimum, err := store.FilesystemSize(img.ID); err == nil && int64(disk) < minimum {
+		return fmt.Errorf("--disk must be at least %s for %s", clivm.FormatMemory(uint64(minimum)), ref)
+	}
+	cfg.Container.DiskSize = int64(disk)
 	if err := vm.CreateContainer(name, cfg, store.DiskPath(img.ID)); err != nil {
 		return err
 	}

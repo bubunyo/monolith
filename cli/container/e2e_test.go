@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -67,6 +68,22 @@ func TestContainerRun(t *testing.T) {
 		require.Zero(t, code, out)
 		require.Contains(t, out, "devs-ok")
 		require.Contains(t, out, "<title>Example Domain</title>")
+	})
+
+	t.Run("disk size", func(t *testing.T) {
+		// df -k: 1K blocks of /. The filesystem grows to fill --disk at boot.
+		size := func(args ...string) int {
+			out, code := monolith(append(append([]string{"run", "--rm"}, args...), alpine, "sh", "-c", "df -k / | awk 'NR==2 {print $2}'")...)
+			require.Zero(t, code, out)
+			kb, err := strconv.Atoi(strings.TrimSpace(lastLine(out)))
+			require.NoError(t, err, out)
+			return kb
+		}
+		require.InDelta(t, 8<<20, size(), 0.06*(8<<20), "default 8G")
+		require.InDelta(t, 20<<20, size("--disk", "20G"), 0.06*(20<<20))
+		out, code := monolith("run", "--rm", "--disk", "100M", alpine, "true")
+		require.NotZero(t, code)
+		require.Contains(t, out, "--disk must be at least")
 	})
 
 	t.Run("--rm removes the container", func(t *testing.T) {

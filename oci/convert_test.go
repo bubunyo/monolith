@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -77,19 +78,19 @@ func TestConvert(t *testing.T) {
 	require.NoError(t, err)
 
 	disk := filepath.Join(t.TempDir(), "rootfs.img")
-	st, err := Convert(img, disk)
+	st, err := Convert(img, disk, minDiskSize)
 	require.NoError(t, err)
 	require.Equal(t, 1, st.Hardlinks)
 	require.Equal(t, 1, st.Skipped, "the device node")
 	require.Less(t, st.DiskBytes, int64(64<<20), "zero runs are punched out")
 	var fi syscall.Stat_t
 	require.NoError(t, syscall.Stat(disk, &fi))
-	require.EqualValues(t, DiskSize, fi.Size)
+	require.EqualValues(t, minDiskSize, fi.Size)
 
 	b, err := file.OpenFromPath(disk, true)
 	require.NoError(t, err)
 	defer b.Close()
-	fs, err := ext4.Read(b, DiskSize, 0, 512)
+	fs, err := ext4.Read(b, minDiskSize, 0, 512)
 	require.NoError(t, err)
 
 	read := func(p string) string {
@@ -127,4 +128,17 @@ func TestConvert(t *testing.T) {
 	require.Error(t, err, "whiteout removes the file")
 	_, err = fs.Stat("dev/null")
 	require.Error(t, err, "device nodes are skipped")
+}
+
+func TestConvertFull(t *testing.T) {
+	big := strings.Repeat("x", 40<<20)
+	img, err := mutate.AppendLayers(empty.Image, layer(t, entry{name: "big", typ: tar.TypeReg, mode: 0644, body: big}))
+	require.NoError(t, err)
+	_, err = Convert(img, filepath.Join(t.TempDir(), "tiny.img"), 16<<20)
+	require.ErrorIs(t, err, errFull)
+}
+
+func TestEstimateDiskSize(t *testing.T) {
+	require.EqualValues(t, 1<<30, EstimateDiskSize(3<<20), "minimum")
+	require.EqualValues(t, 1536<<20, EstimateDiskSize(250<<20), "4x + 512 MiB, in 256 MiB steps")
 }

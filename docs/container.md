@@ -23,8 +23,9 @@ monolith container rm web
    `~/.cache/monolith/images`. Registry logins come from
    `~/.docker/config.json` and its credential helpers, as with `docker`.
 2. **A container's disk** is an APFS clone of the image's disk: instant, and
-   it only takes space for what the container writes. Writes persist across
-   `stop` and `start`; `rm` throws them away.
+   it only takes space for what the container writes. It's `--disk` big
+   (default 8G, image included); the filesystem grows to fill it at boot.
+   Writes persist across `stop` and `start`; `rm` throws them away.
 3. **The VM** boots Kata's kernel (downloaded once, shared with `--image
    kata` VMs) and `monolith-init`, which mounts the disk, sets up `/dev`,
    `/proc` and networking, and runs the container's process the way Docker
@@ -40,7 +41,7 @@ container still only has a VM with nothing in it but itself.
 
 | Command | |
 |---|---|
-| `run [flags] IMAGE [COMMAND...]` | Create and start a container. `-d` background, `-it` interactive terminal, `--rm` remove on exit, `--name`, `-e KEY=VALUE` / `-e KEY` (copied from your shell), `--env-file`, `-w DIR`, `-u USER[:GROUP]`, `--entrypoint`, `--cpus` (1), `-m/--memory` (512M), `--pull missing\|always\|never`. Flags after IMAGE belong to the command. |
+| `run [flags] IMAGE [COMMAND...]` | Create and start a container. `-d` background, `-it` interactive terminal, `--rm` remove on exit, `--name`, `-e KEY=VALUE` / `-e KEY` (copied from your shell), `--env-file`, `-w DIR`, `-u USER[:GROUP]`, `--entrypoint`, `--cpus` (1), `-m/--memory` (512M), `--disk` (8G: the container's disk, image included; only what's written takes space on the Mac, and it can't be smaller than the image's filesystem, at least 1G), `--pull missing\|always\|never`. Flags after IMAGE belong to the command. |
 | `ps [-a] [-q]` | Running containers; `-a` includes stopped ones. |
 | `logs [-f] [-n N] NAME` | The container's output (stdout and stderr together). |
 | `stop [-t 10] NAME...` | Send the image's stop signal (`STOPSIGNAL`, default SIGTERM), then SIGKILL after `-t` seconds. |
@@ -70,7 +71,9 @@ These are planned:
 ## Differences from Docker
 
 - Each container has its own kernel (Kata's guest kernel, Linux 6.18), its
-  own memory limit (`-m`, default 512M) and vCPUs (`--cpus`, default 1).
+  own memory limit (`-m`, default 512M), vCPUs (`--cpus`, default 1) and
+  disk (`--disk`, default 8G). A full disk fails writes in that container
+  only.
 - `/dev` is the kernel's devtmpfs: the container sees its VM's devices.
 - Extended attributes in images are dropped when converting, so binaries
   that rely on file capabilities (for example `ping` as a non-root user)

@@ -33,6 +33,7 @@ type ContainerConfig struct {
 	// STOPSIGNAL, e.g. "SIGQUIT" for nginx); default SIGTERM.
 	StopSignal string    `json:"stop_signal,omitempty"`
 	Created    time.Time `json:"created"`
+	DiskSize   int64     `json:"disk_size"` // bytes (--disk)
 
 	// Attach makes the daemon hold the process until a console client
 	// attaches, so a foreground run sees all output. `run`/`start -a` set
@@ -102,11 +103,19 @@ func writeExit(name string, st ExitStatus) error {
 }
 
 // CreateContainer creates container VM name from an image disk: the VM
-// directory, an APFS clone of the disk (instant, copy-on-write) and the
-// config.
+// directory, an APFS clone of the disk (instant, copy-on-write) extended
+// to cfg.Container.DiskSize (sparse; monolith-init grows the filesystem at
+// boot) and the config.
 func CreateContainer(name string, cfg VMConfig, imageDisk string) error {
 	if cfg.Container == nil {
 		return errors.New("not a container config")
+	}
+	img, err := os.Stat(imageDisk)
+	if err != nil {
+		return err
+	}
+	if cfg.Container.DiskSize < img.Size() {
+		return fmt.Errorf("the disk must be at least %d MiB for this image", img.Size()>>20)
 	}
 	dir, err := VMDir(name)
 	if err != nil {
@@ -125,6 +134,10 @@ func CreateContainer(name string, cfg VMConfig, imageDisk string) error {
 	if err := unix.Clonefile(imageDisk, disk, unix.CLONE_NOFOLLOW); err != nil {
 		os.RemoveAll(dir)
 		return fmt.Errorf("cloning the image disk: %w", err)
+	}
+	if err := os.Truncate(disk, cfg.Container.DiskSize); err != nil {
+		os.RemoveAll(dir)
+		return fmt.Errorf("sizing the container disk: %w", err)
 	}
 	if err := WriteConfig(name, cfg); err != nil {
 		os.RemoveAll(dir)

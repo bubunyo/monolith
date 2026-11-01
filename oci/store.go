@@ -87,6 +87,16 @@ func (s *Store) DiskPath(id string) string {
 	return filepath.Join(s.dir, id, diskFile)
 }
 
+// FilesystemSize is the size of image id's filesystem: the smallest disk
+// a container of it can have.
+func (s *Store) FilesystemSize(id string) (int64, error) {
+	fi, err := os.Stat(s.DiskPath(id))
+	if err != nil {
+		return 0, err
+	}
+	return fi.Size(), nil
+}
+
 // Normalize turns a user's reference ("alpine", "nginx:1.29",
 // "ghcr.io/o/r@sha256:...") into its full form
 // ("index.docker.io/library/alpine:latest").
@@ -232,7 +242,14 @@ func (s *Store) Pull(ctx context.Context, ref string, opts PullOptions) (Image, 
 	}
 	defer os.RemoveAll(tmp)
 	start := time.Now()
-	stats, err := Convert(remoteImg, filepath.Join(tmp, diskFile))
+	var stats ConvertStats
+	for fsSize := EstimateDiskSize(size); ; fsSize *= 2 {
+		stats, err = Convert(remoteImg, filepath.Join(tmp, diskFile), fsSize)
+		if !errors.Is(err, errFull) || fsSize >= 1<<40 {
+			break
+		}
+		fmt.Fprintf(logw, "%s doesn't fit in %s; retrying with %s\n", Display(r.Name()), HumanSize(fsSize), HumanSize(2*fsSize))
+	}
 	if err != nil {
 		return Image{}, fmt.Errorf("converting %s: %w", Display(r.Name()), err)
 	}
