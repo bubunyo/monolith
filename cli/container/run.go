@@ -239,7 +239,7 @@ func resolveImage(ctx context.Context, ref, policy string) (oci.Image, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	return store.Pull(ctx, ref, oci.PullOptions{Log: os.Stderr})
+	return store.Pull(ctx, ref, oci.PullOptions{Log: os.Stderr, TTY: isTerminal(os.Stderr)})
 }
 
 // userEnv collects -e and --env-file values; a bare KEY copies the Mac's

@@ -22,6 +22,10 @@ monolith container rm web
    linux/arm64 and converted once into an ext4 disk image under
    `~/.cache/monolith/images`. Registry logins come from
    `~/.docker/config.json` and its credential helpers, as with `docker`.
+   Layers download 8 at a time and are kept, so images that share a base
+   (or a re-pull) reuse them: the output says `Already exists (<image>)`.
+   On a terminal the progress is shown per layer and updated in place, in
+   colour (set `NO_COLOR` to turn colour off).
 2. **A container's disk** is an APFS clone of the image's disk: instant, and
    it only takes space for what the container writes. It's `--disk` big
    (default 8G, image included); the filesystem grows to fill it at boot.

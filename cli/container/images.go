@@ -25,7 +25,7 @@ var pullCmd = &cobra.Command{
 		if ctx == nil {
 			ctx = context.Background()
 		}
-		_, err = store.Pull(ctx, args[0], oci.PullOptions{Log: os.Stdout})
+		_, err = store.Pull(ctx, args[0], oci.PullOptions{Log: os.Stdout, TTY: isTerminal(os.Stdout)})
 		return err
 	},
 }
@@ -104,21 +104,29 @@ func removeImage(store *oci.Store, containers []info, ref string) error {
 			return fmt.Errorf("image %s is used by %s; remove them or use -f", ref, strings.Join(users, ", "))
 		}
 	}
-	removed, deleted, err := store.Remove(ref)
+	r, err := store.Remove(ref)
 	if err != nil {
 		if errors.Is(err, oci.ErrNotFound) {
 			return fmt.Errorf("no such image: %s", ref)
 		}
 		return err
 	}
-	if !deleted {
+	if !r.Deleted {
 		fmt.Printf("Untagged: %s\n", oci.Display(mustNormalize(ref)))
 		return nil
 	}
-	for _, r := range removed.Refs {
-		fmt.Printf("Untagged: %s\n", oci.Display(r))
+	for _, ref := range r.Image.Refs {
+		fmt.Printf("Untagged: %s\n", oci.Display(ref))
 	}
-	fmt.Printf("Deleted: %s\n", removed.ShortID())
+	if r.KeptLayers > 0 {
+		layers := "layers"
+		if r.KeptLayers == 1 {
+			layers = "layer"
+		}
+		fmt.Printf("Deleted: %s (kept %d %s used by %s)\n", r.Image.ShortID(), r.KeptLayers, layers, strings.Join(r.SharedWith, ", "))
+		return nil
+	}
+	fmt.Printf("Deleted: %s\n", r.Image.ShortID())
 	return nil
 }
 

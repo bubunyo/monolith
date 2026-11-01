@@ -4,6 +4,9 @@ import (
 	"archive/tar"
 	"context"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -78,10 +81,10 @@ func TestStore(t *testing.T) {
 	require.Len(t, images, 2)
 
 	// Removing by reference drops the image with its last reference.
-	removed, deleted, err := s.Remove(ref1)
+	removal, err := s.Remove(ref1)
 	require.NoError(t, err)
-	require.True(t, deleted)
-	require.Equal(t, img1.ID, removed.ID)
+	require.True(t, removal.Deleted)
+	require.Equal(t, img1.ID, removal.Image.ID)
 	require.NoFileExists(t, s.DiskPath(img1.ID))
 	_, err = s.Lookup(ref1)
 	require.ErrorIs(t, err, ErrNotFound)
@@ -110,4 +113,113 @@ func TestDisplay(t *testing.T) {
 	}
 	require.Equal(t, "1.5kB", HumanSize(1500))
 	require.Equal(t, "61.3MB", HumanSize(61_300_000))
+}
+
+// pushLayers pushes an arm64 image made of the given layers.
+func pushLayers(t *testing.T, host, ref string, layers ...v1.Layer) {
+	t.Helper()
+	img, err := mutate.AppendLayers(empty.Image, layers...)
+	require.NoError(t, err)
+	cf, err := img.ConfigFile()
+	require.NoError(t, err)
+	cf.OS, cf.Architecture = "linux", "arm64"
+	cf.Config.Cmd = []string{"/bin/true"}
+	img, err = mutate.ConfigFile(img, cf)
+	require.NoError(t, err)
+	r, err := name.ParseReference(host + "/" + ref)
+	require.NoError(t, err)
+	require.NoError(t, remote.Write(r, img))
+}
+
+func TestPullProgressAndSharedLayers(t *testing.T) {
+	if testing.Short() {
+		t.Skip("converts images (a few seconds each)")
+	}
+	srv := httptest.NewServer(registry.New())
+	defer srv.Close()
+	host := strings.TrimPrefix(srv.URL, "http://")
+	base := layer(t, entry{name: "base", typ: tar.TypeReg, mode: 0644, body: "base"})
+	pushLayers(t, host, "a:1", base, layer(t, entry{name: "a", typ: tar.TypeReg, mode: 0644, body: "a"}))
+	pushLayers(t, host, "b:1", base, layer(t, entry{name: "b", typ: tar.TypeReg, mode: 0644, body: "b"}))
+	baseDigest, err := base.Digest()
+	require.NoError(t, err)
+
+	dir := t.TempDir()
+	s, err := OpenAt(dir)
+	require.NoError(t, err)
+	ctx := context.Background()
+
+	// Off a terminal: one line per status change, no escape codes.
+	var out strings.Builder
+	_, err = s.Pull(ctx, host+"/a:1", PullOptions{Log: &out})
+	require.NoError(t, err)
+	got := out.String()
+	require.Contains(t, got, "Pulling "+host+"/a:1 (2 layers")
+	require.Contains(t, got, baseDigest.Hex[:12]+": Downloading\n")
+	require.Contains(t, got, baseDigest.Hex[:12]+": Download complete\n")
+	require.Contains(t, got, baseDigest.Hex[:12]+": Pull complete\n")
+	require.Contains(t, got, "conversion: Converted to ext4\n")
+	require.Contains(t, got, "Pulled "+host+"/a:1 in ")
+	require.NotContains(t, got, "\033")
+
+	// The shared base layer comes from the cache, naming the image it's from.
+	out.Reset()
+	_, err = s.Pull(ctx, host+"/b:1", PullOptions{Log: &out})
+	require.NoError(t, err)
+	require.Contains(t, out.String(), baseDigest.Hex[:12]+": Already exists ("+host+"/a:1)\n")
+	blobs, err := os.ReadDir(filepath.Join(dir, blobsDir, "sha256"))
+	require.NoError(t, err)
+	require.Len(t, blobs, 3, "base, a and b")
+
+	// Removing a keeps the base for b and drops a's own layer.
+	removal, err := s.Remove(host + "/a:1")
+	require.NoError(t, err)
+	require.Equal(t, 1, removal.KeptLayers)
+	require.Equal(t, []string{host + "/b:1"}, removal.SharedWith)
+	blobs, err = os.ReadDir(filepath.Join(dir, blobsDir, "sha256"))
+	require.NoError(t, err)
+	require.Len(t, blobs, 2)
+	require.FileExists(t, s.blobPath(baseDigest))
+
+	removal, err = s.Remove(host + "/b:1")
+	require.NoError(t, err)
+	require.Zero(t, removal.KeptLayers)
+	blobs, err = os.ReadDir(filepath.Join(dir, blobsDir, "sha256"))
+	require.NoError(t, err)
+	require.Empty(t, blobs)
+}
+
+func TestPullViewTerminal(t *testing.T) {
+	render := func() string {
+		var out strings.Builder
+		v := newPullView(&out, true, []string{"0123456789ab"})
+		v.set(0, "Downloading", 50, 100)
+		v.redraw()
+		v.set(0, "Pull complete", 0, 0)
+		v.close()
+		return out.String()
+	}
+
+	t.Setenv("NO_COLOR", "")
+	t.Setenv("TERM", "xterm")
+	got := render()
+	require.Contains(t, got, "\r\033[2K", "lines are cleared and redrawn")
+	require.Contains(t, got, "\033[1A", "the cursor goes back up for the next redraw")
+	require.Contains(t, got, "\033[36mDownloading")
+	require.Contains(t, got, "[====================>")
+	require.Contains(t, got, "\033[32mPull complete")
+
+	t.Setenv("NO_COLOR", "1")
+	got = render()
+	require.Contains(t, got, "\r\033[2K0123456789ab: Downloading")
+	require.NotContains(t, got, "\033[36m")
+	require.NotContains(t, got, "\033[32m")
+}
+
+func TestViewLineWidth(t *testing.T) {
+	l := viewLine{id: "0123456789ab", status: "Downloading", done: 1, total: 2}
+	require.Len(t, []rune(l.render(30, false)), 30, "cut to the terminal's width")
+	colored := l.render(30, true)
+	require.Contains(t, colored, "\033[0m")
+	require.Len(t, []rune(regexp.MustCompile("\033\\[[0-9;]*m").ReplaceAllString(colored, "")), 30, "escape codes don't count")
 }

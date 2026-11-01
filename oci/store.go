@@ -50,6 +50,7 @@ type Image struct {
 	Created   time.Time `json:"created"`    // when it was pulled
 	Size      int64     `json:"size"`       // compressed layer bytes, as registries report it
 	DiskBytes int64     `json:"disk_bytes"` // space rootfs.img takes on the Mac
+	Layers    []string  `json:"layers"`     // layer digests, kept in the blob cache
 }
 
 // ShortID is the first 12 hex digits of the ID.
@@ -172,7 +173,8 @@ func (s *Store) List() ([]Image, error) {
 // PullOptions configures Pull.
 type PullOptions struct {
 	Platform v1.Platform // default linux/arm64
-	Log      io.Writer   // progress lines; nil discards them
+	Log      io.Writer   // progress; nil discards it
+	TTY      bool        // Log is a terminal: redraw progress in place
 }
 
 // Pull fetches ref from its registry and converts it, unless the same image
@@ -211,7 +213,7 @@ func (s *Store) Pull(ctx context.Context, ref string, opts PullOptions) (Image, 
 	defer unlock()
 
 	if img, err := s.read(id); err == nil {
-		fmt.Fprintf(logw, "%s is up to date (%s)\n", Display(r.Name()), img.ShortID())
+		fmt.Fprintf(logw, "%s %s\n", paint(useColor(opts.TTY), styleGreen, Display(r.Name())+" is up to date"), paint(useColor(opts.TTY), styleDim, "("+img.ShortID()+")"))
 		return s.addRef(img, r.Name())
 	}
 
@@ -227,12 +229,30 @@ func (s *Store) Pull(ctx context.Context, ref string, opts PullOptions) (Image, 
 		return Image{}, err
 	}
 	var size int64
-	for _, l := range layers {
+	ids := make([]string, len(layers))
+	digests := make([]string, len(layers))
+	for i, l := range layers {
 		if n, err := l.Size(); err == nil {
 			size += n
 		}
+		d, err := l.Digest()
+		if err != nil {
+			return Image{}, err
+		}
+		ids[i], digests[i] = d.Hex[:12], d.String()
 	}
-	fmt.Fprintf(logw, "Pulling %s (%d layers, %s)...\n", Display(r.Name()), len(layers), HumanSize(size))
+	plural := "s"
+	if len(layers) == 1 {
+		plural = ""
+	}
+	color := useColor(opts.TTY)
+	fmt.Fprintf(logw, "%s %s\n", paint(color, styleBold, "Pulling "+Display(r.Name())), paint(color, styleDim, fmt.Sprintf("(%d layer%s, %s)", len(layers), plural, HumanSize(size))))
+	start := time.Now()
+	view := newPullView(logw, opts.TTY, ids)
+	defer view.close()
+	if err := s.download(ctx, layers, view); err != nil {
+		return Image{}, fmt.Errorf("pulling %s: %w", Display(r.Name()), err)
+	}
 
 	// Convert into a temporary directory and rename, so an interrupted pull
 	// never leaves a half-written image behind.
@@ -241,18 +261,27 @@ func (s *Store) Pull(ctx context.Context, ref string, opts PullOptions) (Image, 
 		return Image{}, err
 	}
 	defer os.RemoveAll(tmp)
-	start := time.Now()
+	summary := view.add("conversion", "Converting")
+	cached, err := s.fromCache(remoteImg, layers, view, summary)
+	if err != nil {
+		return Image{}, err
+	}
 	var stats ConvertStats
 	for fsSize := EstimateDiskSize(size); ; fsSize *= 2 {
-		stats, err = Convert(remoteImg, filepath.Join(tmp, diskFile), fsSize)
+		stats, err = Convert(cached, filepath.Join(tmp, diskFile), fsSize)
 		if !errors.Is(err, errFull) || fsSize >= 1<<40 {
 			break
 		}
-		fmt.Fprintf(logw, "%s doesn't fit in %s; retrying with %s\n", Display(r.Name()), HumanSize(fsSize), HumanSize(2*fsSize))
+		view.set(summary, fmt.Sprintf("Retrying in %s", HumanSize(2*fsSize)), 0, 0)
 	}
 	if err != nil {
 		return Image{}, fmt.Errorf("converting %s: %w", Display(r.Name()), err)
 	}
+	for i := range layers {
+		view.set(i, "Pull complete", 0, 0)
+	}
+	view.set(summary, "Converted to ext4", 0, 0)
+	view.close()
 	img := Image{
 		ID:        id,
 		Config:    cf.Config,
@@ -260,6 +289,7 @@ func (s *Store) Pull(ctx context.Context, ref string, opts PullOptions) (Image, 
 		Created:   time.Now(),
 		Size:      size,
 		DiskBytes: stats.DiskBytes,
+		Layers:    digests,
 	}
 	if err := writeJSON(filepath.Join(tmp, imageFile), img); err != nil {
 		return Image{}, err
@@ -267,26 +297,37 @@ func (s *Store) Pull(ctx context.Context, ref string, opts PullOptions) (Image, 
 	if err := os.Rename(tmp, filepath.Join(s.dir, id)); err != nil {
 		return Image{}, err
 	}
-	fmt.Fprintf(logw, "Converted %s in %s (%s on disk)\n", Display(r.Name()), time.Since(start).Round(100*time.Millisecond), HumanSize(stats.DiskBytes))
+	fmt.Fprintf(logw, "%s %s\n", paint(color, styleGreen, "Pulled "+Display(r.Name())), paint(color, styleDim, fmt.Sprintf("in %s (%s on disk)", time.Since(start).Round(100*time.Millisecond), HumanSize(stats.DiskBytes))))
 	return s.addRef(img, r.Name())
+}
+
+// Removal describes what Remove did.
+type Removal struct {
+	Image   Image
+	Deleted bool // false: only the reference was dropped (others remain)
+	// KeptLayers counts the image's cached layers kept because other
+	// images (SharedWith) use them.
+	KeptLayers int
+	SharedWith []string
 }
 
 // Remove deletes an image by reference or ID. Removing by reference only
 // drops that reference while others remain; the image itself goes with its
-// last reference, or at once when removed by ID.
-func (s *Store) Remove(ref string) (removed Image, deleted bool, err error) {
+// last reference, or at once when removed by ID. Cached layers go with the
+// last image that uses them.
+func (s *Store) Remove(ref string) (Removal, error) {
 	unlock, err := s.lock()
 	if err != nil {
-		return Image{}, false, err
+		return Removal{}, err
 	}
 	defer unlock()
 	img, err := s.Lookup(ref)
 	if err != nil {
-		return Image{}, false, err
+		return Removal{}, err
 	}
 	refs, err := s.readRefs()
 	if err != nil {
-		return Image{}, false, err
+		return Removal{}, err
 	}
 	byRef := false
 	if norm, err := Normalize(ref); err == nil {
@@ -298,9 +339,9 @@ func (s *Store) Remove(ref string) (removed Image, deleted bool, err error) {
 	}
 	if byRef && len(img.Refs) > 0 {
 		if err := s.writeRefs(refs); err != nil {
-			return Image{}, false, err
+			return Removal{}, err
 		}
-		return img, false, writeJSON(filepath.Join(s.dir, img.ID, imageFile), img)
+		return Removal{Image: img}, writeJSON(filepath.Join(s.dir, img.ID, imageFile), img)
 	}
 	for r, id := range refs {
 		if id == img.ID {
@@ -308,9 +349,26 @@ func (s *Store) Remove(ref string) (removed Image, deleted bool, err error) {
 		}
 	}
 	if err := s.writeRefs(refs); err != nil {
-		return Image{}, false, err
+		return Removal{}, err
 	}
-	return img, true, os.RemoveAll(filepath.Join(s.dir, img.ID))
+	if err := os.RemoveAll(filepath.Join(s.dir, img.ID)); err != nil {
+		return Removal{}, err
+	}
+	r := Removal{Image: img, Deleted: true}
+	owners := s.layerOwners()
+	seen := map[string]bool{}
+	for _, d := range img.Layers {
+		if names := owners[d]; len(names) > 0 {
+			r.KeptLayers++
+			for _, n := range names {
+				if !seen[n] {
+					seen[n] = true
+					r.SharedWith = append(r.SharedWith, n)
+				}
+			}
+		}
+	}
+	return r, s.pruneBlobs()
 }
 
 func (s *Store) addRef(img Image, ref string) (Image, error) {
