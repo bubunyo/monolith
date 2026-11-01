@@ -1,0 +1,4 @@
+# Protobuf for monolith-init's ttRPC API; `make proto` regenerates the Go code.
+version: v2
+modules:
+  - path: containerinit/agentpb

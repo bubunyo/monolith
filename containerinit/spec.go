@@ -1,8 +1,9 @@
 // Package containerinit is shared by monolith-init, the PID 1 of container
-// VMs (cmd/monolith-init), and the daemon that runs them: the spec the init
-// reads from its initrd, the messages they exchange over vsock, and the
-// logic that turns an image's config into a process (user, environment,
-// PATH lookup). It has no Linux-only code, so it's tested on the Mac.
+// VMs (cmd/monolith-init), and the daemon that runs them: the container's
+// process spec and the logic that turns an image's config into a process
+// (command, user, environment, PATH lookup, signals). Their API is the
+// Agent ttRPC service in agentpb. It has no Linux-only code, so it's tested
+// on the Mac.
 package containerinit
 
 import (
@@ -11,13 +12,11 @@ import (
 	"strings"
 )
 
-// SpecPath is where the spec sits in the initrd.
-const SpecPath = "/spec.json"
-
-// VsockPort is the port the init listens on for the daemon.
+// VsockPort is the vsock port the init serves the Agent API on.
 const VsockPort = 1025
 
-// Spec describes the container's process.
+// Spec describes the container's process. It's saved in the container's
+// config and sent to the init in agentpb.StartRequest.
 type Spec struct {
 	Args     []string `json:"args"`              // command and arguments; Args[0] is looked up in PATH
 	Env      []string `json:"env,omitempty"`     // KEY=VALUE, image env then user overrides
@@ -26,32 +25,6 @@ type Spec struct {
 	Hostname string   `json:"hostname,omitempty"`
 	TTY      bool     `json:"tty,omitempty"` // run on a terminal (the console), stdin attached
 }
-
-// Message is one line of JSON on the vsock connection between the daemon
-// and the init. The daemon connects; the init waits for "start" before
-// running the process, so no output or exit is missed, and waits for "ack"
-// after "exit" before powering off, so the exit code isn't lost.
-type Message struct {
-	Op     string `json:"op"`
-	PID    int    `json:"pid,omitempty"`    // started
-	Code   int    `json:"code,omitempty"`   // exit
-	Signal int    `json:"signal,omitempty"` // signal
-	Rows   uint16 `json:"rows,omitempty"`   // resize
-	Cols   uint16 `json:"cols,omitempty"`   // resize
-	Error  string `json:"error,omitempty"`  // exit: why the process couldn't run
-}
-
-// Message ops. Daemon to init: start, signal, resize, ack. Init to daemon:
-// ready, started, exit.
-const (
-	OpReady   = "ready"
-	OpStart   = "start"
-	OpStarted = "started"
-	OpSignal  = "signal"
-	OpResize  = "resize"
-	OpExit    = "exit"
-	OpAck     = "ack"
-)
 
 // Exit codes the init reports when the process can't run, as Docker does.
 const (

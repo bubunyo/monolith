@@ -1,4 +1,4 @@
-.PHONY: all build install init run exec test test-vm lint dist clean
+.PHONY: all build install init proto run exec test test-vm lint dist clean
 
 # Read signing identity from .codesign_identity file if it exists,
 # fall back to ad-hoc signing (-). Override with CODESIGN_IDENTITY env var.
@@ -17,6 +17,18 @@ all: build
 
 # monolith-init, PID 1 of container VMs, embedded in monolith (vm/guestinit).
 INIT_BIN := vm/guestinit/files/monolith-init
+
+# Regenerate the protobuf/ttRPC code for monolith-init's API
+# (containerinit/agentpb). The generated files are committed; this needs only Go.
+BUF_VERSION := v1.75.0
+PROTOBUF_VERSION := $(shell go list -mod=mod -m -f '{{.Version}}' google.golang.org/protobuf)
+TTRPC_VERSION := $(shell go list -mod=mod -m -f '{{.Version}}' github.com/containerd/ttrpc)
+TOOLS := $(CURDIR)/bin/tools
+
+proto:
+	@GOBIN=$(TOOLS) go install google.golang.org/protobuf/cmd/protoc-gen-go@$(PROTOBUF_VERSION)
+	@GOBIN=$(TOOLS) go install github.com/containerd/ttrpc/cmd/protoc-gen-go-ttrpc@$(TTRPC_VERSION)
+	@PATH="$(TOOLS):$$PATH" go run github.com/bufbuild/buf/cmd/buf@$(BUF_VERSION) generate
 
 init:
 	@GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o $(INIT_BIN) ./cmd/monolith-init

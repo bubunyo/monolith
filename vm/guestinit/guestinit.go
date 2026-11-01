@@ -1,17 +1,20 @@
 // Package guestinit embeds monolith-init (cmd/monolith-init, built for
-// linux/arm64 by `make build`) and packs it with a container's spec into
-// the initrd a container VM boots from.
+// linux/arm64 by `make build`) and packs it into the initrd container VMs
+// boot from. The container's spec isn't in it: the daemon sends it over
+// the Agent API, so one initrd serves every container.
 package guestinit
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"embed"
-	"encoding/json"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 
-	ci "github.com/bubunyo/monolith/containerinit"
+	"github.com/bubunyo/monolith"
 )
 
 //go:embed files
@@ -27,21 +30,45 @@ func Binary() ([]byte, error) {
 	return data, err
 }
 
-// WriteInitrd writes an initrd (cpio, newc format) holding the init as
-// /init and spec as /spec.json.
-func WriteInitrd(path string, init []byte, spec ci.Spec) error {
-	specJSON, err := json.Marshal(spec)
+// Initrd returns the initrd (cpio, newc format) holding the embedded init
+// as /init, writing it on first use to the cache, named by the init's hash
+// so a new monolith brings its own.
+func Initrd() (string, error) {
+	init, err := Binary()
 	if err != nil {
-		return err
+		return "", err
+	}
+	sum := sha256.Sum256(init)
+	path, err := monolith.CachePath("container", "initrd-"+hex.EncodeToString(sum[:6])+".img")
+	if err != nil {
+		return "", err
+	}
+	if _, err := os.Stat(path); err == nil {
+		return path, nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return "", err
 	}
 	data := Cpio([]CpioEntry{
 		{Name: "dev", Mode: 040755},
 		{Name: "proc", Mode: 040755},
 		{Name: "newroot", Mode: 040755},
 		{Name: "init", Mode: 0100755, Data: init},
-		{Name: ci.SpecPath[1:], Mode: 0100644, Data: specJSON},
 	})
-	return os.WriteFile(path, data, 0644)
+	// A unique temporary file: containers may start at the same time.
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".initrd-*")
+	if err != nil {
+		return "", err
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return "", err
+	}
+	if err := tmp.Close(); err != nil {
+		return "", err
+	}
+	return path, os.Rename(tmp.Name(), path)
 }
 
 // CpioEntry is a file or directory in a cpio archive. Mode includes the
