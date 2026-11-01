@@ -114,6 +114,11 @@ func CreateContainer(name string, cfg VMConfig, imageDisk string) error {
 	if err != nil {
 		return err
 	}
+	// The parent may not exist yet (no VM made so far); the container's own
+	// directory must be new, so two runs can't claim the same name.
+	if err := os.MkdirAll(filepath.Dir(dir), 0755); err != nil {
+		return err
+	}
 	if err := os.Mkdir(dir, 0755); err != nil {
 		if errors.Is(err, fs.ErrExist) {
 			return fmt.Errorf("a VM or container named %q already exists", name)

@@ -130,6 +130,60 @@ func TestContainerRun(t *testing.T) {
 		require.NotContains(t, out, name)
 	})
 
+	t.Run("prune", func(t *testing.T) {
+		// prune removes every stopped container, so this runs against its
+		// own cache (sharing the Kata kernel) rather than the user's. Under
+		// /tmp: the daemon's socket path must fit macOS's 104 bytes.
+		home, err := os.MkdirTemp("/tmp", "ml-")
+		require.NoError(t, err)
+		t.Cleanup(func() { os.RemoveAll(home) })
+		realHome, err := os.UserHomeDir()
+		require.NoError(t, err)
+		require.NoError(t, os.MkdirAll(filepath.Join(home, ".cache/monolith"), 0755))
+		require.NoError(t, os.Symlink(filepath.Join(realHome, ".cache/monolith/kata"), filepath.Join(home, ".cache/monolith/kata")))
+		isolated := func(args ...string) (string, int) {
+			cmd := exec.Command(binary, append([]string{"container"}, args...)...)
+			cmd.Env = append(os.Environ(), "HOME="+home)
+			out, err := cmd.CombinedOutput()
+			var exit *exec.ExitError
+			if errors.As(err, &exit) {
+				return string(out), exit.ExitCode()
+			}
+			require.NoError(t, err)
+			return string(out), 0
+		}
+		t.Cleanup(func() { isolated("rm", "-f", "p-running") })
+
+		_, code := isolated("run", "--name", "p-stopped", alpine, "sh", "-c", "head -c 3000000 /dev/urandom > /blob")
+		require.Zero(t, code)
+		out, code := isolated("run", "-d", "--name", "p-running", alpine, "sleep", "300")
+		require.Zero(t, code, out)
+
+		out, code = isolated("prune", "-f")
+		require.Zero(t, code, out)
+		require.Contains(t, out, "Deleted p-stopped")
+		require.NotContains(t, out, "p-running")
+		require.Regexp(t, `Reclaimed [0-9.]+MB`, out, "the 3 MB the container wrote")
+		out, _ = isolated("ps", "-a")
+		require.Contains(t, out, "p-running")
+		require.NotContains(t, out, "p-stopped")
+
+		out, code = isolated("prune", "-f")
+		require.Zero(t, code)
+		require.Contains(t, out, "Nothing to prune.")
+
+		// alpine is used by p-running: image prune -a keeps it until it's gone.
+		out, _ = isolated("image", "prune", "-a", "-f")
+		require.Contains(t, out, "Nothing to prune.")
+		_, code = isolated("rm", "-f", "p-running")
+		require.Zero(t, code)
+		out, code = isolated("image", "prune", "-a", "-f")
+		require.Zero(t, code, out)
+		require.Contains(t, out, "Deleted alpine:3.21")
+		out, _ = isolated("images")
+		require.NotContains(t, out, "alpine")
+	})
+
 	t.Run("detached --rm removes itself", func(t *testing.T) {
 		out, code := monolith("run", "-d", "--rm", "--name", "e2e-drm", alpine, "true")
 		require.Zero(t, code, out)

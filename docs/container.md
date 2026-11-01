@@ -52,7 +52,9 @@ container still only has a VM with nothing in it but itself.
 | `start [-a] NAME...` | Run a stopped container again with its disk as it was. `-a` attaches and exits with its code. |
 | `attach NAME` | Attach to a running container. |
 | `rm [-f] NAME...` | Remove stopped containers; `-f` kills running ones first. |
+| `prune [-f]` | Remove all stopped containers, after listing them with the space each gives back (what it wrote on top of its image). |
 | `pull IMAGE`, `images`, `rmi [-f] IMAGE...` | Manage local images. |
+| `image prune [-a] [-f]` | Remove untagged images; with `-a`, every image no container was created from. Cached layers no image needs go too. |
 
 With `-it`, every key goes to the container, Ctrl+C included. **Ctrl+P
 Ctrl+Q** detaches and leaves it running. Without `-t`, Ctrl+C is delivered to

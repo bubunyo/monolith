@@ -37,7 +37,7 @@ monolith vm suspend <name>    # snapshot VM state to disk (restore needs the Mac
 monolith vm stop <name>       # stop: request shutdown, force after 10s (--force: immediately). On a suspended VM, discards the snapshot
 monolith vm list              # table: name, state, image, ip, net, cpus, mem, disk, uptime
 monolith vm rm <name>         # delete a VM (prompts for confirmation)
-monolith vm prune             # remove all stopped VMs
+monolith vm prune             # remove all stopped VMs (not containers: container prune)
 monolith vm top <name>        # bubbletea TUI dashboard for a running VM
 monolith vm logs <name>       # stream the daemon log for a VM
 
@@ -81,6 +81,8 @@ monolith container stop [-t 10] NAME...           # the image's STOPSIGNAL (defa
 monolith container start [-a] NAME...             # boot again with the same disk; -a attaches and exits with the code
 monolith container attach NAME                    # -t containers: Ctrl+P Ctrl+Q detaches
 monolith container rm [-f] NAME...                # -f kills running ones first
+monolith container prune [-f]                     # remove stopped containers (asks; size = what each wrote)
+monolith container image prune [-a] [-f]          # untagged images (-a: every image no container uses) + unused layers
 monolith container pull IMAGE | images | rmi [-f] IMAGE...
 ```
 
@@ -159,6 +161,7 @@ monolith/
                             CreateContainer, boot, attach in the foreground (exit code, --rm)
       manage.go           — "container ps|logs|stop|start|rm|attach"
       images.go           — "container pull|images|rmi"
+      prune.go            — "container prune", "container image prune"
       kube.go             — "docker kubeconfig", kubeconfig fetch/rewrite, merge into $KUBECONFIG or ~/.kube/config, readiness
       context.go          — creates/selects/removes the docker CLI context docker-<name> (shells out to docker)
       list.go             — "docker list": docker VMs with context and forwarded ports (from the daemon's status reply)
@@ -222,6 +225,7 @@ monolith/
     paths.go              — NetworksDir, NetworkDir, NetworkLogPath.
     network_subnet_test.go — named-network subnet tests (via ../bin/monolith).
   paths.go                — CachePath(): root of every ~/.cache/monolith path.
+  privatesize.go          — PrivateSize(path): a file's bytes not shared with its APFS clones.
   process.go              — ProcessAlive(pid).
   logger.go / logs.go     — Logger and log-file streaming used by both daemons and `logs` commands.
   entitlements.go         — runtime entitlement checks and OwnCodeRequirement() (CDHash of this binary).
@@ -389,6 +393,7 @@ Alpine guest configuration:
 - **Boot**: Kata's kernel (shared with the kata image), one initrd for all containers (`guestinit.Initrd`: just `/init` = monolith-init, cached as `container/initrd-<hash of the init>.img`), `/dev/vda` = the clone, user-mode network, vsock. Command line `console=hvc0 quiet loglevel=1 ip=dhcp rdinit=/init panic=-1`: the kernel configures eth0 by DHCP, so images need no client, and the init turns `/proc/net/pnp` into resolv.conf.
 - **monolith-init** (`cmd/monolith-init`): mounts devtmpfs/proc in the initrd, the disk at /newroot plus proc, sys, dev, devpts, shm, mqueue, cgroup2; creates the /dev links runc makes (`/dev/stdout`, `stderr`, `stdin`, `fd`, `ptmx`); writes hostname, hosts, resolv.conf; moves into the disk (MS_MOVE + chroot). Then it serves the **Agent ttRPC API** (protobuf, `containerinit/agentpb/agent.proto`) on vsock 1025 via `mdlayher/vsock`; a setup failure is kept and reported by `Wait`. `Start(spec)` writes hostname/hosts/resolv.conf, resolves user/groups from the image's passwd/group (runc semantics), builds the env (PATH, HOME, HOSTNAME, TERM for -t), looks up the command (127 not found, 126 not executable, 125 init errors), sets RLIMIT_NOFILE 1048576, and runs it on `/dev/hvc0` (a terminal with -t, raw otherwise, stdin /dev/null without -t). A process that can't run "exits" at once with its code, so `Start` only fails if called twice. It reaps everything; `Signal` and `ResizeTTY` act on the process and hvc0; `Wait` blocks until the exit. When the main process exits the init kills the rest, remounts / read-only and waits (2s) for `Shutdown`, which the daemon sends once it has `Wait`'s reply, before powering off. Every failure becomes exit 125 and a normal power-off: a crash in PID 1 panics the kernel.
 - **Daemon** (`containerAgent`, `vm/container_agent.go`): dials vsock 1025 after boot and makes a ttRPC client on the vz connection. It calls `Start` (with the spec from `config.json`) at once, or (with `attach`) when the first console client attaches, so a foreground run sees all output (30s cap); then `Wait`, then `Shutdown`. The exit is written to `exit.json` before the daemon's socket is removed (clients take the socket going away to mean the status is there). `stop` sends the image's STOPSIGNAL (Linux numbers via `LinuxSignal`), SIGKILL after the timeout, then forces the VM off; a VM that stops without a `Wait` reply records 137 if a stop was asked for, else 255. `CmdSignal` calls `Signal`; `CmdResize` also calls `ResizeTTY`. `TestContainerAgentProtocol` runs the client against a fake init over a pipe. Suspend to disk is refused for containers for now (vsock doesn't survive a restore). The console is always logged to `console.log`.
+- **Prune** (`cli/container/prune.go`): `container prune` removes containers that aren't running, paused or suspended; `container image prune` removes untagged images, or with `-a` every image no container's `image_id` points at, through `Store.Remove` (which also drops unused layers). Sizes use `monolith.PrivateSize` (`getattrlist` `ATTR_CMNEXT_PRIVATESIZE`): an APFS clone's blocks it doesn't share, i.e. what deleting it gives back (`du` counts shared blocks). `Store.Reclaimable` estimates an image prune: private disk bytes plus layers only those images use. `vm prune` skips containers.
 - **CLI**: foreground runs attach with `AttachContainer`; `--rm` is removed by the CLI after reading the exit code, `-d --rm` by the daemon on exit. `-i` needs `-t` for now (the console can't signal end-of-file; stdin EOF with -t sends Ctrl+D).
 
 ### Per-VM identity

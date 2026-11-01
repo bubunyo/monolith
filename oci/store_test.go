@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/bubunyo/monolith"
 	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/google/go-containerregistry/pkg/registry"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
@@ -171,10 +172,26 @@ func TestPullProgressAndSharedLayers(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, blobs, 3, "base, a and b")
 
+	// Removing a would free its disk and its own layer, not the shared base.
+	imgA, err := s.Lookup(host + "/a:1")
+	require.NoError(t, err)
+	aOnly := filepath.Join(dir, blobsDir, "sha256", strings.TrimPrefix(imgA.Layers[1], "sha256:"))
+	aOnlyInfo, err := os.Stat(aOnly)
+	require.NoError(t, err)
+	baseInfo, err := os.Stat(s.blobPath(baseDigest))
+	require.NoError(t, err)
+	diskPrivate, err := monolith.PrivateSize(s.DiskPath(imgA.ID))
+	require.NoError(t, err)
+	require.Equal(t, diskPrivate+aOnlyInfo.Size(), s.Reclaimable([]string{imgA.ID}))
+	both, err := s.Lookup(host + "/b:1")
+	require.NoError(t, err)
+	require.Greater(t, s.Reclaimable([]string{imgA.ID, both.ID}), s.Reclaimable([]string{imgA.ID})+baseInfo.Size()-1, "the base counts once both go")
+
 	// Removing a keeps the base for b and drops a's own layer.
 	removal, err := s.Remove(host + "/a:1")
 	require.NoError(t, err)
 	require.Equal(t, 1, removal.KeptLayers)
+	require.Equal(t, diskPrivate+aOnlyInfo.Size(), removal.Freed)
 	require.Equal(t, []string{host + "/b:1"}, removal.SharedWith)
 	blobs, err = os.ReadDir(filepath.Join(dir, blobsDir, "sha256"))
 	require.NoError(t, err)

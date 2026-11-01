@@ -34,7 +34,7 @@ Containers are VMs too: 'monolith vm list' shows them with IMAGE
 }
 
 func init() {
-	Cmd.AddCommand(runCmd, psCmd, logsCmd, stopCmd, startCmd, rmCmd, attachCmd, pullCmd, imagesCmd, rmiCmd)
+	Cmd.AddCommand(runCmd, psCmd, logsCmd, stopCmd, startCmd, rmCmd, attachCmd, pruneCmd, pullCmd, imagesCmd, rmiCmd, imageCmd)
 }
 
 // info is a container and its current state.

@@ -309,6 +309,7 @@ type Removal struct {
 	// images (SharedWith) use them.
 	KeptLayers int
 	SharedWith []string
+	Freed      int64 // bytes given back: the image disk's private part and deleted layers
 }
 
 // Remove deletes an image by reference or ID. Removing by reference only
@@ -351,10 +352,13 @@ func (s *Store) Remove(ref string) (Removal, error) {
 	if err := s.writeRefs(refs); err != nil {
 		return Removal{}, err
 	}
+	r := Removal{Image: img, Deleted: true}
+	if n, err := monolith.PrivateSize(s.DiskPath(img.ID)); err == nil {
+		r.Freed = n
+	}
 	if err := os.RemoveAll(filepath.Join(s.dir, img.ID)); err != nil {
 		return Removal{}, err
 	}
-	r := Removal{Image: img, Deleted: true}
 	owners := s.layerOwners()
 	seen := map[string]bool{}
 	for _, d := range img.Layers {
@@ -368,7 +372,9 @@ func (s *Store) Remove(ref string) (Removal, error) {
 			}
 		}
 	}
-	return r, s.pruneBlobs()
+	freed, err := s.pruneBlobs()
+	r.Freed += freed
+	return r, err
 }
 
 func (s *Store) addRef(img Image, ref string) (Image, error) {

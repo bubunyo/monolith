@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sync"
 
+	"github.com/bubunyo/monolith"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/klauspost/compress/zstd"
 	"golang.org/x/sync/errgroup"
@@ -212,21 +213,68 @@ func (s *Store) layerOwners() map[string][]string {
 	return owners
 }
 
-// pruneBlobs deletes cached layers no image uses.
-func (s *Store) pruneBlobs() error {
+// pruneBlobs deletes cached layers no image uses and returns the bytes it
+// freed.
+func (s *Store) pruneBlobs() (int64, error) {
 	used := s.layerOwners()
 	dir := filepath.Join(s.dir, blobsDir, "sha256")
 	entries, err := os.ReadDir(dir)
 	if os.IsNotExist(err) {
-		return nil
+		return 0, nil
 	}
 	if err != nil {
-		return err
+		return 0, err
 	}
+	var freed int64
 	for _, e := range entries {
 		if len(used["sha256:"+e.Name()]) == 0 {
-			os.Remove(filepath.Join(dir, e.Name()))
+			p := filepath.Join(dir, e.Name())
+			if fi, err := os.Stat(p); err == nil && os.Remove(p) == nil {
+				freed += fi.Size()
+			}
 		}
 	}
-	return nil
+	return freed, nil
+}
+
+// Reclaimable estimates the space removing images ids would free: the
+// part of each image's disk not shared with containers' clones, plus the
+// cached layers only those images use.
+func (s *Store) Reclaimable(ids []string) int64 {
+	removing := map[string]bool{}
+	for _, id := range ids {
+		removing[id] = true
+	}
+	images, _ := s.List()
+	keep := map[string]bool{} // layers images that stay still use
+	var total int64
+	for _, img := range images {
+		if !removing[img.ID] {
+			for _, d := range img.Layers {
+				keep[d] = true
+			}
+			continue
+		}
+		if n, err := monolith.PrivateSize(s.DiskPath(img.ID)); err == nil {
+			total += n
+		}
+	}
+	counted := map[string]bool{}
+	for _, img := range images {
+		if !removing[img.ID] {
+			continue
+		}
+		for _, d := range img.Layers {
+			if keep[d] || counted[d] {
+				continue
+			}
+			counted[d] = true
+			if h, err := v1.NewHash(d); err == nil {
+				if fi, err := os.Stat(s.blobPath(h)); err == nil {
+					total += fi.Size()
+				}
+			}
+		}
+	}
+	return total
 }
