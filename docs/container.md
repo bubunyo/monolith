@@ -55,6 +55,31 @@ container still only has a VM with nothing in it but itself.
 | `prune [-f]` | Remove all stopped containers, after listing them with the space each gives back (what it wrote on top of its image). |
 | `pull IMAGE`, `images`, `rmi [-f] IMAGE...` | Manage local images. |
 | `image prune [-a] [-f]` | Remove untagged images; with `-a`, every image no container was created from. Cached layers no image needs go too. |
+| `image inspect [--json] IMAGE` | What the image runs (entrypoint, cmd, env, workdir, user, stop signal), its ports, volumes, labels, layers and sizes. |
+| `image history [--no-trunc] IMAGE` | The build steps (Dockerfile lines) that made the image, newest first, with each layer's size. |
+| `image ls [-R] IMAGE [PATH]` | List files in the image, like `ls -l` (default `/`). |
+| `image cat IMAGE PATH` | Print a file from the image. |
+| `image cp IMAGE:PATH DEST [-f]` | Copy a file or directory out of the image (`nginx:1.29:/etc/nginx`). |
+
+## Looking inside an image without running it
+
+The `image inspect`, `history`, `ls`, `cat` and `cp` commands read the image's
+disk on the Mac. Nothing from the image runs and no VM starts, so they work on
+images without a shell (distroless, `FROM scratch`), and images that aren't
+local are pulled first.
+
+```bash
+monolith c image inspect nginx                      # what it runs, its settings, layers
+monolith c image history nginx                      # how it was built
+monolith c image ls gcr.io/distroless/static /etc   # files, like ls -l
+monolith c image cat alpine /etc/os-release
+monolith c image cp nginx:/etc/nginx ./nginx-conf   # copy out to the Mac
+```
+
+They treat the image as untrusted: it's opened read-only; symlinks are resolved
+inside the image and can't point out of it; `cp` drops setuid, setgid and
+sticky bits, keeps symlinks inside copied folders as links, never writes through
+a symlink on the Mac, and doesn't replace existing files without `-f`.
 
 With `-it`, every key goes to the container, Ctrl+C included. **Ctrl+P
 Ctrl+Q** detaches and leaves it running. Without `-t`, Ctrl+C is delivered to

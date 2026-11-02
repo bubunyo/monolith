@@ -203,9 +203,8 @@ func attachForeground(name string, tty, rm bool) error {
 	if rm {
 		removeDir(name)
 	}
-	if st.Error != "" {
-		fmt.Fprintf(os.Stderr, "monolith: %s\n", st.Error)
-	}
+	// st.Error (why the process couldn't run) was already printed on the
+	// console by monolith-init.
 	if st.Code != 0 {
 		os.Exit(st.Code)
 	}

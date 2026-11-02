@@ -51,6 +51,11 @@ type Image struct {
 	Size      int64     `json:"size"`       // compressed layer bytes, as registries report it
 	DiskBytes int64     `json:"disk_bytes"` // space rootfs.img takes on the Mac
 	Layers    []string  `json:"layers"`     // layer digests, kept in the blob cache
+
+	// Recorded since `image history`; empty for images pulled before.
+	LayerSizes []int64      `json:"layer_sizes,omitempty"` // compressed, in Layers order
+	Built      time.Time    `json:"built,omitzero"`        // when the image was built
+	History    []v1.History `json:"history,omitempty"`     // the build steps (Dockerfile lines)
 }
 
 // ShortID is the first 12 hex digits of the ID.
@@ -231,9 +236,11 @@ func (s *Store) Pull(ctx context.Context, ref string, opts PullOptions) (Image, 
 	var size int64
 	ids := make([]string, len(layers))
 	digests := make([]string, len(layers))
+	layerSizes := make([]int64, len(layers))
 	for i, l := range layers {
 		if n, err := l.Size(); err == nil {
 			size += n
+			layerSizes[i] = n
 		}
 		d, err := l.Digest()
 		if err != nil {
@@ -283,13 +290,16 @@ func (s *Store) Pull(ctx context.Context, ref string, opts PullOptions) (Image, 
 	view.set(summary, "Converted to ext4", 0, 0)
 	view.close()
 	img := Image{
-		ID:        id,
-		Config:    cf.Config,
-		Platform:  opts.Platform.OS + "/" + opts.Platform.Architecture,
-		Created:   time.Now(),
-		Size:      size,
-		DiskBytes: stats.DiskBytes,
-		Layers:    digests,
+		ID:         id,
+		Config:     cf.Config,
+		Platform:   opts.Platform.OS + "/" + opts.Platform.Architecture,
+		Created:    time.Now(),
+		Size:       size,
+		DiskBytes:  stats.DiskBytes,
+		Layers:     digests,
+		LayerSizes: layerSizes,
+		Built:      cf.Created.Time,
+		History:    cf.History,
 	}
 	if err := writeJSON(filepath.Join(tmp, imageFile), img); err != nil {
 		return Image{}, err

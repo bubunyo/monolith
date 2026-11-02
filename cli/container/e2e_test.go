@@ -130,6 +130,37 @@ func TestContainerRun(t *testing.T) {
 		require.NotContains(t, out, name)
 	})
 
+	t.Run("image inspection", func(t *testing.T) {
+		// Read on the Mac, so it works on images without a shell.
+		const distroless = "gcr.io/distroless/static-debian12"
+		out, code := monolith("image", "cat", distroless, "/etc/passwd")
+		require.Zero(t, code, out)
+		require.Contains(t, out, "nonroot:x:65532:65532")
+		out, code = monolith("image", "ls", distroless, "/")
+		require.Zero(t, code, out)
+		require.Regexp(t, `(?m)^drwxrwxrwt root +root .* tmp$`, out)
+
+		out, code = monolith("image", "cat", alpine, "/etc/os-release")
+		require.Zero(t, code, out)
+		require.Contains(t, out, `NAME="Alpine Linux"`, "through the os-release symlink")
+		out, code = monolith("image", "inspect", "nginx:1.29")
+		require.Zero(t, code, out)
+		require.Regexp(t, `Stop signal: +SIGQUIT`, out)
+		require.Contains(t, out, "80/tcp")
+		out, code = monolith("image", "inspect", "--json", alpine)
+		require.Zero(t, code, out)
+		require.Contains(t, out, `"Cmd": [`)
+		require.NotContains(t, out, `"built": "0001`, "zero times are left out")
+
+		dest := t.TempDir()
+		out, code = monolith("image", "cp", "nginx:1.29:/etc/nginx", dest)
+		require.Zero(t, code, out)
+		require.FileExists(t, filepath.Join(dest, "nginx", "nginx.conf"))
+		out, code = monolith("image", "cp", "nginx:1.29:/etc/nginx", dest)
+		require.NotZero(t, code)
+		require.Contains(t, out, "already exists (use -f)")
+	})
+
 	t.Run("prune", func(t *testing.T) {
 		// prune removes every stopped container, so this runs against its
 		// own cache (sharing the Kata kernel) rather than the user's. Under
