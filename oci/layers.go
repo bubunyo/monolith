@@ -123,11 +123,20 @@ type cachedLayer struct {
 }
 
 func (c *cachedLayer) Uncompressed() (io.ReadCloser, error) {
-	f, err := os.Open(c.path)
+	return openBlob(c.path, func(n int64) { c.progress(n, n >= c.size) })
+}
+
+// openBlob opens a cached layer as its uncompressed tar (gzip, zstd or
+// plain, by magic), reporting compressed bytes read through progress.
+func openBlob(path string, progress func(int64)) (io.ReadCloser, error) {
+	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
-	counted := &countingReader{r: f, fn: func(n int64) { c.progress(n, n >= c.size) }}
+	if progress == nil {
+		progress = func(int64) {}
+	}
+	counted := &countingReader{r: f, fn: progress}
 	br := bufio.NewReader(counted)
 	magic, _ := br.Peek(4)
 	var r io.Reader = br

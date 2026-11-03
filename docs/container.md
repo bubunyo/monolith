@@ -55,6 +55,58 @@ container still only has a VM with nothing in it but itself.
 | `prune [-f]` | Remove all stopped containers, after listing them with the space each gives back (what it wrote on top of its image). |
 | `pull IMAGE`, `images`, `rmi [-f] IMAGE...` | Manage local images. |
 | `image prune [-a] [-f]` | Remove untagged images; with `-a`, every image no container was created from. Cached layers no image needs go too. |
+| `image inspect [--json] IMAGE` | What the image runs (entrypoint, cmd, env, workdir, user, stop signal), its ports, volumes, labels, layers and sizes. |
+| `image history [--no-trunc] IMAGE` | The build steps (Dockerfile lines) that made the image, newest first, with each layer's size. |
+| `image ls [-R] IMAGE [PATH]` | List files in the image, like `ls -l` (default `/`). |
+| `image cat IMAGE PATH` | Print a file from the image. |
+| `image cp IMAGE:PATH DEST [-f]` | Copy a file or directory out of the image (`nginx:1.29:/etc/nginx`). |
+| `image sh IMAGE [-c COMMANDS]` | A shell for exploring the image and each of its layers (see below). |
+
+## Looking inside an image without running it
+
+The `image inspect`, `history`, `ls`, `cat` and `cp` commands read the image's
+disk on the Mac. Nothing from the image runs and no VM starts, so they work on
+images without a shell (distroless, `FROM scratch`), and images that aren't
+local are pulled first.
+
+```bash
+monolith c image inspect nginx                      # what it runs, its settings, layers
+monolith c image history nginx                      # how it was built
+monolith c image ls gcr.io/distroless/static /etc   # files, like ls -l
+monolith c image cat alpine /etc/os-release
+monolith c image cp nginx:/etc/nginx ./nginx-conf   # copy out to the Mac
+```
+
+### Exploring layers: `image sh`
+
+`monolith c image sh IMAGE` opens monolith's own shell over the image (again,
+nothing from the image runs). Besides browsing (`ls`, `cd`, `tree`, `find`,
+`cat`, `head`, `less`, `stat`, `du`, `cp`), it knows the layers:
+
+```
+nginx:1.29:/$ layers
+#  LAYER         SIZE    ADDED  CHANGED  DELETED  STEP
+0  9ebf9a1d0c9c  30.1MB  3256   0        0        # debian.sh --arch 'arm64' …
+1  0cbb36225b64  31.1MB  1736   20       0        RUN /bin/sh -c set -x && groupadd …
+2  723390212024  627B    1      0        0        COPY docker-entrypoint.sh /
+nginx:1.29:/$ blame /etc/passwd
+layer 0 (9ebf9a1d0c9c) added it: # debian.sh --arch 'arm64' …
+layer 1 (0cbb36225b64) changed it: RUN /bin/sh -c set -x && groupadd …
+nginx:1.29:/$ layer 2                  # browse only what layer 2 contains
+nginx:1.29[layer 2]:/$ changes        # what it added (A), changed (M), deleted (D)
+nginx:1.29[layer 2]:/$ merged         # back to the whole image
+```
+
+It has line editing, history and Tab completion. Commands can be joined with
+`;` and `&&` (no pipes or redirection); `-c` runs commands without a prompt,
+and its output can be piped on the Mac:
+`monolith c image sh nginx -c "find / -name '*.conf'" | grep ssl`. Images
+pulled before monolith kept layers fetch them the first time they're needed.
+
+They treat the image as untrusted: it's opened read-only; symlinks are resolved
+inside the image and can't point out of it; `cp` drops setuid, setgid and
+sticky bits, keeps symlinks inside copied folders as links, never writes through
+a symlink on the Mac, and doesn't replace existing files without `-f`.
 
 With `-it`, every key goes to the container, Ctrl+C included. **Ctrl+P
 Ctrl+Q** detaches and leaves it running. Without `-t`, Ctrl+C is delivered to
