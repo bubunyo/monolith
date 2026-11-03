@@ -161,6 +161,31 @@ func TestContainerRun(t *testing.T) {
 		require.Contains(t, out, "already exists (use -f)")
 	})
 
+	t.Run("image sh", func(t *testing.T) {
+		out, code := monolith("image", "sh", "nginx:1.29", "-c", "layers")
+		require.Zero(t, code, out)
+		require.Regexp(t, `(?m)^2 +723390212024 .* COPY docker-entrypoint.sh /$`, out)
+		out, code = monolith("image", "sh", "nginx:1.29", "-c", "blame /etc/passwd")
+		require.Zero(t, code, out)
+		require.Contains(t, out, "layer 0 (9ebf9a1d0c9c) added it")
+		require.Contains(t, out, "changed it: RUN")
+		out, code = monolith("image", "sh", "nginx:1.29", "-c", "layer 2; ls /; cat /docker-entrypoint.sh && merged && cd /etc/nginx && pwd")
+		require.Zero(t, code, out)
+		require.Contains(t, out, "docker-entrypoint.sh\n#!/bin/sh")
+		require.Contains(t, out, "/etc/nginx\n")
+		out, code = monolith("image", "sh", "nginx:1.29", "-c", "changes 1 /etc/nginx")
+		require.Zero(t, code, out)
+		require.Contains(t, out, "A /etc/nginx/nginx.conf")
+
+		// Images pulled before the layer cache fetch their layers once.
+		out, code = monolith("image", "sh", alpine, "-c", "layers")
+		require.Zero(t, code, out)
+		require.Regexp(t, `(?m)^0 +[0-9a-f]{12} `, out)
+
+		_, code = monolith("image", "sh", alpine, "-c", "ls / | head")
+		require.NotZero(t, code, "pipes are refused")
+	})
+
 	t.Run("prune", func(t *testing.T) {
 		// prune removes every stopped container, so this runs against its
 		// own cache (sharing the Kata kernel) rather than the user's. Under

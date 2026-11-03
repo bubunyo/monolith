@@ -22,8 +22,9 @@ engine that runs each container in its own VM.
   each container in its own small VM (Kata's kernel, monolith's own init), so
   every container has its own kernel. Docker-style commands (`run -it/-d`,
   `ps`, `logs`, `stop`, `start`, `rm`, `prune`, `images`), image inspection
-  without running it (`image inspect`, `history`, `ls`, `cat`, `cp`, even for
-  images without a shell), about 0.6s from
+  without running it (`image inspect`, `history`, `ls`, `cat`, `cp`, and
+  `image sh`, a shell for exploring each layer, even for images without a
+  shell), about 0.6s from
   `run` to exit, per-container `--cpus`/`--memory`/`--disk`, and live,
   coloured pull progress with a shared layer cache. Not yet: `exec`, `-p`
   and `-v` ([docs/container.md](docs/container.md)).

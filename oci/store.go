@@ -88,6 +88,10 @@ func OpenAt(dir string) (*Store, error) {
 	return &Store{dir: dir}, nil
 }
 
+func (s *Store) imagePath(id string) string {
+	return filepath.Join(s.dir, id, imageFile)
+}
+
 // DiskPath is the root filesystem image of image id.
 func (s *Store) DiskPath(id string) string {
 	return filepath.Join(s.dir, id, diskFile)

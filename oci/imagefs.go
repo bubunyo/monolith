@@ -112,44 +112,7 @@ func (f *ImageFS) entry(p string, fi fs.FileInfo) (Entry, error) {
 
 // Resolve follows symlinks in every component of p, inside the image, and
 // returns the path they lead to.
-func (f *ImageFS) Resolve(p string) (string, error) {
-	todo := strings.Split(strings.TrimPrefix(clean(p), "/"), "/")
-	var done []string
-	hops := 0
-	for len(todo) > 0 {
-		c := todo[0]
-		todo = todo[1:]
-		switch c {
-		case "", ".":
-			continue
-		case "..":
-			if len(done) > 0 {
-				done = done[:len(done)-1]
-			}
-			continue
-		}
-		cur := "/" + path.Join(append(done, c)...)
-		e, err := f.Lstat(cur)
-		if err != nil {
-			return "", fmt.Errorf("%s: no such file or directory", clean(p))
-		}
-		if !e.IsSymlink() {
-			if len(todo) > 0 && !e.IsDir() {
-				return "", fmt.Errorf("%s: not a directory", cur)
-			}
-			done = append(done, c)
-			continue
-		}
-		if hops++; hops > maxSymlinks {
-			return "", fmt.Errorf("%s: too many levels of symbolic links", clean(p))
-		}
-		if strings.HasPrefix(e.Target, "/") {
-			done = nil
-		}
-		todo = append(strings.Split(e.Target, "/"), todo...)
-	}
-	return "/" + path.Join(done...), nil
-}
+func (f *ImageFS) Resolve(p string) (string, error) { return resolve(f.Lstat, p) }
 
 // Stat describes what p leads to, following symlinks inside the image.
 func (f *ImageFS) Stat(p string) (Entry, error) {
@@ -226,17 +189,23 @@ var ErrExists = errors.New("already exists")
 // existing symlink on the Mac, and an existing file is only replaced with
 // overwrite. copied is called with each path written.
 func (f *ImageFS) CopyOut(src, dest string, overwrite bool, copied func(string)) error {
-	e, err := f.Stat(src)
+	return CopyOut(f, src, dest, overwrite, copied)
+}
+
+// CopyOut copies from any view (the whole image or one layer); see
+// ImageFS.CopyOut.
+func CopyOut(v View, src, dest string, overwrite bool, copied func(string)) error {
+	e, err := v.Stat(src)
 	if err != nil {
 		return err
 	}
 	if fi, err := os.Stat(dest); err == nil && fi.IsDir() {
 		dest = filepath.Join(dest, e.Name)
 	}
-	return f.copyEntry(e, dest, overwrite, copied)
+	return copyEntry(v, e, dest, overwrite, copied)
 }
 
-func (f *ImageFS) copyEntry(e Entry, dest string, overwrite bool, copied func(string)) error {
+func copyEntry(v View, e Entry, dest string, overwrite bool, copied func(string)) error {
 	existing, err := os.Lstat(dest)
 	exists := err == nil
 	switch {
@@ -250,12 +219,12 @@ func (f *ImageFS) copyEntry(e Entry, dest string, overwrite bool, copied func(st
 			}
 			copied(dest)
 		}
-		children, err := f.ReadDir(e.Path)
+		children, err := v.ReadDir(e.Path)
 		if err != nil {
 			return err
 		}
 		for _, c := range children {
-			if err := f.copyEntry(c, filepath.Join(dest, c.Name), overwrite, copied); err != nil {
+			if err := copyEntry(v, c, filepath.Join(dest, c.Name), overwrite, copied); err != nil {
 				return err
 			}
 		}
@@ -285,9 +254,9 @@ func (f *ImageFS) copyEntry(e Entry, dest string, overwrite bool, copied func(st
 			}
 			os.Remove(dest) // a symlink there goes, its target stays untouched
 		}
-		rc, err := f.fs.OpenFile(diskPath(e.Path), os.O_RDONLY)
+		rc, _, err := v.Open(e.Path)
 		if err != nil {
-			return fmt.Errorf("%s: %w", e.Path, err)
+			return err
 		}
 		defer rc.Close()
 		out, err := os.OpenFile(dest, os.O_WRONLY|os.O_CREATE|os.O_EXCL, e.Mode.Perm())

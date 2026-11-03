@@ -281,7 +281,7 @@ func buildStep(s string) string {
 
 // lister prints entries like ls -l.
 type lister struct {
-	fs            *oci.ImageFS
+	fs            oci.View
 	users, groups map[uint32]string
 	w             io.Writer
 }
