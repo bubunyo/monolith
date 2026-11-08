@@ -1,6 +1,7 @@
 package vm
 
 import (
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -57,7 +58,7 @@ func TestRunDaemonKata(t *testing.T) {
 
 	// Prepare in the test, as `vm run` does, so the first-run download
 	// isn't counted against the boot deadline.
-	_, err := kataImage{}.Prepare(name)
+	_, err := kataImage{}.Prepare(name, io.Discard)
 	require.NoError(t, err)
 
 	logPath := filepath.Join(t.TempDir(), "console.log")

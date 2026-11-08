@@ -35,12 +35,14 @@ const (
 	// GuestLayout is the version of the guest files written into a docker
 	// image VM's disk when it's created. Layout 1 has the k3s services;
 	// layout 2 adds clean shutdown, Rosetta and file-change events; layout 3
-	// adds the sandbox pieces (repo overlay, listening-ports relay).
-	GuestLayout = 3
+	// adds the sandbox pieces (repo overlay, listening-ports relay); layout 4
+	// adds the boot step markers, and is also recorded for alpine VMs.
+	GuestLayout = 4
 
 	// Minimum GuestLayout for each feature that needs guest files.
 	GuestLayoutKubernetes = 1
 	GuestLayoutRosetta    = 2 // also clean shutdown and file-change events
+	GuestLayoutBootSteps  = 4
 
 	k3sShareTag       = "k3s"
 	k3sCmdlineArg     = "monolith.k3s"
@@ -50,7 +52,7 @@ const (
 
 // ensureK3s returns the cache directory holding the k3s binary for version,
 // downloading and verifying it on first use.
-func ensureK3s(version string) (string, error) {
+func ensureK3s(version string, log io.Writer) (string, error) {
 	dir, err := monolith.CachePath("k3s", version)
 	if err != nil {
 		return "", err
@@ -82,7 +84,7 @@ func ensureK3s(version string) (string, error) {
 	}
 	defer os.Remove(tmp.Name())
 	hasher := sha256.New()
-	if _, err := io.Copy(io.MultiWriter(tmp, hasher), resp.Body); err != nil {
+	if _, err := io.Copy(io.MultiWriter(tmp, hasher), newProgressReader(resp.Body, log, "k3s "+version, resp.ContentLength)); err != nil {
 		tmp.Close()
 		return "", fmt.Errorf("downloading k3s %s: %w", version, err)
 	}

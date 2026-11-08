@@ -58,7 +58,7 @@ const (
 // Each VM gets its own disk under ~/.monolith/vms/<name>/disk.img.
 // overlays are extra manifests under embeddings/ (e.g. "docker/manifest.yaml")
 // applied after the base manifest; their files replace the base ones.
-func DefaultDisk(rootfsTarball, modloopPath, name string, overlays ...string) (string, error) {
+func DefaultDisk(rootfsTarball, modloopPath, name string, log io.Writer, overlays ...string) (string, error) {
 	vmDir, err := VMDir(name)
 	if err != nil {
 		return "", err
@@ -72,6 +72,7 @@ func DefaultDisk(rootfsTarball, modloopPath, name string, overlays ...string) (s
 		return diskPath, nil
 	}
 
+	fmt.Fprintf(log, "Creating disk.img (%d GiB ext4) from the Alpine minirootfs\n", defaultDiskSize>>30)
 	if err := createDiskImage(diskPath, defaultDiskSize, rootfsTarball, modloopPath, name, overlays); err != nil {
 		os.Remove(diskPath) // clean up partial image on failure
 		return "", err

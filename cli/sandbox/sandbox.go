@@ -276,7 +276,7 @@ func (s *sandbox) ensureRunning() (wasRunning bool, err error) {
 			return false, err
 		}
 		fmt.Fprintf(os.Stderr, "Starting sandbox %s for %s...\n", s.name, s.repo)
-		if _, err := image.Prepare(s.name); err != nil {
+		if _, err := image.Prepare(s.name, os.Stdout); err != nil {
 			return false, fmt.Errorf("preparing the sandbox: %w", err)
 		}
 		if err := vm.SpawnVMDaemon(s.name, false, ""); err != nil {

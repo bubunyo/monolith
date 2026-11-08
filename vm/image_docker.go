@@ -2,6 +2,7 @@ package vm
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 )
@@ -59,12 +60,12 @@ type dockerImage struct{}
 
 func (dockerImage) Name() string { return ImageDocker }
 
-func (dockerImage) Prepare(name string) (*BootSpec, error) {
-	kernel, err := DefaultKernel()
+func (dockerImage) Prepare(name string, log io.Writer) (*BootSpec, error) {
+	kernel, err := DefaultKernel(log)
 	if err != nil {
 		return nil, err
 	}
-	rootfs, err := DefaultRootFS()
+	rootfs, err := DefaultRootFS(log)
 	if err != nil {
 		return nil, err
 	}
@@ -112,7 +113,7 @@ func (dockerImage) Prepare(name string) (*BootSpec, error) {
 		if cfg.GuestLayout < GuestLayoutKubernetes {
 			return nil, fmt.Errorf("VM %q was created before Kubernetes support; recreate it to use --kubernetes", name)
 		}
-		dir, err := ensureK3s(K3sVersionOf(cfg))
+		dir, err := ensureK3s(K3sVersionOf(cfg), log)
 		if err != nil {
 			return nil, err
 		}
@@ -129,7 +130,7 @@ func (dockerImage) Prepare(name string) (*BootSpec, error) {
 		commandLine += " " + rosettaCmdlineArg + "=1"
 	}
 
-	disk, err := DefaultDisk(rootfs, kernel.ModloopPath, name, overlays...)
+	disk, err := DefaultDisk(rootfs, kernel.ModloopPath, name, log, overlays...)
 	if err != nil {
 		return nil, err
 	}

@@ -1,6 +1,7 @@
 package vm
 
 import (
+	"io"
 	"os"
 	"os/exec"
 	"strconv"
@@ -47,7 +48,7 @@ func TestDockerPauseResume(t *testing.T) {
 	cfg.CPUs = 2
 	cfg.Memory = 2 << 30
 	require.NoError(t, WriteConfig(name, cfg))
-	_, err = dockerImage{}.Prepare(name)
+	_, err = dockerImage{}.Prepare(name, io.Discard)
 	require.NoError(t, err)
 
 	sock, err := VMDockerSockPath(name)

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -148,7 +149,7 @@ type containerImage struct{}
 
 func (containerImage) Name() string { return ImageContainer }
 
-func (containerImage) Prepare(name string) (*BootSpec, error) {
+func (containerImage) Prepare(name string, log io.Writer) (*BootSpec, error) {
 	cfg, err := ReadConfig(name)
 	if err != nil {
 		return nil, err
@@ -156,7 +157,7 @@ func (containerImage) Prepare(name string) (*BootSpec, error) {
 	if cfg.Container == nil {
 		return nil, fmt.Errorf("%q is not a container", name)
 	}
-	kernel, err := kataKernel()
+	kernel, err := kataKernel(log)
 	if err != nil {
 		return nil, err
 	}

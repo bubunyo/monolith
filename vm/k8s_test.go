@@ -2,6 +2,7 @@ package vm
 
 import (
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -62,7 +63,7 @@ func testKubernetes(t *testing.T, binary, name, engine string, svcPort int) {
 	cfg.Kubernetes = true
 	cfg.KubePort = kubePort
 	require.NoError(t, WriteConfig(name, cfg))
-	_, err = dockerImage{}.Prepare(name)
+	_, err = dockerImage{}.Prepare(name, io.Discard)
 	require.NoError(t, err)
 
 	spawn := func(args ...string) {
