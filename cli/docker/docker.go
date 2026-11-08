@@ -267,7 +267,7 @@ func boot(cmd *cobra.Command) error {
 		fmt.Printf("Preparing k3s %s...\n", vm.K3sVersionOf(cfg))
 	}
 	fmt.Println("Preparing docker base image...")
-	if _, err := image.Prepare(flagName); err != nil {
+	if _, err := image.Prepare(flagName, os.Stdout); err != nil {
 		return fmt.Errorf("preparing docker image: %w", err)
 	}
 

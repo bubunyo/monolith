@@ -44,12 +44,12 @@ type kataImage struct{}
 
 func (kataImage) Name() string { return ImageKata }
 
-func (kataImage) Prepare(name string) (*BootSpec, error) {
+func (kataImage) Prepare(name string, log io.Writer) (*BootSpec, error) {
 	dir, err := kataCacheDir()
 	if err != nil {
 		return nil, err
 	}
-	kernel, err := kataKernel()
+	kernel, err := kataKernel(log)
 	if err != nil {
 		return nil, err
 	}
@@ -57,7 +57,7 @@ func (kataImage) Prepare(name string) (*BootSpec, error) {
 	rootHash := filepath.Join(dir, kataRootHashFile)
 
 	if !exists(rootfs) || !exists(rootHash) {
-		if err := fetchKataArtifact("rootfs-image", "kata-static-rootfs-image.tar.zst", map[string]string{
+		if err := fetchKataArtifact(log, "rootfs-image", "kata-static-rootfs-image.tar.zst", map[string]string{
 			kataRootfsFile:   ".image",
 			kataRootHashFile: "root_hash_base.txt",
 		}, dir); err != nil {
@@ -94,14 +94,14 @@ func (kataImage) Prepare(name string) (*BootSpec, error) {
 
 // kataKernel returns Kata's guest kernel, downloading it on first use. Kata
 // and container VMs both boot it.
-func kataKernel() (string, error) {
+func kataKernel(log io.Writer) (string, error) {
 	dir, err := kataCacheDir()
 	if err != nil {
 		return "", err
 	}
 	kernel := filepath.Join(dir, kataKernelFile)
 	if !exists(kernel) {
-		if err := fetchKataArtifact("kernel", "kata-static-kernel.tar.zst", map[string]string{
+		if err := fetchKataArtifact(log, "kernel", "kata-static-kernel.tar.zst", map[string]string{
 			kataKernelFile: "vmlinux-",
 		}, dir); err != nil {
 			return "", fmt.Errorf("fetching Kata kernel: %w", err)
@@ -180,7 +180,7 @@ func kataCommandLine(name string, v verityParams) string {
 // verifies the layer digest, and extracts files from its zstd tarball into
 // dir. want maps destination file name to a match on the tar entry's base
 // name: a suffix if it starts with ".", otherwise a prefix.
-func fetchKataArtifact(component, layerTitle string, want map[string]string, dir string) error {
+func fetchKataArtifact(log io.Writer, component, layerTitle string, want map[string]string, dir string) error {
 	repo := kataRepoBase + component
 	tag := kataVersion + "-" + kataArch
 
@@ -219,7 +219,7 @@ func fetchKataArtifact(component, layerTitle string, want map[string]string, dir
 	// Hash the compressed stream as it is decoded; files are only moved
 	// into place once the digest matches.
 	hasher := sha256.New()
-	zr, err := zstd.NewReader(io.TeeReader(resp.Body, hasher))
+	zr, err := zstd.NewReader(io.TeeReader(newProgressReader(resp.Body, log, "the Kata "+component, resp.ContentLength), hasher))
 	if err != nil {
 		return err
 	}

@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/bubunyo/monolith"
+	"github.com/bubunyo/monolith/internal/ansi"
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
@@ -213,7 +214,7 @@ func (s *Store) Pull(ctx context.Context, ref string, opts PullOptions) (Image, 
 	defer unlock()
 
 	if img, err := s.read(id); err == nil {
-		fmt.Fprintf(logw, "%s %s\n", paint(useColor(opts.TTY), styleGreen, Display(r.Name())+" is up to date"), paint(useColor(opts.TTY), styleDim, "("+img.ShortID()+")"))
+		fmt.Fprintf(logw, "%s %s\n", ansi.Paint(ansi.UseColor(opts.TTY), styleGreen, Display(r.Name())+" is up to date"), ansi.Paint(ansi.UseColor(opts.TTY), styleDim, "("+img.ShortID()+")"))
 		return s.addRef(img, r.Name())
 	}
 
@@ -245,8 +246,8 @@ func (s *Store) Pull(ctx context.Context, ref string, opts PullOptions) (Image, 
 	if len(layers) == 1 {
 		plural = ""
 	}
-	color := useColor(opts.TTY)
-	fmt.Fprintf(logw, "%s %s\n", paint(color, styleBold, "Pulling "+Display(r.Name())), paint(color, styleDim, fmt.Sprintf("(%d layer%s, %s)", len(layers), plural, HumanSize(size))))
+	color := ansi.UseColor(opts.TTY)
+	fmt.Fprintf(logw, "%s %s\n", ansi.Paint(color, styleBold, "Pulling "+Display(r.Name())), ansi.Paint(color, styleDim, fmt.Sprintf("(%d layer%s, %s)", len(layers), plural, HumanSize(size))))
 	start := time.Now()
 	view := newPullView(logw, opts.TTY, ids)
 	defer view.close()
@@ -297,7 +298,7 @@ func (s *Store) Pull(ctx context.Context, ref string, opts PullOptions) (Image, 
 	if err := os.Rename(tmp, filepath.Join(s.dir, id)); err != nil {
 		return Image{}, err
 	}
-	fmt.Fprintf(logw, "%s %s\n", paint(color, styleGreen, "Pulled "+Display(r.Name())), paint(color, styleDim, fmt.Sprintf("in %s (%s on disk)", time.Since(start).Round(100*time.Millisecond), HumanSize(stats.DiskBytes))))
+	fmt.Fprintf(logw, "%s %s\n", ansi.Paint(color, styleGreen, "Pulled "+Display(r.Name())), ansi.Paint(color, styleDim, fmt.Sprintf("in %s (%s on disk)", time.Since(start).Round(100*time.Millisecond), HumanSize(stats.DiskBytes))))
 	return s.addRef(img, r.Name())
 }
 

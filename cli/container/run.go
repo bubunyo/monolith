@@ -175,7 +175,7 @@ func boot(name string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := image.Prepare(name); err != nil {
+	if _, err := image.Prepare(name, os.Stdout); err != nil {
 		return err
 	}
 	logPath, err := vm.VMConsoleLogPath(name)

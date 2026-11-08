@@ -85,9 +85,33 @@ Behavior depends on the VM's current state:
 | `--network-mode` | | `nat` | Network mode: `nat`, `shared`, `host`, `isolated`, `none`, `user` (`user` for the docker image) |
 | `--network` | `-n` | | Named network to join (shared/isolated only) |
 | `--host-interface` | | | Physical NIC for host mode (e.g. `en0`) |
+| `--verbose` | | | Keep every boot step's output on screen |
 
 Flags are persisted in the VM's `config.json`. On subsequent boots, saved
-values are reused unless explicitly overridden with flags.
+values are reused unless explicitly overridden with flags (`--verbose`
+isn't saved).
+
+A boot is shown as steps. The running step streams its output in a
+12-line window; when it finishes it folds to one line, and the next one
+starts:
+
+```
+✔ Image     alpine (cached)                          0.0s
+✔ Start     1 vCPU, 512 MiB RAM, network: user       0.2s
+✔ Kernel                                             0.3s
+⠼ System                                             0.1s
+  │ [    0.316] EXT4-fs (vda): re-mounted … r/w
+  │ [    0.320] loop0: detected capacity change from 0 to 31208
+  Network
+```
+
+Then the console takes over at the login. The guest steps depend on the
+image: alpine has Kernel, System, Network; docker adds Engine (the
+first-boot install, then until dockerd answers); kata has Kernel and
+System. Alpine and docker VMs created before boot steps existed show only
+Kernel, then the rest of the boot in the console. Ctrl+C during the steps
+detaches and leaves the VM booting. When output isn't a terminal, each
+line is printed once as `[step] text`.
 
 ### `vm attach <name>`
 

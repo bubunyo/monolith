@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bubunyo/monolith/internal/ansi"
 	"golang.org/x/sys/unix"
 )
 
@@ -35,7 +36,7 @@ type viewLine struct {
 }
 
 func newPullView(w io.Writer, tty bool, ids []string) *pullView {
-	v := &pullView{w: w, tty: tty, color: useColor(tty), stop: make(chan struct{}), done: make(chan struct{}), width: 100}
+	v := &pullView{w: w, tty: tty, color: ansi.UseColor(tty), stop: make(chan struct{}), done: make(chan struct{}), width: 100}
 	for _, id := range ids {
 		v.lines = append(v.lines, viewLine{id: id, status: "Waiting"})
 	}
@@ -143,7 +144,7 @@ func (l viewLine) render(width int, color bool) string {
 			r = r[:width]
 		}
 		width -= len(r)
-		b.WriteString(paint(color, p.style, string(r)))
+		b.WriteString(ansi.Paint(color, p.style, string(r)))
 		if width <= 0 {
 			break
 		}
@@ -178,20 +179,6 @@ func statusStyle(status string) string {
 	default: // complete, exists, converted
 		return styleDone
 	}
-}
-
-// useColor reports whether to colour output to a terminal: not with
-// NO_COLOR set or TERM=dumb.
-func useColor(tty bool) bool {
-	return tty && os.Getenv("NO_COLOR") == "" && os.Getenv("TERM") != "dumb"
-}
-
-// paint wraps s in an SGR style when color is on.
-func paint(color bool, style, s string) string {
-	if !color || style == "" || s == "" {
-		return s
-	}
-	return "\033[" + style + "m" + s + "\033[0m"
 }
 
 // bar draws "[=====>     ]".

@@ -25,6 +25,7 @@ var (
 	flagHostInterface string
 	flagImage         string
 	flagLogConsole    string
+	flagVerbose       bool
 )
 
 // vmCfg holds optional overrides for VM configuration, set via CLI flags.
@@ -111,13 +112,7 @@ func runVM(name string, cfg vmCfg) error {
 		return attachAndHandle(name)
 
 	case vm.StatusSuspended:
-		// Restore from suspend file.
-		fmt.Printf("Restoring VM %q from suspend file...\n", name)
-		if err := vm.SpawnVMDaemon(name, true, cfg.LogConsole); err != nil {
-			return err
-		}
-		fmt.Printf("VM %q restored. Attaching to console...\n", name)
-		return attachAndHandle(name)
+		return restoreVM(name, cfg.LogConsole)
 	}
 
 	// Stopped — need to boot. Read/apply config.
@@ -163,22 +158,10 @@ func runVM(name string, cfg vmCfg) error {
 		return fmt.Errorf("writing config: %w", err)
 	}
 
-	// Prepare the base image here rather than in the daemon so first-run
-	// downloads are visible and don't race the daemon's socket timeout.
-	fmt.Printf("Preparing %s base image...\n", image.Name())
-	if _, err := image.Prepare(name); err != nil {
-		return fmt.Errorf("preparing %s image: %w", image.Name(), err)
-	}
-
-	fmt.Printf("Booting VM %q (%d vCPU, %s RAM, network: %s, image: %s)...\n", name, savedCfg.CPUs, FormatMemory(savedCfg.Memory), savedCfg.NetworkMode, savedCfg.Image)
-
-	// Spawn the VM daemon.
-	if err := vm.SpawnVMDaemon(name, false, cfg.LogConsole); err != nil {
-		return err
-	}
-
-	// Attach to the console.
-	return attachAndHandle(name)
+	// bootVM prepares the base image here rather than in the daemon so
+	// first-run downloads are visible and don't race the daemon's socket
+	// timeout.
+	return bootVM(name, image, cfg.LogConsole)
 }
 
 // attachAndHandle attaches to the VM console and handles any escape commands.
@@ -203,6 +186,7 @@ func init() {
 	runCmd.Flags().StringVarP(&flagNetwork, "network", "n", "", `named network to join (for shared/isolated modes)`)
 	runCmd.Flags().StringVar(&flagHostInterface, "host-interface", "", `physical NIC for host mode (e.g. "en0")`)
 	runCmd.Flags().StringVar(&flagImage, "image", "", `base image: kata, alpine or docker (default: alpine for new VMs; existing VMs keep theirs)`)
+	runCmd.Flags().BoolVar(&flagVerbose, "verbose", false, "keep every boot step's output on screen, not just a line per step")
 	runCmd.Flags().StringVar(&flagLogConsole, "log-console", "", "append guest console output to this file (from boot, even with no client attached)")
 }
 

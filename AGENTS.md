@@ -30,6 +30,7 @@ monolith vm run [name] --network-mode isolated              # isolated network (
 monolith vm run [name] --network-mode none                  # no network device (air-gapped)
 monolith vm run [name] --network-mode user                  # user-mode networking in the daemon (gvisor-tap-vsock)
 monolith vm run [name] --log-console PATH                  # tee raw guest console output to PATH from boot
+monolith vm run [name] --verbose                            # keep every boot step's output on screen
 monolith vm attach <name>     # attach to a running VM's serial console (one client at a time)
 monolith vm pause <name>      # pause vCPUs in memory
 monolith vm resume <name>     # resume from pause or suspend
@@ -129,6 +130,7 @@ monolith/
     vm/
       vm.go               — "vm" parent command (registers all subcommands)
       run.go              — "vm run [name]" with --cpus, --memory, --network-mode, --network, --host-interface
+      boot.go             — vm run's boot as steps (Image, Start, then the guest's BootSteps), console handoff, Ctrl+C
       attach.go           — "vm attach <name>" attaches to the daemon's console (boot log replayed from console_bus)
       pause/resume/suspend/stop.go — control-plane commands sent over the daemon socket
       list.go             — "vm list" reads vms/ directory, prints table
@@ -169,13 +171,16 @@ monolith/
     vmd.go                — RunDaemon(name, restore, consoleLogPath): the per-VM daemon. Owns vz.VirtualMachine,
                             listens on a unix socket, dispatches console-attach and control
                             (pause/resume/suspend/stop/status/resize) requests.
-    client.go             — client side of the daemon protocol (AttachConsole, SendControlCommand, SpawnVMDaemon).
+    client.go             — client side of the daemon protocol (AttachConsole = DialConsole + RelayConsole,
+                            SendControlCommand, SpawnVMDaemon).
+    bootsteps.go          — BootSteps(cfg) per image and WatchBoot, which follows them through the console.
+    preplog.go            — download progress lines for Prepare's log.
     console_bus.go        — drains the console PTY from boot; 64 KiB ring buffer replayed to the attached client.
     protocol.go           — wire types shared by client and daemon.
     config.go             — VMConfig (CPUs, Memory, NetworkMode, NetworkName, HostInterface, Image, MAC).
                             Per-VM config at vms/<name>/config.json. Defaults: 1 vCPU, 512 MiB, NAT, alpine.
     state.go              — VMState/VMStatus, state.json lifecycle, host-side process stats, DiscardSuspended.
-    image.go              — Image interface (Prepare(name) → BootSpec), LookupImage, ValidImages, Exists.
+    image.go              — Image interface (Prepare(name, log) → BootSpec), LookupImage, ValidImages, Exists.
     image_kata.go         — kata image: fetch kernel + rootfs from GHCR, dm-verity command line.
     image_alpine.go       — alpine image: wraps alpine_kernel.go + alpine_disk.go.
     image_docker.go       — docker image: alpine + embeddings/docker overlay (+ embeddings/containerd for that engine),
@@ -211,6 +216,8 @@ monolith/
                             buf.gen.yaml at the root). Generated code is committed.
   cmd/monolith-init/      — PID 1 of container VMs (linux/arm64, static): main_linux.go (setup, mounts, reaping, shutdown),
                             agent_linux.go (the Agent ttRPC service), grow_linux.go; main_other.go is a stub for the Mac.
+  internal/ansi/          — terminal helpers: IsTerminal, UseColor, Paint, Size, Plain (console output → text).
+  internal/steps/         — the step view (vm run): running step's last 12 lines, finished steps folded to a line.
   net/                    — package net: networking. Imports only the root package (never vm).
                             Callers that also use the standard library import it as `mnet`.
     modes.go              — network mode constants (NetworkNAT, NetworkShared, …) and ValidNetworkModes.
@@ -282,7 +289,7 @@ Both `ShareNetwork` and `ReceiveNetwork` require a code signing requirement for 
 
 ## Base Images
 
-The guest OS is pluggable (`vm.Image`, `vm/image.go`). `vm run --image kata|alpine` picks one and saves it in `config.json`. New VMs default to **alpine** (kata until the sandbox release: its guest is a read-only appliance for kata-agent, which monolith doesn't drive, so it suits only throwaway VMs). Existing VMs keep the image saved in their config. A VM whose config has no `image` field, or whose directory has a `disk.img` but no config, is treated as **alpine**, so pre-existing VMs keep booting from their disks. `vm run` calls `Image.Prepare` in the foreground before spawning the daemon, so first-run downloads are visible and can't trip the daemon's 10s socket timeout; the daemon calls it again (cached, instant). Both images share the daemon, console, networking and control plane.
+The guest OS is pluggable (`vm.Image`, `vm/image.go`). `vm run --image kata|alpine` picks one and saves it in `config.json`. New VMs default to **alpine** (kata until the sandbox release: its guest is a read-only appliance for kata-agent, which monolith doesn't drive, so it suits only throwaway VMs). Existing VMs keep the image saved in their config. A VM whose config has no `image` field, or whose directory has a `disk.img` but no config, is treated as **alpine**, so pre-existing VMs keep booting from their disks. `vm run` calls `Image.Prepare` in the foreground before spawning the daemon, so first-run downloads are visible and can't trip the daemon's 10s socket timeout; the daemon calls it again (cached, instant, logging to `io.Discard`). `vm run` shows the boot as steps, see [Boot steps](#boot-steps). Both images share the daemon, console, networking and control plane.
 
 | | kata | alpine (default) | docker |
 |---|---|---|---|
@@ -293,6 +300,19 @@ The guest OS is pluggable (`vm.Image`, `vm/image.go`). `vm run --image kata|alpi
 | Network config | kernel `ip=dhcp` (no DHCP client or resolv.conf in the image) | `udhcpc` via `dhcp-configure` | `udhcpc`; network mode must be `user` |
 | Hostname | `systemd.hostname=<vm name>` | `/etc/hostname` + inittab | same as alpine |
 | Download | ~65 MB, once | ~64 MB, once | alpine assets + ~70 MB of apk packages inside the VM on first boot |
+
+### Boot steps
+
+`vm run` shows a boot like `docker buildx` shows a build (`cli/vm/boot.go`, `internal/steps`): each step streams its output in a 12-line window (fewer on a short terminal), then folds to `✔ Title  summary  1.2s`. Off a terminal each line is printed once as `[step] text`; `--verbose` keeps every line of finished steps. A failed step stays open with its last lines. Steps:
+
+1. **Image**: `Prepare`'s log (downloads with progress every 10%, ISO extraction, disk creation); `(cached)` when it logged nothing.
+2. **Start**: lines the daemon appends to `daemon.log` while `SpawnVMDaemon` waits for the socket.
+3. **Guest steps** (`vm.BootSteps`), read from the console connection (`DialConsole`, whose replay starts at boot). `WatchBoot` splits the output into lines and ends a step on a marker or a matching line; a marker for a later step ends the ones before it.
+   - alpine: Kernel (until `… as init process`), System (until marker `network`), Network (until `ready`; its summary is the DHCP lease address).
+   - docker: Kernel, System, Network (until `engine`), Engine (`docker-setup`, so the first-boot install, until `ready`; for the docker engine it then waits for dockerd's `/_ping` on `docker.sock`, up to 2 min).
+   - kata: Kernel, System (until `Reached target kata-containers.target`; the rootfs is read-only, so no markers).
+
+Markers are lines in the guest's inittab, `::sysinit:printf '\033]7777;monolith;NAME\007'`: an OSC sequence terminals ignore, so `vm attach` replays them invisibly. The quotes make busybox init run it through `sh`, whose builtin `printf` decodes the escapes (Alpine has no `/bin/printf`). Disks get them from guest layout 4 (`GuestLayoutBootSteps`), which alpine VMs now record too; older disks show only Kernel and their boot continues in the console. After the last step the rest of the connection's output (the motd, the prompt) goes to the terminal and the console relay takes over (`RelayConsole`), so the boot log isn't replayed twice. Ctrl+C before then (the terminal isn't raw yet) detaches and leaves the VM booting. If the daemon exits mid-boot the step fails with "the VM stopped". `ansi.Plain` cleans console lines for the window: escape sequences go, a `\r` keeps only what follows, and text between `ESC 7` and `ESC 8` (apk's progress bar) is dropped. A suspended VM shows a single Restore step.
 
 ### Kata
 
@@ -361,7 +381,7 @@ Alpine guest configuration:
 `start --kubernetes` runs a single-node k3s server on the VM's engine (Colima-style), so images built with `docker build` or `nerdctl build` are usable in pods without a registry. It's saved in `config.json` (`kubernetes`, `k3s_version`, `kube_port`) and can be turned on or off on any start of a stopped VM; `start` refuses to change it on a running or paused one (it changes the VM's devices and boot arguments). New VMs created with `--kubernetes` default to 4 GiB.
 
 - **k3s binary**: `ensureK3s` downloads `k3s-arm64` for the pinned version (`DefaultK3sVersion`, override with `--k3s-version`) from GitHub releases into `~/.monolith/k3s/<version>/k3s`, verified against the release's `sha256sum-arm64.txt`. That directory is shared read-only over virtio-fs (tag `k3s`, mounted at `/opt/monolith/k3s`), so every VM reuses one download, and `monolith.k3s=1` goes on the kernel command line. Turning Kubernetes off drops both.
-- **Guest layout**: the k3s services live in the inittab written when the disk is created, so `config.json` records `guest_layout` (`vm.GuestLayout`, currently 1) for new docker image VMs. VMs created earlier have none and are refused `--kubernetes` with a hint to recreate them.
+- **Guest layout**: the k3s services live in the inittab written when the disk is created, so `config.json` records `guest_layout` (`vm.GuestLayout`, currently 4; layout 1 is the k3s services) for new docker image VMs. VMs created earlier have none and are refused `--kubernetes` with a hint to recreate them.
 - **Guest**: with `monolith.k3s=1`, `docker-setup` loads `vxlan`, makes `/` rshared, mounts the share, and bind-mounts `/var/lib/rancher` and `/var/lib/kubelet` from the data disk (`/var/lib/docker/.monolith/…` for docker, `/data/…` for containerd). `docker-serve k3s` runs `k3s server --disable=traefik --node-name=<vm> --write-kubeconfig-mode=600` with `--docker` (k3s's built-in cri-dockerd) or `--container-runtime-endpoint=unix:///run/containerd/containerd.sock`. For containerd, `docker-setup` also points the CRI's CNI `bin_dir`/`conf_dir` at k3s's flannel (`/var/lib/rancher/k3s/data/current/bin`, `/var/lib/rancher/k3s/agent/etc/cni/net.d`) because nerdctl's own conflist sits in `/etc/cni/net.d`, and sets nerdctl's and BuildKit's namespace to `k8s.io` so built images are visible to pods; turning Kubernetes off reverts both. Without the flag, `docker-serve k3s|k8s-info` just sleep.
 - **API**: the daemon forwards `127.0.0.1:<kube_port>` (chosen once with `FreeLocalPort`, so several clusters coexist) to guest port 6443. k3s's serving certificate already covers 127.0.0.1.
 - **kubeconfig**: `docker-serve k8s-info` (guest port 2378, gateway only) answers a one-line request: `kubeconfig` → `/etc/rancher/k3s/k3s.yaml`, `services` → `k3s kubectl get svc -A -o json`. The daemon's `kubeconfig` control command returns the first; the CLI renames cluster/user/context to `k3s-<name>`, points the server at `kube_port`, and merges the entries into the first file in `$KUBECONFIG` (else `~/.kube/config`) as a generic YAML document, keeping other fields and saving the previous file as `<file>.monolith.bak`, then sets `current-context`. `rm` and `--kubernetes=false` remove the entries (clearing `current-context` if it was this VM's). `docker kubeconfig` prints the standalone file.

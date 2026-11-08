@@ -2,6 +2,7 @@ package vm
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -52,7 +53,9 @@ type Image interface {
 	// if the image needs them, and returns the boot spec for VM name. It is
 	// idempotent; `vm run` calls it before spawning the daemon so first-run
 	// downloads happen in the foreground, and the daemon calls it again.
-	Prepare(name string) (*BootSpec, error)
+	// What it does (downloads, disk creation) is logged to log, a line at a
+	// time; nothing when everything is cached.
+	Prepare(name string, log io.Writer) (*BootSpec, error)
 }
 
 // LookupImage returns the base image with the given name.

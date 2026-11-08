@@ -22,6 +22,17 @@ import (
 // Returns a ControlRequest if the user issued a command from the escape
 // prompt (pause, resume, suspend, stop), or nil on clean detach.
 func AttachConsole(name string) (*ControlRequest, error) {
+	conn, err := DialConsole(name)
+	if err != nil {
+		return nil, err
+	}
+	return RelayConsole(name, conn, nil)
+}
+
+// DialConsole attaches to the VM daemon's console. The connection then
+// carries console output, starting with the replay of recent output, and
+// takes input for the guest.
+func DialConsole(name string) (net.Conn, error) {
 	sockPath, err := VMSockPath(name)
 	if err != nil {
 		return nil, err
@@ -30,23 +41,37 @@ func AttachConsole(name string) (*ControlRequest, error) {
 	if err != nil {
 		return nil, fmt.Errorf("connecting to VM daemon %q: %w (is the VM running?)", name, err)
 	}
-	defer conn.Close()
 
 	// Send console attach request.
 	if _, err := conn.Write([]byte{MsgConsoleAttach}); err != nil {
+		conn.Close()
 		return nil, fmt.Errorf("sending attach request: %w", err)
 	}
 
 	// Read ACK.
 	ack := make([]byte, 1)
 	if _, err := io.ReadFull(conn, ack); err != nil {
+		conn.Close()
 		return nil, fmt.Errorf("reading attach ACK: %w", err)
 	}
 	if ack[0] == 0xFF {
+		conn.Close()
 		return nil, fmt.Errorf("another client is already attached to %q", name)
 	}
 	if ack[0] != MsgConsoleAttach {
+		conn.Close()
 		return nil, fmt.Errorf("unexpected ACK byte: 0x%02x", ack[0])
+	}
+	return conn, nil
+}
+
+// RelayConsole relays a console connection from DialConsole to the
+// terminal as AttachConsole does, writing pending first: output already
+// read from conn. It closes conn.
+func RelayConsole(name string, conn net.Conn, pending []byte) (*ControlRequest, error) {
+	defer conn.Close()
+	if len(pending) > 0 {
+		os.Stdout.Write(pending)
 	}
 
 	// Save terminal state and switch to raw mode.

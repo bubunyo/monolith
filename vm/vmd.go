@@ -69,7 +69,7 @@ func RunDaemon(name string, restore bool, consoleLogPath string) error {
 	if err != nil {
 		return err
 	}
-	spec, err := image.Prepare(name)
+	spec, err := image.Prepare(name, io.Discard)
 	if err != nil {
 		return errors.Wrapf(err, "preparing %s image", image.Name())
 	}

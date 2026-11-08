@@ -20,11 +20,16 @@
 ::sysinit:/bin/ln -s /.modloop/modules /lib/modules
 
 # Networking: load af_packet (needed for DHCP raw sockets), then configure.
+# Boot steps for `vm run` (see vm/bootsteps.go): an OSC sequence on the
+# console, which terminals ignore. The quotes make init run it with sh,
+# whose builtin printf decodes the escapes.
+::sysinit:printf '\033]7777;monolith;network\007'
 ::sysinit:/sbin/modprobe af_packet
 ::sysinit:/sbin/ifconfig lo 127.0.0.1 up
 ::sysinit:/sbin/ifconfig eth0 up
 # DHCP blocks boot — retries indefinitely with backoff until a lease is obtained.
 ::sysinit:/usr/local/bin/dhcp-configure eth0
+::sysinit:printf '\033]7777;monolith;ready\007'
 
 # Auto-login as mono (no login prompt)
 hvc0::respawn:/sbin/getty -n -l /usr/local/bin/autologin 0 hvc0

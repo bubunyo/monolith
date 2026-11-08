@@ -34,7 +34,7 @@ type KernelAssets struct {
 	ModloopPath string
 }
 
-func DefaultKernel() (*KernelAssets, error) {
+func DefaultKernel(log io.Writer) (*KernelAssets, error) {
 	alpineDir, err := alpineCacheDir()
 	if err != nil {
 		return nil, err
@@ -53,11 +53,12 @@ func DefaultKernel() (*KernelAssets, error) {
 	}
 
 	isoPath := filepath.Join(alpineDir, isoName)
-	if err := downloadISO(isoPath); err != nil {
+	if err := downloadISO(isoPath, log); err != nil {
 		return nil, fmt.Errorf("downloading iso: %w", err)
 	}
 	defer os.Remove(isoPath)
 
+	fmt.Fprintln(log, "Extracting the kernel, initrd and modules from the ISO")
 	if err := extractFromISO(isoPath, alpineDir); err != nil {
 		return nil, fmt.Errorf("extracting kernel: %w", err)
 	}
@@ -71,7 +72,7 @@ func DefaultKernel() (*KernelAssets, error) {
 
 // DefaultRootFS returns the path to the cached Alpine minirootfs tarball,
 // downloading it on first use.
-func DefaultRootFS() (string, error) {
+func DefaultRootFS(log io.Writer) (string, error) {
 	alpineDir, err := alpineCacheDir()
 	if err != nil {
 		return "", err
@@ -82,7 +83,6 @@ func DefaultRootFS() (string, error) {
 		return rootfsPath, nil
 	}
 
-	fmt.Println("Downloading Alpine minirootfs...")
 	resp, err := http.Get(minirootfsURL)
 	if err != nil {
 		return "", fmt.Errorf("downloading minirootfs: %w", err)
@@ -99,7 +99,7 @@ func DefaultRootFS() (string, error) {
 	}
 	defer f.Close()
 
-	if _, err := io.Copy(f, resp.Body); err != nil {
+	if _, err := io.Copy(f, newProgressReader(resp.Body, log, "the Alpine minirootfs", resp.ContentLength)); err != nil {
 		os.Remove(rootfsPath)
 		return "", fmt.Errorf("writing minirootfs: %w", err)
 	}
@@ -122,8 +122,7 @@ func exists(path string) bool {
 	return err == nil
 }
 
-func downloadISO(dest string) error {
-	fmt.Println("Downloading Alpine virt ISO...")
+func downloadISO(dest string, log io.Writer) error {
 	resp, err := http.Get(kernelURL)
 	if err != nil {
 		return err
@@ -136,7 +135,7 @@ func downloadISO(dest string) error {
 	}
 	defer f.Close()
 
-	_, err = io.Copy(f, resp.Body)
+	_, err = io.Copy(f, newProgressReader(resp.Body, log, "the Alpine virt ISO", resp.ContentLength))
 	return err
 }
 func extractFromISO(isoPath, destDir string) error {
