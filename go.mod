@@ -12,7 +12,7 @@ require (
 	github.com/diskfs/go-diskfs v1.9.4
 	github.com/fsnotify/fsevents v0.2.0
 	github.com/google/go-containerregistry v0.22.1
-	github.com/klauspost/compress v1.19.2
+	github.com/klauspost/compress v1.20.2
 	github.com/mattn/go-isatty v0.0.24
 	github.com/mdlayher/vsock v1.3.0
 	github.com/muesli/termenv v0.16.0
