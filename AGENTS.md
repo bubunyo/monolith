@@ -73,7 +73,7 @@ monolith docker list                              # docker VMs: state, engine, c
 monolith docker rm [--force]                      # delete the VM and its docker context
 monolith docker env                               # print: export DOCKER_HOST=unix://…/vms/<name>/docker.sock
 
-# Containers, each in its own VM (alias c); images pulled and converted into ~/.cache/monolith/images
+# Containers, each in its own VM (alias c); images pulled and converted into ~/.monolith/images
 monolith container run [-d] [-it] [--rm] [--name N] [-e K=V] [--env-file F] [-w DIR] [-u USER] [--entrypoint E] [--cpus N] [-m 512M] [--disk 8G] [--pull missing|always|never] IMAGE [CMD...]
 monolith container ps [-a] [-q]                   # NAME IMAGE COMMAND CREATED STATUS (Up …, Exited (N) …, Created)
 monolith container logs [-f] [-n N] NAME          # the container's console output (console.log)
@@ -202,7 +202,7 @@ monolith/
                             VMSSHKeyPath, VMSSHSockPath.
     keybag.go             — keybagLocked() (MobileKeyBag via dlopen, cgo): restore is refused while the Mac is locked.
     *_test.go             — tests (boot real VMs via ../bin/monolith; image_kata_test.go also has unit tests).
-  oci/                    — image store (~/.cache/monolith/images): pull (go-containerregistry, Docker keychain),
+  oci/                    — image store (~/.monolith/images): pull (go-containerregistry, Docker keychain),
                             refs, Lookup by ref or ID prefix, Remove; Convert flattens layers into a sparse ext4 disk.
   containerinit/          — shared by monolith-init and the daemon: Spec, Command (entrypoint/cmd), env, ResolveUser,
                             LookPath, ResolvConf, LinuxSignal, VsockPort. No Linux-only code.
@@ -224,7 +224,7 @@ monolith/
     ip.go                 — LookupIPForMode (DHCP leases + ARP fallback), VmenetForMAC, NetworkStats.
     paths.go              — NetworksDir, NetworkDir, NetworkLogPath.
     network_subnet_test.go — named-network subnet tests (via ../bin/monolith).
-  paths.go                — CachePath(): root of every ~/.cache/monolith path.
+  paths.go                — CachePath(): root of every ~/.monolith path.
   privatesize.go          — PrivateSize(path): a file's bytes not shared with its APFS clones.
   process.go              — ProcessAlive(pid).
   logger.go / logs.go     — Logger and log-file streaming used by both daemons and `logs` commands.
@@ -235,7 +235,7 @@ monolith/
 
 ### Daemon model
 
-Every running VM is a separate `monolith __vmd <name>` process. The `vm run` CLI command spawns this daemon, the daemon owns the `vz.VirtualMachine`, and all subsequent CLI commands (`attach`, `pause`, `resume`, `suspend`, `stop`, `top`, `list` for live status) go through the daemon's unix socket at `~/.cache/monolith/vms/<name>/daemon.sock`. Only one console client may attach at a time; a second gets a NACK (`0xFF`). `console_bus.go` drains the PTY continuously from before boot and replays the last 64 KiB to whoever attaches, so early kernel output is not lost.
+Every running VM is a separate `monolith __vmd <name>` process. The `vm run` CLI command spawns this daemon, the daemon owns the `vz.VirtualMachine`, and all subsequent CLI commands (`attach`, `pause`, `resume`, `suspend`, `stop`, `top`, `list` for live status) go through the daemon's unix socket at `~/.monolith/vms/<name>/daemon.sock`. Only one console client may attach at a time; a second gets a NACK (`0xFF`). `console_bus.go` drains the PTY continuously from before boot and replays the last 64 KiB to whoever attaches, so early kernel output is not lost.
 
 Socket protocol (first byte selects the request type, see `protocol.go`):
 - `0x01` console attach: daemon ACKs with `0x01`, then raw console bytes flow both ways. Nothing else is ever sent on this stream.
@@ -271,7 +271,7 @@ Named networks allow multiple VMs to share the same vmnet.Network instance, enab
 
 vz v4 shares a vmnet network between processes only through a **launchd Mach service** (`vmnet.ShareNetwork` / `vmnet.ReceiveNetwork`); the serialization is an opaque XPC object with no byte encoding. So each named network runs as a per-user launchd job:
 
-1. `monolith network create|start <name>` writes `~/.cache/monolith/networks/<name>/launchd.plist` (label and Mach service `dev.monolith.network.<name>`, `ProgramArguments` = this binary + `__netd <name> <mode> [--verbose]`) and loads it with `launchctl bootstrap gui/<uid>`. Nothing is installed in `~/Library/LaunchAgents`, so jobs don't survive logout.
+1. `monolith network create|start <name>` writes `~/.monolith/networks/<name>/launchd.plist` (label and Mach service `dev.monolith.network.<name>`, `ProgramArguments` = this binary + `__netd <name> <mode> [--verbose]`) and loads it with `launchctl bootstrap gui/<uid>`. Nothing is installed in `~/Library/LaunchAgents`, so jobs don't survive logout.
 2. The daemon creates the `vmnet.Network` (applying `user_subnet` via `vmnet.WithIPv4Subnet`), writes the actual subnet to `config.json`, publishes it with `vmnet.ShareNetwork`, then writes its PID file. The PID file is what `IsNetworkDaemonAlive` checks.
 3. A VM started with `--network <name>` calls `vmnet.ReceiveNetwork` on that service (5s timeout) and attaches with `vz.NewVMNetNetworkDeviceAttachment`.
 4. `monolith network stop|rm` runs `launchctl bootout`, which SIGTERMs the daemon and unregisters the service. Killing the daemon directly leaves the job loaded (`network start` boots out stale jobs first).
@@ -296,7 +296,7 @@ The guest OS is pluggable (`vm.Image`, `vm/image.go`). `vm run --image kata|alpi
 
 ### Kata
 
-`vm/image_kata.go` fetches two single-layer OCI artifacts from Kata's CI cache on GHCR, pinned to the release tag `4.3.1-aarch64`: `ghcr.io/kata-containers/cached-artefacts/kernel` and `.../rootfs-image`. These are the per-component builds of that release (~65 MB together) rather than the 680 MB all-in-one `kata-static` release tarball. The client gets an anonymous pull token, reads the manifest, streams the zstd tarball while hashing it, and only moves files into `~/.cache/monolith/kata/4.3.1/` once the blob matches the manifest digest. Bump `kataVersion` to update.
+`vm/image_kata.go` fetches two single-layer OCI artifacts from Kata's CI cache on GHCR, pinned to the release tag `4.3.1-aarch64`: `ghcr.io/kata-containers/cached-artefacts/kernel` and `.../rootfs-image`. These are the per-component builds of that release (~65 MB together) rather than the 680 MB all-in-one `kata-static` release tarball. The client gets an anonymous pull token, reads the manifest, streams the zstd tarball while hashing it, and only moves files into `~/.monolith/kata/4.3.1/` once the blob matches the manifest digest. Bump `kataVersion` to update.
 
 The rootfs image is an MBR disk: partition 1 is the ext4 root, partition 2 its dm-verity hash tree. `root_hash.txt` (Kata's `root_hash_base.txt`) supplies the root hash, salt and block sizes, from which the command line maps `/dev/dm-0` with `dm-mod.create=...` exactly as the Kata runtime does:
 
@@ -336,7 +336,7 @@ Alpine guest configuration:
 - **`host.docker.internal`** and `gateway.docker.internal` are static records in the user-mode network's DNS server (`net/usernet.go`) resolving to `192.168.127.254`, which is NATed to the Mac's `127.0.0.1`. Containers and k3s pods resolve through the VM's resolver (the gateway), so the names work everywhere, as with Docker Desktop.
 - **Clean shutdown**: Virtualization.framework's stop request presses a virtual power button: the device tree's `gpio-keys` node is wired to GPIO line 6 of the PL061 controller. Alpine's virt kernel has the `gpio-pl061` module but no `gpio_keys`, so `docker-setup` loads `gpio-pl061` and `docker-serve power` waits on the line with `gpiomon` (libgpiod) and runs `poweroff`. init then runs `docker-serve shutdown` (stop k3s, then `nerdctl stop -t 10` in both namespaces + containerd, or SIGTERM dockerd, which stops its containers) before killing everything and unmounting. Containers get SIGTERM and Postgres writes its shutdown checkpoint; a stop takes ~4–7s. `BootSpec.HandlesStop` (guest layout ≥ 2) raises the daemon's wait before forcing from 10s to 30s. Found while testing: packages installed right before a forced stop came back as 0-byte files, so `docker-setup` now syncs after `apk add`.
 - **Rosetta** is opt-in: `start --rosetta` sets `rosetta: true` (changeable on a stopped VM with guest layout ≥ 2; `--rosetta=false` turns it off). It's off by default, like Colima's `--vz-rosetta`, so an amd64-only image fails with `exec format error` instead of silently running under emulation. `CheckRosetta` refuses when `vz.LinuxRosettaDirectoryShareAvailability()` says it isn't installed (`softwareupdate --install-rosetta`). The daemon adds a virtio-fs device with `vz.NewLinuxRosettaDirectoryShare()` (tag `rosetta`) and `monolith.rosetta=1`; `docker-setup` mounts it on `/mnt/rosetta` and registers `/mnt/rosetta/rosetta` in `binfmt_misc` for x86-64 ELF with flags `CF` (F: interpreter opened at registration, so it works inside containers). `docker run --platform linux/amd64` then runs x86-64 images. Save/restore works with the share attached.
-- **File-change events**: virtio-fs doesn't turn changes made on the Mac into inotify events in the guest, so watchers (hot reload, test runners) never fired. The daemon watches `/Users` with FSEvents (`github.com/fsnotify/fsevents`, file-level events, 100ms latency) and sends created/modified/renamed paths, one per line, over a persistent connection to guest port 2379 (gateway only), where `docker-serve touch-paths` runs `touch -c -r path path`: the times stay, and the guest raises `IN_ATTRIB`. Metadata-only events aren't forwarded and each path is muted for 2s after forwarding, so the guest's touch doesn't echo back; `~/.cache/monolith` and `~/Library` are skipped. Removals aren't relayed.
+- **File-change events**: virtio-fs doesn't turn changes made on the Mac into inotify events in the guest, so watchers (hot reload, test runners) never fired. The daemon watches `/Users` with FSEvents (`github.com/fsnotify/fsevents`, file-level events, 100ms latency) and sends created/modified/renamed paths, one per line, over a persistent connection to guest port 2379 (gateway only), where `docker-serve touch-paths` runs `touch -c -r path path`: the times stay, and the guest raises `IN_ATTRIB`. Metadata-only events aren't forwarded and each path is muted for 2s after forwarding, so the guest's touch doesn't echo back; `~/.monolith` and `~/Library` are skipped. Removals aren't relayed.
 - **Guest layout 2** (`vm.GuestLayout`) carries the power, shutdown, fsnotify and Rosetta pieces (`libgpiod` joins the packages). VMs created earlier keep working without them (forced stop after 10s, no Rosetta, no file events) and are refused `--rosetta`.
 - **Contexts**: `start`/`resume` wait for `GET /_ping` (10 min timeout for slow first boots), then create or update the docker context `docker-<name>` (endpoint `unix://…/vms/<name>/docker.sock`) and `docker context use` it, which sets `currentContext` in `~/.docker/config.json` for all shells. `rm` deletes the context, switching to `default` first if it is current. They shell out to the `docker` CLI with `DOCKER_HOST`/`DOCKER_CONTEXT` removed from its environment; without the CLI on PATH, `start` just prints the socket. `start` warns when `DOCKER_HOST` is set, since it overrides contexts. `env` remains for scripts.
 - **Several hosts**: each VM has its own private user-mode network (all use guest IP `192.168.127.2`), socket and context. Host ports are first come, first served: a port another VM already forwards is retried every poll, logged once, and reported with its bind error in the daemon's `status` reply (`ControlResponse.Ports`), which `docker list` shows as `8080!`.
@@ -360,7 +360,7 @@ Alpine guest configuration:
 
 `start --kubernetes` runs a single-node k3s server on the VM's engine (Colima-style), so images built with `docker build` or `nerdctl build` are usable in pods without a registry. It's saved in `config.json` (`kubernetes`, `k3s_version`, `kube_port`) and can be turned on or off on any start of a stopped VM; `start` refuses to change it on a running or paused one (it changes the VM's devices and boot arguments). New VMs created with `--kubernetes` default to 4 GiB.
 
-- **k3s binary**: `ensureK3s` downloads `k3s-arm64` for the pinned version (`DefaultK3sVersion`, override with `--k3s-version`) from GitHub releases into `~/.cache/monolith/k3s/<version>/k3s`, verified against the release's `sha256sum-arm64.txt`. That directory is shared read-only over virtio-fs (tag `k3s`, mounted at `/opt/monolith/k3s`), so every VM reuses one download, and `monolith.k3s=1` goes on the kernel command line. Turning Kubernetes off drops both.
+- **k3s binary**: `ensureK3s` downloads `k3s-arm64` for the pinned version (`DefaultK3sVersion`, override with `--k3s-version`) from GitHub releases into `~/.monolith/k3s/<version>/k3s`, verified against the release's `sha256sum-arm64.txt`. That directory is shared read-only over virtio-fs (tag `k3s`, mounted at `/opt/monolith/k3s`), so every VM reuses one download, and `monolith.k3s=1` goes on the kernel command line. Turning Kubernetes off drops both.
 - **Guest layout**: the k3s services live in the inittab written when the disk is created, so `config.json` records `guest_layout` (`vm.GuestLayout`, currently 1) for new docker image VMs. VMs created earlier have none and are refused `--kubernetes` with a hint to recreate them.
 - **Guest**: with `monolith.k3s=1`, `docker-setup` loads `vxlan`, makes `/` rshared, mounts the share, and bind-mounts `/var/lib/rancher` and `/var/lib/kubelet` from the data disk (`/var/lib/docker/.monolith/…` for docker, `/data/…` for containerd). `docker-serve k3s` runs `k3s server --disable=traefik --node-name=<vm> --write-kubeconfig-mode=600` with `--docker` (k3s's built-in cri-dockerd) or `--container-runtime-endpoint=unix:///run/containerd/containerd.sock`. For containerd, `docker-setup` also points the CRI's CNI `bin_dir`/`conf_dir` at k3s's flannel (`/var/lib/rancher/k3s/data/current/bin`, `/var/lib/rancher/k3s/agent/etc/cni/net.d`) because nerdctl's own conflist sits in `/etc/cni/net.d`, and sets nerdctl's and BuildKit's namespace to `k8s.io` so built images are visible to pods; turning Kubernetes off reverts both. Without the flag, `docker-serve k3s|k8s-info` just sleep.
 - **API**: the daemon forwards `127.0.0.1:<kube_port>` (chosen once with `FreeLocalPort`, so several clusters coexist) to guest port 6443. k3s's serving certificate already covers 127.0.0.1.
@@ -403,7 +403,7 @@ Each VM gets a MAC address (saved as `mac` in `config.json`) and a generic machi
 ## Cache Directory
 
 ```
-~/.cache/monolith/
+~/.monolith/
   alpine/                  — shared Alpine assets (kernel, initrd, minirootfs)
     vmlinuz-virt
     initramfs-virt
@@ -442,10 +442,10 @@ Each VM gets a MAC address (saved as `mac` in `config.json`) and a generic machi
       daemon.log           # daemon stdout/stderr
 ```
 
-- Delete `~/.cache/monolith/alpine/` or `~/.cache/monolith/kata/` to force re-download of shared assets.
-- Delete `~/.cache/monolith/vms/<name>/disk.img` to regenerate a VM's disk without re-downloading.
-- Delete `~/.cache/monolith/vms/<name>/` entirely to remove a VM (or use `monolith vm rm <name>`).
-- Delete `~/.cache/monolith/networks/<name>/` entirely to remove a network (or use `monolith network rm <name>`).
+- Delete `~/.monolith/alpine/` or `~/.monolith/kata/` to force re-download of shared assets.
+- Delete `~/.monolith/vms/<name>/disk.img` to regenerate a VM's disk without re-downloading.
+- Delete `~/.monolith/vms/<name>/` entirely to remove a VM (or use `monolith vm rm <name>`).
+- Delete `~/.monolith/networks/<name>/` entirely to remove a network (or use `monolith network rm <name>`).
 
 ## Gotchas
 

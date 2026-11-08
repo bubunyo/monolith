@@ -139,8 +139,8 @@ func TestContainerRun(t *testing.T) {
 		t.Cleanup(func() { os.RemoveAll(home) })
 		realHome, err := os.UserHomeDir()
 		require.NoError(t, err)
-		require.NoError(t, os.MkdirAll(filepath.Join(home, ".cache/monolith"), 0755))
-		require.NoError(t, os.Symlink(filepath.Join(realHome, ".cache/monolith/kata"), filepath.Join(home, ".cache/monolith/kata")))
+		require.NoError(t, os.MkdirAll(filepath.Join(home, ".monolith"), 0755))
+		require.NoError(t, os.Symlink(filepath.Join(realHome, ".monolith/kata"), filepath.Join(home, ".monolith/kata")))
 		isolated := func(args ...string) (string, int) {
 			cmd := exec.Command(binary, append([]string{"container"}, args...)...)
 			cmd.Env = append(os.Environ(), "HOME="+home)

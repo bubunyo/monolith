@@ -20,7 +20,7 @@ monolith container rm web
 
 1. **Images** are pulled from their registry (Docker Hub by default) for
    linux/arm64 and converted once into an ext4 disk image under
-   `~/.cache/monolith/images`. Registry logins come from
+   `~/.monolith/images`. Registry logins come from
    `~/.docker/config.json` and its credential helpers, as with `docker`.
    Layers download 8 at a time and are kept, so images that share a base
    (or a re-pull) reuse them: the output says `Already exists (<image>)`.

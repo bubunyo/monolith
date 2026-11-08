@@ -55,7 +55,7 @@ const (
 
 // DefaultDisk returns the path to the VM's disk image, creating and
 // populating it with the Alpine minirootfs on first use.
-// Each VM gets its own disk under ~/.cache/monolith/vms/<name>/disk.img.
+// Each VM gets its own disk under ~/.monolith/vms/<name>/disk.img.
 // overlays are extra manifests under embeddings/ (e.g. "docker/manifest.yaml")
 // applied after the base manifest; their files replace the base ones.
 func DefaultDisk(rootfsTarball, modloopPath, name string, overlays ...string) (string, error) {
