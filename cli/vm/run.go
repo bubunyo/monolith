@@ -202,7 +202,7 @@ func init() {
 	runCmd.Flags().StringVar(&flagNetworkMode, "network-mode", "", `network mode: nat, shared, host, isolated, none, user (default: nat; user for the docker image)`)
 	runCmd.Flags().StringVarP(&flagNetwork, "network", "n", "", `named network to join (for shared/isolated modes)`)
 	runCmd.Flags().StringVar(&flagHostInterface, "host-interface", "", `physical NIC for host mode (e.g. "en0")`)
-	runCmd.Flags().StringVar(&flagImage, "image", "", `base image: kata, alpine or docker (default: kata for new VMs; existing VMs keep theirs)`)
+	runCmd.Flags().StringVar(&flagImage, "image", "", `base image: kata, alpine or docker (default: alpine for new VMs; existing VMs keep theirs)`)
 	runCmd.Flags().StringVar(&flagLogConsole, "log-console", "", "append guest console output to this file (from boot, even with no client attached)")
 }
 

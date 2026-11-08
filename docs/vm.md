@@ -2,8 +2,8 @@
 
 monolith manages lightweight Linux virtual machines on macOS using
 Apple's Virtualization.framework. The guest OS is a pluggable base image:
-Kata Containers' guest (default for new VMs), Alpine Linux (`--image alpine`),
-or a Docker host built on Alpine (`--image docker`, see [Docker Host](#docker-host)).
+Alpine Linux (default for new VMs), Kata Containers' guest (`--image kata`,
+read-only and reset on every boot), or a Docker host built on Alpine (`--image docker`, see [Docker Host](#docker-host)).
 See AGENTS.md § Base Images for how each boots. VMs run as background daemon processes,
 allowing you to detach, reattach, pause, suspend to disk, and resume without
 losing state.
@@ -728,7 +728,7 @@ disk is recreated from the Alpine minirootfs template.
 | `vm/state.go` | VM state: `ReadState()`, `WriteState()`, `UpdateStateStatus()` (IP discovery is in `net/ip.go`) |
 | `vm/config.go` | VM config: `VMConfig`, `ReadConfig()`, `WriteConfig()` (mode constants are in `net/modes.go`) |
 | `vm/image.go` | Base image interface (`Image`, `BootSpec`), `LookupImage()`, `Exists()` |
-| `vm/image_kata.go` | Kata image (default): GHCR download, dm-verity kernel command line |
+| `vm/image_kata.go` | Kata image: GHCR download, dm-verity kernel command line |
 | `vm/image_alpine.go` | Alpine image adapter |
 | `vm/alpine_kernel.go` | Alpine asset download: kernel, initramfs, minirootfs, modloop |
 | `vm/alpine_disk.go` | Alpine disk image creation: ext4 formatting, rootfs extraction, VM configuration |

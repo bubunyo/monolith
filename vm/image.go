@@ -14,8 +14,9 @@ const (
 	ImageDocker = "docker"
 )
 
-// DefaultImage is used for new VMs when --image is not given.
-const DefaultImage = ImageKata
+// DefaultImage is used for new VMs when --image is not given. Existing VMs
+// keep the image in their config.json.
+const DefaultImage = ImageAlpine
 
 // ValidImages is the set of accepted --image values.
 var ValidImages = []string{ImageKata, ImageAlpine, ImageDocker}

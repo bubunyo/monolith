@@ -34,7 +34,7 @@ type VMConfig struct {
 }
 
 // DefaultConfig returns the default VM configuration: 1 vCPU, 512 MiB RAM,
-// NAT networking, Kata base image.
+// NAT networking, Alpine base image.
 func DefaultConfig() VMConfig {
 	return VMConfig{
 		CPUs:        1,

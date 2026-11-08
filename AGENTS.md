@@ -22,7 +22,7 @@ make proto   # regenerate containerinit/agentpb from agent.proto (needs only Go:
 ```bash
 # VM lifecycle
 monolith vm run [name]                                      # boot a VM (creates on first run, reattaches if running)
-monolith vm run [name] --image alpine                       # base image: kata (default for new VMs), alpine or docker
+monolith vm run [name] --image alpine                       # base image: alpine (default for new VMs), kata or docker
 monolith vm run [name] --network-mode shared                # boot with shared vmnet networking (macOS 26+)
 monolith vm run [name] --network-mode shared --network lan  # join named network "lan"
 monolith vm run [name] --network-mode host --host-interface en0  # bridge to physical NIC
@@ -173,7 +173,7 @@ monolith/
     console_bus.go        — drains the console PTY from boot; 64 KiB ring buffer replayed to the attached client.
     protocol.go           — wire types shared by client and daemon.
     config.go             — VMConfig (CPUs, Memory, NetworkMode, NetworkName, HostInterface, Image, MAC).
-                            Per-VM config at vms/<name>/config.json. Defaults: 1 vCPU, 512 MiB, NAT, kata.
+                            Per-VM config at vms/<name>/config.json. Defaults: 1 vCPU, 512 MiB, NAT, alpine.
     state.go              — VMState/VMStatus, state.json lifecycle, host-side process stats, DiscardSuspended.
     image.go              — Image interface (Prepare(name) → BootSpec), LookupImage, ValidImages, Exists.
     image_kata.go         — kata image: fetch kernel + rootfs from GHCR, dm-verity command line.
@@ -282,9 +282,9 @@ Both `ShareNetwork` and `ReceiveNetwork` require a code signing requirement for 
 
 ## Base Images
 
-The guest OS is pluggable (`vm.Image`, `vm/image.go`). `vm run --image kata|alpine` picks one and saves it in `config.json`. New VMs default to **kata**. A VM whose config has no `image` field, or whose directory has a `disk.img` but no config, is treated as **alpine**, so pre-existing VMs keep booting from their disks. `vm run` calls `Image.Prepare` in the foreground before spawning the daemon, so first-run downloads are visible and can't trip the daemon's 10s socket timeout; the daemon calls it again (cached, instant). Both images share the daemon, console, networking and control plane.
+The guest OS is pluggable (`vm.Image`, `vm/image.go`). `vm run --image kata|alpine` picks one and saves it in `config.json`. New VMs default to **alpine** (kata until the sandbox release: its guest is a read-only appliance for kata-agent, which monolith doesn't drive, so it suits only throwaway VMs). Existing VMs keep the image saved in their config. A VM whose config has no `image` field, or whose directory has a `disk.img` but no config, is treated as **alpine**, so pre-existing VMs keep booting from their disks. `vm run` calls `Image.Prepare` in the foreground before spawning the daemon, so first-run downloads are visible and can't trip the daemon's 10s socket timeout; the daemon calls it again (cached, instant). Both images share the daemon, console, networking and control plane.
 
-| | kata (default) | alpine | docker |
+| | kata | alpine (default) | docker |
 |---|---|---|---|
 | Kernel | Kata 4.3.1 `vmlinux` (raw ARM64 Image, no modules, virtio/vsock/dm-verity built in) | Alpine 3.21 `vmlinuz-virt` + `initramfs-virt` from the ISO | same as alpine |
 | Root disk | Kata Ubuntu 26.04 rootfs image, **read-only, shared by all kata VMs** | per-VM writable 1 GiB ext4 `disk.img` | alpine `disk.img` + `embeddings/docker` overlay, plus a 64 GiB sparse `data.img` (`/dev/vdb`) on `/var/lib/docker` |

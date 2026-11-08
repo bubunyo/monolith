@@ -8,7 +8,7 @@ Virtualization.framework: plain VMs, Colima-style Docker, containerd and
 Kubernetes hosts, sandboxes for code you don't trust, and its own container
 engine that runs each container in its own VM.
 
-- `monolith vm`: Kata (default) or Alpine VMs that boot in seconds, with
+- `monolith vm`: Alpine (default) or Kata VMs that boot in seconds, with
   pause, suspend-to-disk and several network modes.
 - `monolith docker`: Docker Engine or containerd hosts for the CLI on your Mac,
   with docker contexts, localhost port forwarding (TCP and UDP), `/Users`
