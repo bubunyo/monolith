@@ -2,7 +2,7 @@
 // them from registries and converts each into an ext4 disk image that a
 // container VM boots as its root filesystem.
 //
-// Layout under ~/.cache/monolith/images/:
+// Layout under ~/.monolith/images/:
 //
 //	refs.json             image references -> image ID
 //	<id>/rootfs.img       the image's filesystem (sparse ext4)
@@ -66,7 +66,7 @@ type Store struct {
 	dir string
 }
 
-// Open returns the store at ~/.cache/monolith/images.
+// Open returns the store at ~/.monolith/images.
 func Open() (*Store, error) {
 	dir, err := monolith.CachePath("images")
 	if err != nil {

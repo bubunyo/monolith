@@ -437,7 +437,7 @@ monolith network stop my-net && monolith network start my-net
 ### Filesystem Layout
 
 ```
-~/.cache/monolith/networks/
+~/.monolith/networks/
   my-net/
     config.json          # {"mode":"shared","subnet":"192.168.77.0/24","user_subnet":"192.168.77.0/24"}
     pid                  # daemon PID (plain text)
@@ -641,7 +641,7 @@ at least one packet.
 Check the daemon log:
 
 ```bash
-cat ~/.cache/monolith/networks/<name>/daemon.log
+cat ~/.monolith/networks/<name>/daemon.log
 ```
 
 Common causes:

@@ -35,9 +35,9 @@ monolith vm rm my-vm
 ```
 
 The first VM of each image downloads its assets once: ~65 MB of Kata kernel
-and rootfs from `ghcr.io` (cached at `~/.cache/monolith/kata/`), or ~60 MB of
+and rootfs from `ghcr.io` (cached at `~/.monolith/kata/`), or ~60 MB of
 Alpine kernel, initramfs and minirootfs from `dl-cdn.alpinelinux.org`
-(cached at `~/.cache/monolith/alpine/`). Subsequent runs reuse the cache.
+(cached at `~/.monolith/alpine/`). Subsequent runs reuse the cache.
 
 ## VM Naming
 
@@ -332,7 +332,7 @@ monolith docker start --name dev --kubernetes=false   # off on the next start
 - LoadBalancer ports and NodePorts are forwarded to `localhost`, like
   published container ports. Traefik is disabled.
 - The k3s version is pinned (`--k3s-version` to choose another) and downloaded
-  once to `~/.cache/monolith/k3s/`.
+  once to `~/.monolith/k3s/`.
 - Turn Kubernetes on or off only on a stopped host. Hosts created before
   Kubernetes support need recreating first.
 - Pause/resume keeps the cluster and its pods as they were.
@@ -444,7 +444,7 @@ The daemon (`monolith __vmd <name>`) is a hidden CLI command that:
 
 ### Control Protocol
 
-The Unix domain socket at `~/.cache/monolith/vms/<name>/daemon.sock`
+The Unix domain socket at `~/.monolith/vms/<name>/daemon.sock`
 accepts two types of connections, distinguished by the first byte:
 
 #### Console Attach (`0x01`)
@@ -548,7 +548,7 @@ user info, root access instructions, and disk information.
 
 ### Per-VM Config (`config.json`)
 
-Stored at `~/.cache/monolith/vms/<name>/config.json`:
+Stored at `~/.monolith/vms/<name>/config.json`:
 
 ```json
 {
@@ -587,7 +587,7 @@ The `--memory` flag accepts human-readable sizes:
 
 ### Per-VM State (`state.json`)
 
-Stored at `~/.cache/monolith/vms/<name>/state.json`. Written by the daemon
+Stored at `~/.monolith/vms/<name>/state.json`. Written by the daemon
 process and read by CLI commands for status reporting:
 
 ```json
@@ -611,7 +611,7 @@ process and read by CLI commands for status reporting:
 ## Filesystem Layout
 
 ```
-~/.cache/monolith/
+~/.monolith/
   alpine/                      # shared Alpine assets (downloaded once)
     vmlinuz-virt               # decompressed ARM64 kernel image
     initramfs-virt             # stock Alpine initramfs
@@ -640,14 +640,14 @@ It contains the full Alpine root filesystem plus VM-specific configuration
 To regenerate a VM's disk (e.g. after changing embedded templates):
 
 ```bash
-rm ~/.cache/monolith/vms/my-vm/disk.img
+rm ~/.monolith/vms/my-vm/disk.img
 monolith vm run my-vm
 ```
 
 To force re-download of shared Alpine assets:
 
 ```bash
-rm -rf ~/.cache/monolith/alpine/
+rm -rf ~/.monolith/alpine/
 ```
 
 ## Troubleshooting
@@ -657,17 +657,17 @@ rm -rf ~/.cache/monolith/alpine/
 Check the daemon log:
 
 ```bash
-cat ~/.cache/monolith/vms/<name>/daemon.log
+cat ~/.monolith/vms/<name>/daemon.log
 ```
 
 Common causes:
 
 - **Binary not codesigned**: The binary must be signed with
   `com.apple.security.virtualization`. Always use `make build`.
-- **Missing kernel/initrd**: Delete `~/.cache/monolith/alpine/` to force
+- **Missing kernel/initrd**: Delete `~/.monolith/alpine/` to force
   re-download.
 - **Port already in use**: A stale daemon socket may exist. Remove it:
-  `rm ~/.cache/monolith/vms/<name>/daemon.sock`
+  `rm ~/.monolith/vms/<name>/daemon.sock`
 
 ### `vm attach` says another client is attached
 

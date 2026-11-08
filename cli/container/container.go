@@ -27,7 +27,7 @@ so it's instant and only takes space for what the container writes). There's
 no Docker engine involved, and containers share nothing but the Mac.
 
 Images are pulled from registries (Docker Hub by default; logins come from
-~/.docker/config.json) and converted once into ~/.cache/monolith/images.
+~/.docker/config.json) and converted once into ~/.monolith/images.
 
 Containers are VMs too: 'monolith vm list' shows them with IMAGE
 "container (<image>)".`,
