@@ -9,6 +9,7 @@ import (
 	"github.com/bubunyo/monolith/cli/network"
 	"github.com/bubunyo/monolith/cli/sandbox"
 	"github.com/bubunyo/monolith/cli/vm"
+	"github.com/bubunyo/monolith/update"
 	"github.com/spf13/cobra"
 )
 
@@ -37,4 +38,9 @@ func init() {
 	rootCmd.AddCommand(docker.Cmd)
 	rootCmd.AddCommand(sandbox.Cmd)
 	rootCmd.AddCommand(container.Cmd)
+	rootCmd.AddCommand(updateCmd)
+
+	// --version also says whether this is the latest release.
+	cobra.AddTemplateFunc("updateNote", func() string { return versionNote(version, update.CheckLatest) })
+	rootCmd.SetVersionTemplate(`{{with .Name}}{{printf "%s " .}}{{end}}{{printf "version %s" .Version}}{{updateNote}}`)
 }

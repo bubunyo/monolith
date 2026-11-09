@@ -85,6 +85,10 @@ monolith container rm [-f] NAME...                # -f kills running ones first
 monolith container prune [-f]                     # remove stopped containers (asks; size = what each wrote)
 monolith container image prune [-a] [-f]          # untagged images (-a: every image no container uses) + unused layers
 monolith container pull IMAGE | images | rmi [-f] IMAGE...
+
+# Version and updates
+monolith --version                                # also says whether it's the latest release (2s check; MONOLITH_NO_UPDATE_CHECK=1 skips)
+monolith update [--check] [--version vX] [--force]  # install the latest release (or vX) over this binary
 ```
 
 If no name is given to `run`, one is auto-generated as `lith-NNNNN` (random 5-digit number). VM names must be lowercase alphanumeric with hyphens, max 63 characters (valid hostnames). The `network` command is also aliased as `net`.
@@ -110,6 +114,7 @@ GitHub Actions, all on `macos-15` (Apple Silicon) because of cgo and Virtualizat
 - `.github/workflows/release.yml` (tag `v*`; `-` in the tag makes a prerelease): lint and test, then build with `VERSION=<tag>`. With the `MACOS_CERTIFICATE` secrets it imports a Developer ID certificate into a temporary keychain and signs with the hardened runtime and a timestamp; with the `NOTARY_*` secrets it notarizes (a bare binary can't be stapled; Gatekeeper fetches the ticket online). Without secrets it ad-hoc signs and warns. Then `make dist`, a build provenance attestation, and `gh release create --generate-notes`. Secrets and the release steps are in `docs/releasing.md`.
 - `.github/dependabot.yml`: weekly grouped updates for Go modules and actions.
 - `install.sh`: `curl -fsSL https://raw.githubusercontent.com/bubunyo/monolith/master/install.sh | bash`. Checks macOS/arm64, resolves the latest tag (or `MONOLITH_VERSION`), downloads the `make dist` archive and `checksums.txt`, verifies both and the code signature, installs to `MONOLITH_INSTALL_DIR` (default `/usr/local/bin`, sudo if not writable). `MONOLITH_BASE_URL` points it at a mirror or a local test server. Shellchecked in CI.
+- `monolith update` (`update/`, `cli/update.go`) does in Go what install.sh does, over the running binary (`os.Executable`, symlinks resolved): latest tag from the GitHub API (`MONOLITH_RELEASES_URL` overrides it), archive and `checksums.txt` from `MONOLITH_BASE_URL` (as install.sh), sha256, `codesign --verify` and the virtualization entitlement, then a copy renamed into place, or `sudo install` when the directory isn't writable. It refuses to replace a development build (`IsRelease`: not a plain semver tag, e.g. a `git describe` past one) without `--force`. Running VM and network daemons keep the old binary, and a VM can only join a named network started by the same build (CDHash), so it lists them to restart. `monolith --version` adds `(latest)`, an `Update available` line, or `(development build; …)` through cobra's version template; it prints the bare version when the check fails.
 - `vendor/` is not committed (ignored by the maintainer's global gitignore), so CI builds in module mode.
 
 ## Platform Constraint
@@ -124,7 +129,8 @@ The repo is a single Go module: package `vm` (VM daemon, client, state, disk/ker
 monolith/
   cmd/monolith/main.go   — CLI entry point, calls cli.Execute()
   cli/
-    root.go               — root cobra command, registers vm + network + docker + sandbox + container subcommands
+    root.go               — root cobra command, registers vm + network + docker + sandbox + container + update subcommands
+    update.go             — "update" (self-update) and the --version release note
     netd.go               — hidden "__netd" command, entry point for the network daemon process
     vmd.go                — hidden "__vmd" command, entry point for the per-VM daemon process
     vm/
@@ -216,6 +222,7 @@ monolith/
                             buf.gen.yaml at the root). Generated code is committed.
   cmd/monolith-init/      — PID 1 of container VMs (linux/arm64, static): main_linux.go (setup, mounts, reaping, shutdown),
                             agent_linux.go (the Agent ttRPC service), grow_linux.go; main_other.go is a stub for the Mac.
+  update/                 — latest release lookup, version comparison (x/mod/semver), download + checksum, codesign check, Replace.
   internal/ansi/          — terminal helpers: IsTerminal, UseColor, Paint, Size, Plain (console output → text).
   internal/steps/         — the step view (vm run): running step's last 12 lines, finished steps folded to a line.
   net/                    — package net: networking. Imports only the root package (never vm).
