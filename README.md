@@ -57,6 +57,9 @@ for the `bash` side of the pipe:
 curl -fsSL https://raw.githubusercontent.com/bubunyo/monolith/master/install.sh | MONOLITH_VERSION=v0.1.0 MONOLITH_INSTALL_DIR=~/.local/bin bash
 ```
 
+To update later, run `monolith update`; it makes the same checks and replaces
+the binary in place. `monolith --version` tells you when a newer release is out.
+
 To install by hand, download `monolith_<version>_darwin_arm64.tar.gz` and
 `checksums.txt` from [Releases](https://github.com/bubunyo/monolith/releases),
 run `shasum -a 256 -c checksums.txt`, and copy the binary onto your PATH. If
