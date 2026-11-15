@@ -1,0 +1,69 @@
+#!/bin/sh
+# cluster-serve — long-running cluster VM services, respawned by init.
+#
+#   k3s:       single-node k3s server on its own bundled containerd. It
+#              writes its kubeconfig to the share the host reads it from.
+#   power:     powers off cleanly when the VM's power button is pressed
+#              (Virtualization.framework's stop request): GPIO line 6 of
+#              the PL061 controller, as described by the device tree's
+#              gpio-keys node. Alpine's kernel has no gpio_keys driver, so
+#              gpiomon watches the line instead.
+#   shutdown:  run by init on poweroff, before it kills everything: stops
+#              k3s and the pods' shims, then syncs.
+#   clock:     keeps the system clock in step with the RTC, which follows
+#              the Mac's clock. After a restore from `monolith cluster pause`
+#              the system clock is behind by however long the VM was paused.
+
+K3S=/opt/monolith/k3s/k3s
+KUBECONFIG_OUT=/opt/monolith/out/kubeconfig
+
+case "$1" in
+k3s)
+	# Not shared in yet: wait and be respawned, so init doesn't spin.
+	if [ ! -x "$K3S" ]; then
+		sleep 5
+		exit 1
+	fi
+	exec "$K3S" server --disable=traefik --node-name="$(hostname)" \
+		--write-kubeconfig="$KUBECONFIG_OUT" --write-kubeconfig-mode=600 \
+		>>/var/log/k3s.log 2>&1
+	;;
+power)
+	if ! command -v gpiomon >/dev/null; then
+		sleep 5
+		exit 1
+	fi
+	gpiomon --edges=rising --num-events=1 -c gpiochip0 6 >/dev/null || exit 1
+	echo "cluster-serve: power button pressed, shutting down" >/dev/console
+	exec poweroff
+	;;
+shutdown)
+	stop_wait() { # stop_wait <process> <seconds>
+		pkill -TERM -x "$1" 2>/dev/null || return 0
+		i=0
+		while pgrep -x "$1" >/dev/null && [ $i -lt "$2" ]; do
+			sleep 1
+			i=$((i + 1))
+		done
+	}
+	# Stop k3s first so it doesn't restart pods, then the pods' shims, which
+	# outlive it.
+	stop_wait k3s 10
+	pkill -TERM -f containerd-shim 2>/dev/null
+	sleep 3
+	sync
+	;;
+clock)
+	while sleep 2; do
+		rtc=$(cat /sys/class/rtc/rtc0/since_epoch) || exit 1
+		drift=$((rtc - $(date +%s)))
+		if [ "$drift" -gt 2 ] || [ "$drift" -lt -2 ]; then
+			hwclock -s -u
+		fi
+	done
+	;;
+*)
+	echo "usage: cluster-serve k3s|power|shutdown|clock" >&2
+	exit 2
+	;;
+esac

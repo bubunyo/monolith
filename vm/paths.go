@@ -38,6 +38,18 @@ func VMDockerSockPath(name string) (string, error) {
 	return monolith.CachePath("vms", name, "docker.sock")
 }
 
+// VMKubeDir returns the directory shared into a cluster VM (read-write);
+// k3s writes its kubeconfig there.
+func VMKubeDir(name string) (string, error) {
+	return monolith.CachePath("vms", name, "kube")
+}
+
+// VMKubeconfigPath returns the kubeconfig k3s writes in a cluster VM, with
+// the server at https://127.0.0.1:6443 (as seen from the guest).
+func VMKubeconfigPath(name string) (string, error) {
+	return monolith.CachePath("vms", name, "kube", "kubeconfig")
+}
+
 // VMSSHKeyPath returns the private key for a containerd engine VM's
 // internal sshd; the public half is at the same path plus ".pub".
 func VMSSHKeyPath(name string) (string, error) {

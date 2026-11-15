@@ -317,6 +317,13 @@ func RunDaemon(name string, restore bool, consoleLogPath string) error {
 		}
 		defer services.close()
 	}
+	if cfg.Image == ImageCluster {
+		cluster, err := startClusterServices(name, cfg, userNet, logger)
+		if err != nil {
+			return errors.Wrap(err, "cluster services")
+		}
+		defer cluster.close()
+	}
 
 	// Write state.
 	if err := WriteState(name, os.Getpid(), macStr, StatusRunning); err != nil {

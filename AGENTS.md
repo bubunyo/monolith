@@ -61,6 +61,14 @@ monolith docker kubeconfig                        # print the standalone kubecon
 monolith docker start --rosetta                   # run linux/amd64 images with Rosetta (opt-in, saved; --rosetta=false to turn off)
 monolith docker link-socket [--unlink]            # sudo-symlink /var/run/docker.sock to the host's docker.sock
 
+# Clusters: a single-node k3s in a VM (image cluster, user mode); every command but list takes --name (default cluster-default)
+monolith cluster start [--cpus N --memory 4G --k3s-version v1.36.5+k3s1]  # boot (or resume) it, wait for the node, merge kubectl context cluster-<name> and make it current
+monolith cluster pause | resume                   # save the whole VM to disk and stop it / restore it (pods carry on)
+monolith cluster stop [--force]                   # stop it (state persists); on a paused cluster, discards the snapshot after asking
+monolith cluster kubeconfig                       # print the standalone kubeconfig (context cluster-<name>)
+monolith cluster list                             # clusters: state, k3s version, context (* = current), cpus, mem, data, API address
+monolith cluster rm [--force]                     # delete the VM and its kubectl context (the previous current context comes back)
+
 # Repo sandboxes (untrusted code); the repo is the git root, else an existing parent sandbox, else cwd
 monolith sandbox activate [--image I --network outbound|none|allow --allow host:port]  # shell in the repo's sandbox
 monolith sandbox exec -- CMD                      # one command, exits with its status
@@ -100,6 +108,7 @@ go test ./...             # all tests
 go test -run TestRun ./vm # single test
 MONOLITH_TEST_DOCKER=1 go test -run TestDockerPauseResume ./vm  # docker host pause/resume (needs internet, docker CLI, unlocked Mac)
 MONOLITH_TEST_K8S=1 go test -run TestKubernetesPauseResume ./vm  # k3s on both engines: LB service, pause/resume (needs internet, kubectl, unlocked Mac)
+MONOLITH_TEST_K8S=1 go test -run TestClusterPauseResume ./vm  # cluster VM: nginx pod survives pause/resume (needs internet, kubectl, unlocked Mac)
 MONOLITH_TEST_SANDBOX=1 go test -run TestSandboxIsolation ./cli/sandbox  # hostile script in a real sandbox (needs docker CLI, unlocked Mac)
 MONOLITH_TEST_CONTAINER=1 go test -run TestContainerRun ./cli/container  # container VMs: exit codes, config, network, lifecycle (needs internet)
 ```
@@ -158,6 +167,8 @@ monolith/
       docker.go           — "docker start|stop|pause|resume|rm|env" for Docker host VMs (image docker, user mode), --engine
       ssh.go              — "docker nerdctl": execs ssh to the containerd host's internal sshd via ssh.sock
       link.go             — "docker link-socket": sudo ln -sfn docker.sock /var/run/docker.sock (refuses non-symlinks)
+    cluster/
+      cluster.go          — "cluster start|stop|pause|resume|rm|list|kubeconfig" (image cluster, user mode)
     sandbox/
       sandbox.go          — "sandbox activate|exec|status|list|stop|rm": per-repo docker image VM, shell container, sessions
       firewall.go         — network policy as iptables rules applied in the VM via a privileged helper container
@@ -191,6 +202,9 @@ monolith/
     image_alpine.go       — alpine image: wraps alpine_kernel.go + alpine_disk.go.
     image_docker.go       — docker image: alpine + embeddings/docker overlay (+ embeddings/containerd for that engine),
                             sparse data.img, /Users virtio-fs share; EngineDocker/EngineContainerd, EngineOf.
+    image_cluster.go      — cluster image: alpine + embeddings/cluster overlay, sparse data.img, k3s (ro, tag k3s) and
+                            kubeconfig (rw, tag kube) shares; ImageCluster.
+    cluster.go            — clusterServices: forwards 127.0.0.1:<kube_port> to the guest's k3s API.
     sshkey.go             — per-VM ed25519 key for the containerd engine's internal sshd.
     k3s.go                — k3s download/verify into the cache (ensureK3s), DefaultK3sVersion, GuestLayout(+per-feature minimums),
                             FreeLocalPort.
@@ -210,7 +224,7 @@ monolith/
                             and writes guest config files from embeddings/manifest.yaml plus overlay manifests
                             (embeddings/docker/manifest.yaml) (go:embed needs them inside vm/).
     paths.go              — VMsDir, VMDir, VMSockPath, VMSuspendPath, VMLogPath, VMMachineIDPath, VMDockerSockPath,
-                            VMSSHKeyPath, VMSSHSockPath.
+                            VMKubeDir, VMKubeconfigPath, VMSSHKeyPath, VMSSHSockPath.
     keybag.go             — keybagLocked() (MobileKeyBag via dlopen, cgo): restore is refused while the Mac is locked.
     *_test.go             — tests (boot real VMs via ../bin/monolith; image_kata_test.go also has unit tests).
   oci/                    — image store (~/.monolith/images): pull (go-containerregistry, Docker keychain),
@@ -224,6 +238,7 @@ monolith/
                             agent_linux.go (the Agent ttRPC service), grow_linux.go; main_other.go is a stub for the Mac.
   update/                 — latest release lookup, version comparison (x/mod/semver), download + checksum, codesign check, Replace.
   internal/ansi/          — terminal helpers: IsTerminal, UseColor, Paint, Size, Plain (console output → text).
+  internal/kubeconfig/    — the cluster's kubeconfig: parse/rewrite k3s's file, merge into and remove from the user's, readiness check.
   internal/steps/         — the step view (vm run): running step's last 12 lines, finished steps folded to a line.
   net/                    — package net: networking. Imports only the root package (never vm).
                             Callers that also use the standard library import it as `mnet`.
@@ -396,6 +411,17 @@ Alpine guest configuration:
 - **Service ports**: every poll the daemon adds Kubernetes service ports to the engine's: LoadBalancer ports (k3s's servicelb serves them on the node) and NodePorts, TCP only (`parseKubeServicePorts`). They're forwarded to localhost like container ports, with the same clash rules.
 - **list**: `docker list` has a K8S column with the k3s version; `vm list` shows `docker (docker+k3s)`.
 
+### Clusters
+
+`monolith cluster` (`cli/cluster`) is the plain way to get Kubernetes: a VM with image `cluster` (`vm/image_cluster.go`, overlay `vm/embeddings/cluster`) that runs one k3s server on k3s's own bundled containerd. No Docker, nerdctl, BuildKit, sshd or socat in the guest, and no flags beyond `--cpus`, `--memory` and `--k3s-version` (saved in `config.json`; the version only changes while stopped). It is an ordinary VM otherwise: `vm attach|logs|list|rm` work on it. Not in `ValidImages`; only `cluster start` creates one. User-mode network only.
+
+- **Guest**: `cluster-setup` (sysinit) installs `e2fsprogs libgpiod iptables ip6tables` on first boot (needs network), loads `vxlan` and friends, mounts the data disk on `/data` with `/var/lib/rancher` and `/var/lib/kubelet` bind-mounted from it, makes `/` rshared, and mounts the shares. `cluster-serve k3s` runs `k3s server --disable=traefik --write-kubeconfig=/opt/monolith/out/kubeconfig`; `power`, `shutdown` (stop k3s, then the pods' shims) and `clock` are as in the docker host. Boot markers: network, setup, ready (steps Kernel, System, Network, Cluster).
+- **Shares**: the k3s binary read-only (tag `k3s`, `~/.monolith/k3s/<version>/`, shared with docker hosts) at `/opt/monolith/k3s`; `vms/<name>/kube/` read-write (tag `kube`) at `/opt/monolith/out`, where k3s writes its kubeconfig. That file replaces the docker host's `k8s-info` socat service and control command: the CLI just reads `VMKubeconfigPath`.
+- **API**: `clusterServices` (the daemon, `vm/cluster.go`) forwards `127.0.0.1:<kube_port>` to guest port 6443; `kube_port` is chosen once with `FreeLocalPort`. There is no service-port forwarding: LoadBalancer and NodePort services are not published on localhost (use `kubectl port-forward`).
+- **start**: new VM or `start` on a stopped one deletes the stale kubeconfig file, `Prepare`s, spawns the daemon, then polls until the file exists, `/readyz` answers and the node is Ready (up to 10 min; ~10s on a warm cache), and merges the context. A suspended VM is resumed instead. `pause`/`resume`/`stop`/`rm` are as for the docker host.
+- **kubeconfig** (`internal/kubeconfig`): context, cluster and user are all named `cluster-<name>` (`ContextName`; never a bare name, so a user's own context can't be replaced). The merge edits the first file in `$KUBECONFIG` (else `~/.kube/config`) as a generic YAML document, keeping fields it doesn't know. The file as it was is saved once as `<file>.monolith.bak` (later merges don't touch it), and the context that was current is noted in `vms/<name>/prev-context`; `rm` removes the entries and makes that context current again if it still exists, else clears `current-context`. A file without the entries is not rewritten. (`docker start --kubernetes` still uses its own copy in `cli/docker/kube.go`, with the old behaviour.)
+- **Not supported**: amd64-only images. containerd's CRI only pulls the node's platform (arm64), even with Rosetta in the guest. Tried on Alpine's containerd 2.0.0 and k3s's bundled 2.3.4: a pre-pull with `--platform linux/amd64` isn't seen by the CRI, and a second runtime handler with `runtime_platform = linux/amd64` plus a RuntimeClass and the alpha kubelet gate `RuntimeClassInImageCriApi` still fails with `no match for platform in manifest`. Multi-arch images work. There is no `--rosetta` for clusters.
+
 ### Sandboxes
 
 `monolith sandbox` (docs/sandbox.md) runs a repo's commands in a lith. A sandbox is a docker image VM (docker engine, user-mode network) named `sbx-<slug>-<6 hex of sha256(repo path)>` with `sandbox` in `config.json`; created on first `activate`/`exec`, which take `--image/--network/--allow/--cpus/--memory/--rosetta` and save them.
@@ -435,7 +461,7 @@ Each VM gets a MAC address (saved as `mac` in `config.json`) and a generic machi
     vmlinuz-virt
     initramfs-virt
     minirootfs.tar.gz
-  k3s/v1.36.5+k3s1/k3s     — k3s binary, shared read-only into VMs with --kubernetes
+  k3s/v1.36.5+k3s1/k3s     — k3s binary, shared read-only into VMs with --kubernetes and into clusters
   images/                  — container images (oci): refs.json, <config digest>/{rootfs.img, image.json},
                              blobs/sha256/<hex> (layer cache, shared between images)
   container/initrd-<hash>.img — the container VMs' initrd (monolith-init), one per init build

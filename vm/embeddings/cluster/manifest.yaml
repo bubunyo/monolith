@@ -1,0 +1,14 @@
+# Overlay applied on top of ../manifest.yaml for the cluster image.
+files:
+  - src: cluster/etc/inittab.tmpl
+    dst: etc/inittab
+    mode: "0644"
+  - src: cluster/etc/motd.tmpl
+    dst: etc/motd
+    mode: "0644"
+  - src: cluster/usr/local/bin/cluster-setup
+    dst: usr/local/bin/cluster-setup
+    mode: "0755"
+  - src: cluster/usr/local/bin/cluster-serve
+    dst: usr/local/bin/cluster-serve
+    mode: "0755"
