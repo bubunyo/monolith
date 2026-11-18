@@ -616,10 +616,13 @@ func confirm(question string) bool {
 }
 
 func init() {
-	Cmd.AddCommand(startCmd, stopCmd, pauseCmd, resumeCmd, listCmd, rmCmd, envCmd, nerdctlCmd, kubeconfigCmd, linkSocketCmd)
+	Cmd.AddCommand(useCmd, startCmd, stopCmd, pauseCmd, resumeCmd, listCmd, rmCmd, envCmd, nerdctlCmd, kubeconfigCmd, linkSocketCmd)
 
 	for _, c := range []*cobra.Command{startCmd, stopCmd, pauseCmd, resumeCmd, rmCmd, envCmd, nerdctlCmd, kubeconfigCmd, linkSocketCmd} {
 		c.Flags().StringVar(&flagName, "name", defaultName, "Docker host VM name")
+		_ = c.RegisterFlagCompletionFunc("name", func(*cobra.Command, []string, string) ([]string, cobra.ShellCompDirective) {
+			return dockerHostNames(), cobra.ShellCompDirectiveNoFileComp
+		})
 	}
 	startCmd.Flags().UintVarP(&flagCPUs, "cpus", "c", 0, "number of vCPUs (default: 2)")
 	startCmd.Flags().StringVarP(&flagMemory, "memory", "m", "", `RAM size, e.g. "2G", "4096M" (default: 2G)`)

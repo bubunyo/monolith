@@ -49,8 +49,16 @@ func list() error {
 		}
 	}
 	sort.Strings(names)
+	if len(names) == 0 && flagListQuiet {
+		return nil
+	}
 	if len(names) == 0 {
 		fmt.Println("No Docker hosts. Create one with 'monolith docker start'.")
+		return nil
+	}
+
+	if flagListQuiet {
+		fmt.Println(strings.Join(names, "\n"))
 		return nil
 	}
 
