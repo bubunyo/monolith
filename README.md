@@ -14,6 +14,8 @@ engine that runs each container in its own VM.
   with docker contexts, localhost port forwarding (TCP and UDP), `/Users`
   bind mounts with file-change events, pause/resume to disk, optional Rosetta
   for amd64 images, and optional Kubernetes (k3s).
+- `monolith cluster`: a single-node Kubernetes (k3s) cluster in a VM, merged
+  into your kubeconfig, with pause/resume to disk.
 - `monolith sandbox`: run a repo you don't trust in a lith, like a virtualenv:
   only the repo is visible (read-only, changes reviewed with `diff`/`apply`),
   and the code can reach the internet but not your Mac or local network.
@@ -32,7 +34,8 @@ engine that runs each container in its own VM.
 | You want | Use |
 |---|---|
 | A Linux machine to work in | `monolith vm` |
-| The Docker ecosystem: the `docker` CLI, Compose, buildx, Kubernetes | `monolith docker` |
+| The Docker ecosystem: the `docker` CLI, Compose, buildx | `monolith docker` |
+| A Kubernetes cluster to point `kubectl` at | `monolith cluster` |
 | Quick runs of single images, each container isolated by its own VM | `monolith container` |
 | A safe place to try a repo you don't trust | `monolith sandbox` |
 
@@ -88,7 +91,7 @@ launch, and without the init `monolith container` can't run anything.
 monolith vm run dev                 # boot a VM and attach to its console (Ctrl+] then q to detach)
 monolith docker start               # a Docker host; the docker CLI's context switches to it
 docker run --rm -it busybox sh
-monolith docker start --name k8s --kubernetes
+monolith cluster start              # a single-node Kubernetes (k3s) cluster; kubectl's context switches to it
 kubectl get nodes
 
 monolith container run --rm alpine echo hello      # a container in its own VM
@@ -104,7 +107,8 @@ command to run in the container, as with `docker run`.
 
 ## Documentation
 
-- [docs/vm.md](docs/vm.md): VMs, Docker hosts, containerd, Kubernetes
+- [docs/vm.md](docs/vm.md): VMs, Docker hosts, containerd
+- [docs/cluster.md](docs/cluster.md): single-node Kubernetes (k3s) clusters
 - [docs/container.md](docs/container.md): containers, each in its own VM
 - [docs/sandbox.md](docs/sandbox.md): sandboxes for untrusted repos
 - [docs/networking.md](docs/networking.md): network modes and named networks

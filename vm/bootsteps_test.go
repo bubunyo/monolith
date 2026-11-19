@@ -89,13 +89,14 @@ func TestWatchBootConsoleCloses(t *testing.T) {
 }
 
 func TestBootMarkersInInittabs(t *testing.T) {
-	for _, path := range []string{"embeddings/etc/inittab.tmpl", "embeddings/docker/etc/inittab.tmpl", "embeddings/containerd/etc/inittab.tmpl"} {
+	for path, image := range map[string]string{
+		"embeddings/etc/inittab.tmpl":            ImageAlpine,
+		"embeddings/docker/etc/inittab.tmpl":     ImageDocker,
+		"embeddings/containerd/etc/inittab.tmpl": ImageDocker,
+		"embeddings/cluster/etc/inittab.tmpl":    ImageCluster,
+	} {
 		data, err := embeddings.ReadFile(path)
 		require.NoError(t, err)
-		image := ImageDocker
-		if path == "embeddings/etc/inittab.tmpl" {
-			image = ImageAlpine
-		}
 		for _, s := range BootSteps(VMConfig{Image: image, GuestLayout: GuestLayout}) {
 			if s.End == "" {
 				continue

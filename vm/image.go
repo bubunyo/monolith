@@ -69,6 +69,8 @@ func LookupImage(name string) (Image, error) {
 		return dockerImage{}, nil
 	case ImageContainer:
 		return containerImage{}, nil
+	case ImageCluster:
+		return clusterImage{}, nil
 	default:
 		return nil, fmt.Errorf("unknown image %q; must be one of: %s", name, strings.Join(ValidImages, ", "))
 	}

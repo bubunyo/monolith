@@ -335,6 +335,10 @@ root over an internal sshd that only monolith can reach; logs are in
 
 ### Kubernetes (k3s)
 
+For a plain cluster, use [`monolith cluster`](cluster.md). This section covers
+running k3s on a Docker host's engine, which is the way to use images built
+locally in pods.
+
 `--kubernetes` runs a single-node [k3s](https://k3s.io) cluster on the host's
 engine, so images you build locally can run in pods without a registry:
 
