@@ -4,16 +4,19 @@
 [![Release](https://img.shields.io/github/v/release/bubunyo/monolith?include_prereleases)](https://github.com/bubunyo/monolith/releases)
 
 Lightweight Linux VMs on macOS (Apple Silicon), built on Apple's
-Virtualization.framework: plain VMs, Colima-style Docker, containerd and
-Kubernetes hosts, sandboxes for code you don't trust, and its own container
+Virtualization.framework: plain VMs, Colima-style Docker and containerd hosts,
+Kubernetes clusters, sandboxes for code you don't trust, and its own container
 engine that runs each container in its own VM.
 
 - `monolith vm`: Alpine (default) or Kata VMs that boot in seconds, with
   pause, suspend-to-disk and several network modes.
 - `monolith docker`: Docker Engine or containerd hosts for the CLI on your Mac,
   with docker contexts, localhost port forwarding (TCP and UDP), `/Users`
-  bind mounts with file-change events, pause/resume to disk, optional Rosetta
-  for amd64 images, and optional Kubernetes (k3s).
+  bind mounts with file-change events, pause/resume to disk, and optional
+  Rosetta for amd64 images. `docker use` switches between hosts.
+- `monolith cluster`: a single-node Kubernetes (k3s) cluster in a VM, merged
+  into your kubeconfig, with LoadBalancer and NodePort services on localhost
+  and pause/resume to disk. `cluster use` switches between clusters.
 - `monolith sandbox`: run a repo you don't trust in a lith, like a virtualenv:
   only the repo is visible (read-only, changes reviewed with `diff`/`apply`),
   and the code can reach the internet but not your Mac or local network.
@@ -32,7 +35,8 @@ engine that runs each container in its own VM.
 | You want | Use |
 |---|---|
 | A Linux machine to work in | `monolith vm` |
-| The Docker ecosystem: the `docker` CLI, Compose, buildx, Kubernetes | `monolith docker` |
+| The Docker ecosystem: the `docker` CLI, Compose, buildx | `monolith docker` |
+| A Kubernetes cluster to point `kubectl` at | `monolith cluster` |
 | Quick runs of single images, each container isolated by its own VM | `monolith container` |
 | A safe place to try a repo you don't trust | `monolith sandbox` |
 
@@ -56,6 +60,9 @@ for the `bash` side of the pipe:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/bubunyo/monolith/master/install.sh | MONOLITH_VERSION=v0.1.0 MONOLITH_INSTALL_DIR=~/.local/bin bash
 ```
+
+To update later, run `monolith update`; it makes the same checks and replaces
+the binary in place. `monolith --version` tells you when a newer release is out.
 
 To install by hand, download `monolith_<version>_darwin_arm64.tar.gz` and
 `checksums.txt` from [Releases](https://github.com/bubunyo/monolith/releases),
@@ -85,7 +92,7 @@ launch, and without the init `monolith container` can't run anything.
 monolith vm run dev                 # boot a VM and attach to its console (Ctrl+] then q to detach)
 monolith docker start               # a Docker host; the docker CLI's context switches to it
 docker run --rm -it busybox sh
-monolith docker start --name k8s --kubernetes
+monolith cluster start              # a single-node Kubernetes (k3s) cluster; kubectl's context switches to it
 kubectl get nodes
 
 monolith container run --rm alpine echo hello      # a container in its own VM
@@ -101,7 +108,8 @@ command to run in the container, as with `docker run`.
 
 ## Documentation
 
-- [docs/vm.md](docs/vm.md): VMs, Docker hosts, containerd, Kubernetes
+- [docs/vm.md](docs/vm.md): VMs, Docker hosts, containerd
+- [docs/cluster.md](docs/cluster.md): single-node Kubernetes (k3s) clusters
 - [docs/container.md](docs/container.md): containers, each in its own VM
 - [docs/sandbox.md](docs/sandbox.md): sandboxes for untrusted repos
 - [docs/networking.md](docs/networking.md): network modes and named networks

@@ -18,6 +18,11 @@ const (
 	// gateway like DockerAPIPort. The daemon reads published ports from it.
 	NerdctlPortsPort = 2377
 
+	// LoopbackRelayPort is the guest TCP port (gateway only) that relays a
+	// connection to a port on the guest's loopback. The first line sent is
+	// the port ("<port>", or "6 <port>" for [::1]); the rest is the stream.
+	LoopbackRelayPort = 2381
+
 	// SSHPort is the guest's internal sshd (containerd engine), used by
 	// `monolith docker nerdctl` through the daemon's ssh.sock.
 	SSHPort = 22
@@ -103,23 +108,11 @@ func (dockerImage) Prepare(name string, log io.Writer) (*BootSpec, error) {
 		if err := validateSandbox(cfg.Sandbox); err != nil {
 			return nil, err
 		}
-		if cfg.Kubernetes {
-			return nil, fmt.Errorf("sandboxes don't run Kubernetes")
-		}
 		shares = []Share{{Tag: sandboxShareTag, HostPath: cfg.Sandbox.Repo, ReadOnly: true}}
 		commandLine += " " + sandboxCmdline(cfg.Sandbox.Repo)
 	}
-	if cfg.Kubernetes {
-		if cfg.GuestLayout < GuestLayoutKubernetes {
-			return nil, fmt.Errorf("VM %q was created before Kubernetes support; recreate it to use --kubernetes", name)
-		}
-		dir, err := ensureK3s(K3sVersionOf(cfg), log)
-		if err != nil {
-			return nil, err
-		}
-		shares = append(shares, Share{Tag: k3sShareTag, HostPath: dir, ReadOnly: true})
-		commandLine += " " + k3sCmdlineArg + "=1"
-	}
+	// cfg.Kubernetes may still be set on hosts created when they could run
+	// k3s; it is ignored ('monolith cluster' replaced it).
 	if cfg.Rosetta {
 		if cfg.GuestLayout < GuestLayoutRosetta {
 			return nil, fmt.Errorf("VM %q was created before Rosetta support; recreate it to use --rosetta", name)

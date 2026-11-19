@@ -34,13 +34,16 @@ func BootSteps(cfg VMConfig) []BootStep {
 	case ImageKata:
 		// Read-only rootfs, so no markers; the kernel itself runs DHCP.
 		return []BootStep{kernel, {Title: "System", Match: "Reached target kata-containers.target"}}
-	case ImageAlpine, ImageDocker:
+	case ImageAlpine, ImageDocker, ImageCluster:
 		if cfg.GuestLayout < GuestLayoutBootSteps {
 			return []BootStep{kernel}
 		}
 		steps := []BootStep{kernel, {Title: "System", End: "network"}}
-		if cfg.Image == ImageAlpine {
+		switch cfg.Image {
+		case ImageAlpine:
 			return append(steps, BootStep{Title: "Network", End: "ready"})
+		case ImageCluster:
+			return append(steps, BootStep{Title: "Network", End: "setup"}, BootStep{Title: "Cluster", End: "ready"})
 		}
 		return append(steps, BootStep{Title: "Network", End: "engine"}, BootStep{Title: "Engine", End: "ready"})
 	}

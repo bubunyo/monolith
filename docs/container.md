@@ -8,7 +8,8 @@ monolith's own init as PID 1 and the image's filesystem as its root disk.
 ```bash
 monolith container run --rm alpine echo hello      # about 0.7 s, start to exit
 monolith container run -it --rm alpine sh          # interactive shell
-monolith container run -d --name web nginx         # in the background
+monolith container run -d --name web -p 8080:80 nginx   # in the background, on localhost:8080
+curl localhost:8080
 monolith container logs -f web
 monolith container stop web
 monolith container rm web
@@ -45,8 +46,8 @@ container still only has a VM with nothing in it but itself.
 
 | Command | |
 |---|---|
-| `run [flags] IMAGE [COMMAND...]` | Create and start a container. `-d` background, `-it` interactive terminal, `--rm` remove on exit, `--name`, `-e KEY=VALUE` / `-e KEY` (copied from your shell), `--env-file`, `-w DIR`, `-u USER[:GROUP]`, `--entrypoint`, `--cpus` (1), `-m/--memory` (512M), `--disk` (8G: the container's disk, image included; only what's written takes space on the Mac, and it can't be smaller than the image's filesystem, at least 1G), `--pull missing\|always\|never`. Flags after IMAGE belong to the command. |
-| `ps [-a] [-q]` | Running containers; `-a` includes stopped ones. |
+| `run [flags] IMAGE [COMMAND...]` | Create and start a container. `-d` background, `-it` interactive terminal, `--rm` remove on exit, `--name`, `-e KEY=VALUE` / `-e KEY` (copied from your shell), `--env-file`, `-w DIR`, `-u USER[:GROUP]`, `--entrypoint`, `--cpus` (1), `-m/--memory` (512M), `--disk` (8G: the container's disk, image included; only what's written takes space on the Mac, and it can't be smaller than the image's filesystem, at least 1G), `--pull missing\|always\|never`, `-p [127.0.0.1:][HOST:]CONTAINER[/udp]` (repeatable; see [Ports](#ports)). Flags after IMAGE belong to the command. |
+| `ps [-a] [-q]` | Running containers; `-a` includes stopped ones. PORTS shows published ports. |
 | `logs [-f] [-n N] NAME` | The container's output (stdout and stderr together). |
 | `stop [-t 10] NAME...` | Send the image's stop signal (`STOPSIGNAL`, default SIGTERM), then SIGKILL after `-t` seconds. |
 | `start [-a] NAME...` | Run a stopped container again with its disk as it was. `-a` attaches and exits with its code. |
@@ -63,11 +64,32 @@ the container's process as SIGINT.
 Containers are VMs, so `monolith vm list` shows them (IMAGE `container
 (<image>)`), and `monolith vm pause|resume` work on them.
 
+## Ports
+
+`-p` makes a container port reachable on the Mac's localhost:
+
+```bash
+monolith container run -d -p 8080:80 nginx          # localhost:8080 -> port 80 in the container
+monolith container run -d -p 5353:53/udp coredns/coredns
+monolith container run -d -p 80 nginx               # a free host port is picked; see `container ps`
+```
+
+- Forwards listen on `127.0.0.1` only. `-p 127.0.0.1:8080:80` is accepted;
+  any other address, `0.0.0.0` included, is refused.
+- The ports are saved with the container and come back with `start`. A
+  picked host port (`-p 80`) stays the same.
+- `run` and `start` refuse a host port that something else already uses, as
+  `docker run` does. Ports below 1024 work without sudo.
+- The container's server must listen on all its interfaces (`0.0.0.0`), as
+  with Docker; one listening only on `127.0.0.1` inside the container isn't
+  reachable.
+- No port ranges yet; give each port its own `-p`.
+
 ## Not yet
 
 These are planned:
 
-- `exec`, publishing ports (`-p`), volumes (`-v`)
+- `exec`, volumes (`-v`)
 - `-i` without `-t` (piping stdin into a container)
 - Suspending a container to disk (`vm suspend`); `pause` works
 - linux/amd64 images through Rosetta

@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"os"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,15 +18,11 @@ import (
 	mnet "github.com/bubunyo/monolith/net"
 )
 
-// portPollInterval is how often the daemon asks the engine for published
-// ports.
-const portPollInterval = time.Second
-
 // dockerServices exposes a docker image VM's engine on the host: unix
 // sockets relayed to guest ports (docker.sock to dockerd's API for the
 // docker engine, ssh.sock to the internal sshd for containerd), and a
-// localhost listener for every TCP port a container publishes. All of it
-// relays to the guest through the user-mode network. (vsock would avoid the
+// localhost forward for every port a container publishes. All of it relays
+// to the guest through the user-mode network. (vsock would avoid the
 // network, but vz's vsock connections can't half-close, which
 // `docker run -i` needs to deliver stdin EOF.)
 type dockerServices struct {
@@ -38,18 +33,11 @@ type dockerServices struct {
 	listeners []net.Listener
 	client    *http.Client
 	cancel    context.CancelFunc
-
-	// publishedPorts returns the host ports published on all guest
-	// interfaces, from dockerd's API or nerdctl.
-	publishedPorts func() (map[portKey]bool, error)
-
-	mu     sync.Mutex
-	ports  map[portKey]func() // forwarded port -> stops its forward
-	failed map[portKey]string // published ports that couldn't be forwarded -> error
+	fwd       *portForwarder // published ports: all guest interfaces or its loopback
 }
 
-// startDockerServices starts the engine's socket relays and the port
-// forwarder, plus the Kubernetes API forward when k3s is on.
+// startDockerServices starts the engine's socket relay and the port
+// forwarder.
 func startDockerServices(name string, cfg VMConfig, user *mnet.UserNetwork, logger *monolith.Logger) (*dockerServices, error) {
 	engine := EngineOf(cfg)
 	if user == nil {
@@ -61,27 +49,26 @@ func startDockerServices(name string, cfg VMConfig, user *mnet.UserNetwork, logg
 		user:   user,
 		logger: logger,
 		cancel: cancel,
-		ports:  map[portKey]func(){},
-		failed: map[portKey]string{},
 	}
 
 	var sockPath string
 	var sockPort int
+	var published func() (map[portKey]bool, error)
 	var err error
 	switch engine {
 	case EngineContainerd:
 		sockPath, err = VMSSHSockPath(name)
 		sockPort = SSHPort
-		s.publishedPorts = s.nerdctlPorts
+		published = s.nerdctlPorts
 	default:
 		sockPath, err = VMDockerSockPath(name)
 		sockPort = DockerAPIPort
-		s.publishedPorts = s.dockerPorts
+		published = s.dockerPorts
 		s.client = &http.Client{
 			Timeout: 5 * time.Second,
 			Transport: &http.Transport{
 				DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-					return s.dialGuest(ctx, DockerAPIPort)
+					return dialGuest(ctx, user, DockerAPIPort)
 				},
 			},
 		}
@@ -93,8 +80,9 @@ func startDockerServices(name string, cfg VMConfig, user *mnet.UserNetwork, logg
 	if cfg.Sandbox != nil {
 		// The sandbox shell runs with the VM's network, so its servers
 		// show up as listening sockets, not published container ports.
-		s.publishedPorts = s.listeningPorts
+		published = s.listeningPorts
 	}
+<<<<<<< HEAD
 	relayFn := relay
 	if engine == EngineDocker && cfg.Sandbox == nil {
 		// Refuse bind mounts of Mac paths the guest can't see instead of
@@ -140,8 +128,15 @@ func startDockerServices(name string, cfg VMConfig, user *mnet.UserNetwork, logg
 		}
 		logger.Info("Kubernetes API for %q on localhost:%d", name, cfg.KubePort)
 	}
+=======
+	s.fwd = newPortForwarder(user, logger, published)
+	if err := s.relaySocket(ctx, sockPath, sockPort); err != nil {
+		s.close()
+		return nil, err
+	}
+>>>>>>> origin/master
 
-	go s.forwardPorts(ctx)
+	go s.fwd.run(ctx)
 	if cfg.Sandbox != nil {
 		go s.relayFileEvents(ctx, cfg.Sandbox.Repo, true)
 	} else {
@@ -151,13 +146,8 @@ func startDockerServices(name string, cfg VMConfig, user *mnet.UserNetwork, logg
 	return s, nil
 }
 
-// dialTimeout bounds connecting to the guest through the user-mode network.
-const dialTimeout = 10 * time.Second
-
 func (s *dockerServices) dialGuest(ctx context.Context, port int) (net.Conn, error) {
-	ctx, cancel := context.WithTimeout(ctx, dialTimeout)
-	defer cancel()
-	return s.user.DialGuest(ctx, port)
+	return dialGuest(ctx, s.user, port)
 }
 
 // relaySocket listens on a host unix socket and relays each connection to
@@ -171,6 +161,7 @@ func (s *dockerServices) relaySocket(ctx context.Context, path string, port int,
 	}
 	s.sockets = append(s.sockets, path)
 	s.listeners = append(s.listeners, l)
+<<<<<<< HEAD
 	go s.serveListener(ctx, l, port, relayFn)
 	return nil
 }
@@ -191,95 +182,31 @@ func (s *dockerServices) serveListener(ctx context.Context, l net.Listener, port
 			}
 			relayFn(conn, guest)
 		}()
-	}
+=======
+	go serveGuest(ctx, s.user, l, port)
+	return nil
 }
 
-// k8sInfo asks the guest's k8s-info relay for "kubeconfig" or "services".
-func (s *dockerServices) k8sInfo(what string) ([]byte, error) {
-	conn, err := s.dialGuest(context.Background(), K8sInfoPort)
-	if err != nil {
-		return nil, err
+// publishScope classifies the address a container port is published on:
+// all interfaces ("") and the guest loopback ("127.0.0.1", "::1") are
+// forwarded; any other specific address isn't reachable from the host.
+func publishScope(ip string) (bind string, ok bool) {
+	switch ip {
+	case "", "0.0.0.0", "::", "[::]":
+		return "", true
+	case "127.0.0.1":
+		return "127.0.0.1", true
+	case "::1", "[::1]":
+		return "::1", true
+>>>>>>> origin/master
 	}
-	defer conn.Close()
-	conn.SetDeadline(time.Now().Add(10 * time.Second))
-	if _, err := io.WriteString(conn, what+"\n"); err != nil {
-		return nil, err
-	}
-	data, err := io.ReadAll(conn)
-	if err != nil {
-		return nil, err
-	}
-	if len(data) == 0 {
-		return nil, fmt.Errorf("k3s returned no %s (still starting?)", what)
-	}
-	return data, nil
+	return "", false
 }
 
-// kubeconfig returns k3s's admin kubeconfig as written in the guest (server
-// https://127.0.0.1:6443).
-func (s *dockerServices) kubeconfig() ([]byte, error) {
-	return s.k8sInfo("kubeconfig")
+// forwards lists the published ports and their forwarding errors.
+func (s *dockerServices) forwards() []PortForward {
+	return s.fwd.forwards()
 }
-
-// kubeServicePorts returns the ports Kubernetes services expose on the node:
-// LoadBalancer ports (served by k3s's servicelb on the node) and NodePorts.
-func (s *dockerServices) kubeServicePorts() (map[portKey]bool, error) {
-	data, err := s.k8sInfo("services")
-	if err != nil {
-		return nil, err
-	}
-	return parseKubeServicePorts(data)
-}
-
-func parseKubeServicePorts(data []byte) (map[portKey]bool, error) {
-	var list struct {
-		Items []struct {
-			Spec struct {
-				Type  string `json:"type"`
-				Ports []struct {
-					Protocol string `json:"protocol"`
-					Port     int    `json:"port"`
-					NodePort int    `json:"nodePort"`
-				} `json:"ports"`
-			} `json:"spec"`
-		} `json:"items"`
-	}
-	if err := json.Unmarshal(data, &list); err != nil {
-		return nil, fmt.Errorf("kubectl get svc: %w", err)
-	}
-	ports := map[portKey]bool{}
-	for _, svc := range list.Items {
-		for _, p := range svc.Spec.Ports {
-			proto := strings.ToLower(p.Protocol)
-			if proto == "" {
-				proto = "tcp"
-			}
-			if proto != "tcp" && proto != "udp" {
-				continue
-			}
-			switch svc.Spec.Type {
-			case "LoadBalancer":
-				ports[portKey{proto, p.Port}] = true
-				if p.NodePort > 0 {
-					ports[portKey{proto, p.NodePort}] = true
-				}
-			case "NodePort":
-				if p.NodePort > 0 {
-					ports[portKey{proto, p.NodePort}] = true
-				}
-			}
-		}
-	}
-	return ports, nil
-}
-
-// portKey is a published port and its protocol ("tcp" or "udp").
-type portKey struct {
-	Proto string
-	Port  int
-}
-
-func (k portKey) String() string { return fmt.Sprintf("%d/%s", k.Port, k.Proto) }
 
 // publishedPort is the subset of GET /containers/json we use.
 type publishedPort struct {
@@ -288,6 +215,7 @@ type publishedPort struct {
 	Type       string `json:"Type"`
 }
 
+<<<<<<< HEAD
 // forwardPorts keeps a localhost forward for every published port. The
 // engine publishes on the guest; TCP forwards are listeners relaying through
 // DialGuest, UDP forwards use the user-mode network's port forwarder.
@@ -382,10 +310,11 @@ func (s *dockerServices) forwards() []PortForward {
 	return out
 }
 
+=======
+>>>>>>> origin/master
 // dockerPorts returns the TCP and UDP ports published on all guest
-// interfaces, from dockerd's API. Ports bound to a specific guest address
-// (-p 127.0.0.1:80:80) aren't reachable from the gateway, so they are
-// skipped.
+// interfaces or on its loopback, from dockerd's API. Ports on any other
+// specific guest address aren't reachable from the host, so they are skipped.
 func (s *dockerServices) dockerPorts() (map[portKey]bool, error) {
 	resp, err := s.client.Get("http://docker/containers/json")
 	if err != nil {
@@ -404,17 +333,15 @@ func (s *dockerServices) dockerPorts() (map[portKey]bool, error) {
 	ports := map[portKey]bool{}
 	for _, c := range containers {
 		for _, p := range c.Ports {
-			if (p.Type != "tcp" && p.Type != "udp") || p.PublicPort == 0 || !allInterfaces(p.IP) {
+			if (p.Type != "tcp" && p.Type != "udp") || p.PublicPort == 0 {
 				continue
 			}
-			ports[portKey{p.Type, p.PublicPort}] = true
+			if bind, ok := publishScope(p.IP); ok {
+				ports[portKey{p.Type, p.PublicPort, bind}] = true
+			}
 		}
 	}
 	return ports, nil
-}
-
-func allInterfaces(ip string) bool {
-	return ip == "" || ip == "0.0.0.0" || ip == "::" || ip == "[::]"
 }
 
 // listeningPorts returns the TCP ports a sandbox's processes listen on (all
@@ -472,11 +399,15 @@ func parseNerdctlPorts(data []byte) (map[portKey]bool, error) {
 		}
 		for _, entry := range strings.Split(c.Ports, ",") {
 			m := nerdctlPortRE.FindStringSubmatch(strings.TrimSpace(entry))
-			if m == nil || m[3] == "sctp" || !allInterfaces(m[1]) {
+			if m == nil || m[3] == "sctp" {
+				continue
+			}
+			bind, ok := publishScope(m[1])
+			if !ok {
 				continue
 			}
 			if port, err := strconv.Atoi(m[2]); err == nil && port > 0 {
-				ports[portKey{m[3], port}] = true
+				ports[portKey{m[3], port, bind}] = true
 			}
 		}
 	}
@@ -492,11 +423,9 @@ func (s *dockerServices) close() {
 	for _, path := range s.sockets {
 		os.Remove(path)
 	}
-	s.mu.Lock()
-	for _, stop := range s.ports {
-		stop()
+	if s.fwd != nil {
+		s.fwd.stop()
 	}
-	s.mu.Unlock()
 }
 
 // relay copies between a and b until both directions finish, half-closing

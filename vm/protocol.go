@@ -26,10 +26,6 @@ const (
 
 	// CmdSignal delivers Signal to a container's process.
 	CmdSignal = "signal"
-
-	// CmdKubeconfig returns k3s's kubeconfig in Data (docker image VMs
-	// with Kubernetes on).
-	CmdKubeconfig = "kubeconfig"
 )
 
 // ControlRequest is a JSON-encoded command sent from client to daemon.
@@ -50,12 +46,10 @@ type ControlResponse struct {
 	Forced bool   `json:"forced,omitempty"` // stop: the guest ignored the request and was force-stopped
 	Error  string `json:"error,omitempty"`
 
-	// Ports is reported by status for docker image VMs: published container
-	// ports and whether each is forwarded to the Mac's localhost.
+	// Ports is reported by status for docker and cluster VMs: published
+	// container or service ports and whether each is forwarded to the Mac's
+	// localhost.
 	Ports []PortForward `json:"ports,omitempty"`
-
-	// Data carries a command's payload, e.g. the kubeconfig.
-	Data string `json:"data,omitempty"`
 }
 
 // PortForward is a container port published to localhost on the Mac. Error

@@ -1,0 +1,56 @@
+#!/bin/sh
+# cluster-setup — prepares the monolith cluster VM on every boot.
+# The first boot installs what k3s needs from the Alpine repositories.
+
+DATA_DISK=/dev/vdb
+K3S_DIR=/opt/monolith/k3s
+OUT_DIR=/opt/monolith/out
+
+# libgpiod's gpiomon watches the power button (cluster-serve power).
+PACKAGES="e2fsprogs libgpiod iptables ip6tables"
+NEEDED="mkfs.ext4 gpiomon iptables"
+
+echo "cluster-setup: preparing Kubernetes (k3s)"
+
+mkdir -p /sys/fs/cgroup
+mount -t cgroup2 cgroup2 /sys/fs/cgroup
+
+# gpio-pl061 drives the GPIO controller the VM's power button is wired to.
+modprobe -a overlay br_netfilter veth virtiofs gpio-pl061 vxlan 2>/dev/null
+sysctl -qw net.ipv4.ip_forward=1
+
+for cmd in $NEEDED; do
+	if ! command -v "$cmd" >/dev/null; then
+		echo "cluster-setup: installing $PACKAGES (first boot)"
+		until apk add --no-cache $PACKAGES; do
+			echo "cluster-setup: apk failed, retrying in 5s"
+			sleep 5
+		done
+		sync # a forced stop right after must not leave empty files
+		break
+	fi
+done
+
+# k3s and kubelet state (images, datastore, pods) live on their own sparse
+# disk, formatted on first use.
+if ! blkid "$DATA_DISK" | grep -q 'TYPE="ext4"'; then
+	echo "cluster-setup: formatting $DATA_DISK"
+	mkfs.ext4 -q -L cluster "$DATA_DISK"
+fi
+mkdir -p /data
+mount -t ext4 "$DATA_DISK" /data
+for dir in rancher kubelet; do
+	mkdir -p "/data/$dir" "/var/lib/$dir"
+	mount --bind "/data/$dir" "/var/lib/$dir"
+done
+
+# Pods mount volumes under /var/lib/kubelet, which must propagate.
+mount --make-rshared /
+
+# The host shares the k3s binary (read-only) and a directory k3s writes its
+# kubeconfig to.
+mkdir -p "$K3S_DIR" "$OUT_DIR"
+mount -t virtiofs -o ro k3s "$K3S_DIR" || echo "cluster-setup: mounting k3s failed"
+mount -t virtiofs kube "$OUT_DIR" || echo "cluster-setup: mounting the kubeconfig share failed"
+
+echo "cluster-setup: done"

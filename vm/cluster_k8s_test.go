@@ -1,12 +1,12 @@
 package vm
 
 import (
-	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -16,18 +16,18 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestKubernetesPauseResume boots a docker image VM with k3s on each engine,
-// exposes nginx through a LoadBalancer service, checks it on localhost,
-// pauses and resumes the VM, and checks that the same pod is still serving
-// and the node is Ready.
+// TestClusterPauseResume boots a cluster VM, runs nginx on it behind a
+// LoadBalancer service, pauses and resumes the VM, and checks that the same
+// pod is still running, the node is Ready, and the service answers on
+// localhost both times.
 //
-// It downloads k3s and installs the engine on first boot (needs internet),
+// It downloads k3s and installs packages on first boot (needs internet),
 // needs kubectl and an unlocked Mac, so it only runs with
 // MONOLITH_TEST_K8S=1. It uses a temporary KUBECONFIG and never touches
 // ~/.kube/config.
-func TestKubernetesPauseResume(t *testing.T) {
+func TestClusterPauseResume(t *testing.T) {
 	if os.Getenv("MONOLITH_TEST_K8S") != "1" {
-		t.Skip("set MONOLITH_TEST_K8S=1 to run (boots Kubernetes VMs)")
+		t.Skip("set MONOLITH_TEST_K8S=1 to run (boots a Kubernetes VM)")
 	}
 	binary := "../bin/monolith"
 	if _, err := os.Stat(binary); err != nil {
@@ -37,14 +37,7 @@ func TestKubernetesPauseResume(t *testing.T) {
 		t.Skip("kubectl not found on PATH")
 	}
 
-	for i, engine := range ValidEngines {
-		t.Run(engine, func(t *testing.T) {
-			testKubernetes(t, binary, "test-k8s-"+engine, engine, 18090+i)
-		})
-	}
-}
-
-func testKubernetes(t *testing.T, binary, name, engine string, svcPort int) {
+	const name = "test-cluster"
 	dir, err := VMDir(name)
 	require.NoError(t, err)
 	t.Cleanup(func() {
@@ -55,15 +48,15 @@ func testKubernetes(t *testing.T, binary, name, engine string, svcPort int) {
 	kubePort, err := FreeLocalPort()
 	require.NoError(t, err)
 	cfg := DefaultConfig()
-	cfg.Image = ImageDocker
-	cfg.Engine = engine
+	cfg.Image = ImageCluster
 	cfg.NetworkMode = mnet.NetworkUser
 	cfg.CPUs = 2
 	cfg.Memory = 4 << 30
-	cfg.Kubernetes = true
 	cfg.KubePort = kubePort
 	require.NoError(t, WriteConfig(name, cfg))
-	_, err = dockerImage{}.Prepare(name, io.Discard)
+	_, err = clusterImage{}.Prepare(name, io.Discard)
+	require.NoError(t, err)
+	hostKubeconfig, err := VMKubeconfigPath(name)
 	require.NoError(t, err)
 
 	spawn := func(args ...string) {
@@ -81,12 +74,13 @@ func testKubernetes(t *testing.T, binary, name, engine string, svcPort int) {
 	}
 	waitReady := func() {
 		require.Eventually(t, func() bool {
-			resp, err := SendControlCommand(name, ControlRequest{Cmd: CmdKubeconfig})
-			if err != nil || !resp.OK {
+			data, err := os.ReadFile(hostKubeconfig)
+			if err != nil {
 				return false
 			}
-			data := strings.Replace(resp.Data, "https://127.0.0.1:6443", fmt.Sprintf("https://127.0.0.1:%d", kubePort), 1)
-			require.NoError(t, os.WriteFile(kubeconfig, []byte(data), 0600))
+			// k3s writes the server as the guest sees it.
+			data = []byte(strings.Replace(string(data), "https://127.0.0.1:6443", "https://127.0.0.1:"+strconv.Itoa(kubePort), 1))
+			require.NoError(t, os.WriteFile(kubeconfig, data, 0600))
 			out, err := kubectl("get", "nodes", "--no-headers")
 			return err == nil && strings.Contains(out, " Ready ")
 		}, 10*time.Minute, 2*time.Second, "node never became Ready")
@@ -96,27 +90,38 @@ func testKubernetes(t *testing.T, binary, name, engine string, svcPort int) {
 		require.NoError(t, err, out)
 		return out
 	}
-	serving := func() bool {
-		resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/", svcPort))
-		if err != nil {
-			return false
-		}
-		resp.Body.Close()
-		return resp.StatusCode == http.StatusOK
+
+	// The LoadBalancer service is forwarded to this port on localhost.
+	lbPort, err := FreeLocalPort()
+	require.NoError(t, err)
+	serviceAnswers := func() {
+		url := "http://127.0.0.1:" + strconv.Itoa(lbPort) + "/"
+		require.Eventually(t, func() bool {
+			resp, err := http.Get(url)
+			if err != nil {
+				return false
+			}
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			return resp.StatusCode == http.StatusOK && strings.Contains(string(body), "nginx")
+		}, 3*time.Minute, time.Second, "the LoadBalancer service never answered on %s", url)
+		resp, err := SendControlCommand(name, ControlRequest{Cmd: CmdStatus})
+		require.NoError(t, err)
+		require.Contains(t, resp.Ports, PortForward{Port: lbPort, Protocol: "tcp"}, "status lists the forward")
 	}
 
 	spawn()
 	waitReady()
 	for _, args := range [][]string{
 		{"create", "deployment", "web", "--image=nginx:alpine"},
-		{"expose", "deployment", "web", "--type=LoadBalancer", fmt.Sprintf("--port=%d", svcPort), "--target-port=80"},
+		{"expose", "deployment", "web", "--type=LoadBalancer", "--port=" + strconv.Itoa(lbPort), "--target-port=80"},
 		{"rollout", "status", "deployment/web", "--timeout=5m"},
 	} {
 		out, err := kubectl(args...)
 		require.NoError(t, err, out)
 	}
-	require.Eventually(t, serving, 2*time.Minute, 2*time.Second, "LoadBalancer service not reachable on localhost")
 	before := webPod()
+	serviceAnswers()
 
 	resp, err := SendControlCommand(name, ControlRequest{Cmd: CmdSuspend})
 	require.NoError(t, err)
@@ -125,5 +130,5 @@ func testKubernetes(t *testing.T, binary, name, engine string, svcPort int) {
 	spawn("--restore")
 	waitReady()
 	require.Equal(t, before, webPod(), "the pod was replaced across pause/resume")
-	require.Eventually(t, serving, time.Minute, time.Second, "service not reachable after resume")
+	serviceAnswers()
 }

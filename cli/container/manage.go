@@ -41,13 +41,14 @@ var psCmd = &cobra.Command{
 			return nil
 		}
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-		fmt.Fprintln(w, "NAME\tIMAGE\tCOMMAND\tCREATED\tSTATUS")
+		fmt.Fprintln(w, "NAME\tIMAGE\tCOMMAND\tCREATED\tSTATUS\tPORTS")
 		for _, c := range containers {
 			if !flagAll && !c.running() {
 				continue
 			}
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s ago\t%s\n", c.name, c.cfg.Container.Image,
-				quoteCommand(c.cfg.Container.Spec.Args), ago(c.cfg.Container.Created), c.statusText())
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s ago\t%s\t%s\n", c.name, c.cfg.Container.Image,
+				quoteCommand(c.cfg.Container.Spec.Args), ago(c.cfg.Container.Created), c.statusText(),
+				portsText(c.cfg.Container.Ports, liveForwards(c)))
 		}
 		return w.Flush()
 	},
@@ -97,6 +98,9 @@ var startCmd = &cobra.Command{
 		return each(args, false, func(c info) error {
 			if c.running() {
 				return nil
+			}
+			if err := checkHostPorts(c.name, c.cfg.Container.Ports); err != nil {
+				return err
 			}
 			c.cfg.Container.Attach = flagAttach
 			if err := vm.WriteConfig(c.name, c.cfg); err != nil {

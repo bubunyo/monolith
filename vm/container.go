@@ -40,6 +40,23 @@ type ContainerConfig struct {
 	// AutoRemove deletes the container when it exits (`run -d --rm`; a
 	// foreground --rm is removed by the CLI after reading the exit code).
 	AutoRemove bool `json:"auto_remove,omitempty"`
+
+	// Ports are `run -p`: forwarded from the Mac's localhost to the
+	// container while it runs.
+	Ports []PublishedPort `json:"ports,omitempty"`
+}
+
+// PublishedPort is one `container run -p`: localhost:Host on the Mac to
+// Container in the container VM, over Protocol ("tcp" or "udp").
+type PublishedPort struct {
+	Host      int    `json:"host"`
+	Container int    `json:"container"`
+	Protocol  string `json:"protocol"`
+}
+
+// String formats p as `docker ps` does: "127.0.0.1:8080->80/tcp".
+func (p PublishedPort) String() string {
+	return fmt.Sprintf("127.0.0.1:%d->%d/%s", p.Host, p.Container, p.Protocol)
 }
 
 // containerCmdline boots quietly (only the process's output on the

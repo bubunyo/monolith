@@ -294,8 +294,10 @@ monolith docker rm --name lith-2       # deletes the VM and its context
 - Images and containers live on a 64 GiB sparse `data.img` per VM.
 - Published TCP and UDP ports are forwarded to `127.0.0.1`. If two VMs publish
   the same port, the first one keeps it; `docker list` marks the other with
-  `!`. Ports bound to a specific address (`-p 127.0.0.1:80:80`) aren't
-  forwarded.
+  `!`. Ports published on the VM's loopback (`-p 127.0.0.1:52093:6443`, as
+  `kind` does) are forwarded too, through a relay in the VM. TCP only: a
+  loopback UDP port shows `!`. Ports bound to any other specific address
+  aren't forwarded. Ports below 1024 work without sudo.
 - Containers reach services on the Mac at `host.docker.internal`.
 - `start --rosetta` runs `--platform linux/amd64` images through Rosetta
   (opt-in; needs `softwareupdate --install-rosetta`). Without it, amd64-only
@@ -333,33 +335,12 @@ root over an internal sshd that only monolith can reach; logs are in
 `/var/log/containerd.log` and `/var/log/buildkitd.log`.
 
 
-### Kubernetes (k3s)
+### Kubernetes
 
-`--kubernetes` runs a single-node [k3s](https://k3s.io) cluster on the host's
-engine, so images you build locally can run in pods without a registry:
-
-```bash
-monolith docker start --name dev --kubernetes      # 4 GiB by default; ~25s first start
-kubectl get nodes                                  # context k3s-dev is now current
-docker build -t app:1 .                            # containerd engine: monolith docker nerdctl --name dev build -t app:1 .
-kubectl run app --image=app:1 --image-pull-policy=Never
-kubectl create deployment web --image=nginx
-kubectl expose deployment web --type=LoadBalancer --port=8080 --target-port=80
-curl localhost:8080
-monolith docker start --name dev --kubernetes=false   # off on the next start
-```
-
-- `start` merges the cluster, user and context `k3s-<name>` into your
-  kubeconfig (the first file in `$KUBECONFIG`, else `~/.kube/config`; the
-  previous version is kept as `<file>.monolith.bak`) and makes it current.
-  `monolith docker kubeconfig` prints a standalone copy.
-- LoadBalancer ports and NodePorts are forwarded to `localhost`, like
-  published container ports. Traefik is disabled.
-- The k3s version is pinned (`--k3s-version` to choose another) and downloaded
-  once to `~/.monolith/k3s/`.
-- Turn Kubernetes on or off only on a stopped host. Hosts created before
-  Kubernetes support need recreating first.
-- Pause/resume keeps the cluster and its pods as they were.
+Docker hosts don't run Kubernetes; use [`monolith cluster`](cluster.md). A host
+that had `--kubernetes` turned on boots without it: the next `docker start`
+says so once and removes its old kubectl context `k3s-<name>`. Its k3s data
+stays on the host's data disk until `monolith docker rm`.
 
 ## Console Interaction
 

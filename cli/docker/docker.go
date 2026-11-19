@@ -17,6 +17,7 @@ import (
 	"time"
 
 	clivm "github.com/bubunyo/monolith/cli/vm"
+	"github.com/bubunyo/monolith/internal/kubeconfig"
 	mnet "github.com/bubunyo/monolith/net"
 	"github.com/bubunyo/monolith/vm"
 
@@ -27,8 +28,6 @@ const (
 	defaultName   = "docker-lith-default"
 	defaultCPUs   = 2
 	defaultMemory = 2 << 30
-	// defaultKubeMemory is the default for new VMs created with --kubernetes.
-	defaultKubeMemory = 4 << 30
 
 	// readyTimeout covers the first boot, which installs the engine.
 	readyTimeout = 10 * time.Minute
@@ -59,8 +58,6 @@ var (
 	flagMemory  string
 	flagForce   bool
 	flagEngine  string
-	flagKube    bool
-	flagK3s     string
 	flagRosetta bool
 )
 
@@ -164,10 +161,11 @@ func start(cmd *cobra.Command) error {
 		if engine := vm.EngineOf(cfg); cmd.Flags().Changed("engine") && flagEngine != engine {
 			return fmt.Errorf("%q was created with the %s engine; the engine can't be changed (remove it or pick another --name)", flagName, engine)
 		}
-		// Kubernetes and Rosetta change the VM's devices and boot
-		// arguments, so they can only change on a fresh boot.
-		if status, err := vm.ReadState(flagName); err == nil && status.State != vm.StatusStopped && bootFlagsChange(cmd, cfg) {
-			return fmt.Errorf("%q is %s; stop it to change --kubernetes, --k3s-version or --rosetta", flagName, status.State)
+		// Rosetta changes the VM's devices and boot arguments, so it can
+		// only change on a fresh boot.
+		if status, err := vm.ReadState(flagName); err == nil && status.State != vm.StatusStopped &&
+			cmd.Flags().Changed("rosetta") && flagRosetta != cfg.Rosetta {
+			return fmt.Errorf("%q is %s; stop it to change --rosetta", flagName, status.State)
 		}
 	}
 	status, err := vm.ReadState(flagName)
@@ -201,9 +199,6 @@ func boot(cmd *cobra.Command) error {
 	cfg.CPUs = defaultCPUs
 	cfg.Memory = defaultMemory
 	cfg.Engine = flagEngine
-	if flagKube {
-		cfg.Memory = defaultKubeMemory
-	}
 	if vm.Exists(flagName) {
 		if err := checkDockerVM(flagName); err != nil {
 			return err
@@ -225,71 +220,45 @@ func boot(cmd *cobra.Command) error {
 		}
 		cfg.Memory = mem
 	}
-	turningOff := cmd.Flags().Changed("kubernetes") && !flagKube && cfg.Kubernetes
-	if cmd.Flags().Changed("kubernetes") {
-		cfg.Kubernetes = flagKube
-	}
-	// Checked here as well as in Prepare so a refused --kubernetes isn't
-	// saved to the config.
-	if cfg.Kubernetes && vm.Exists(flagName) && cfg.GuestLayout < vm.GuestLayoutKubernetes {
-		return fmt.Errorf("%q was created before Kubernetes support; recreate it ('monolith docker rm --name %s') to use --kubernetes", flagName, flagName)
-	}
-	if cmd.Flags().Changed("k3s-version") {
-		cfg.K3sVersion = flagK3s
-	}
+	hadKube := cfg.Kubernetes
+	dropKubernetes(&cfg)
 	if cmd.Flags().Changed("rosetta") {
 		cfg.Rosetta = flagRosetta
 	}
 	if cfg.Rosetta && vm.Exists(flagName) && cfg.GuestLayout < vm.GuestLayoutRosetta {
 		return fmt.Errorf("%q was created before Rosetta support; recreate it ('monolith docker rm --name %s') to use --rosetta", flagName, flagName)
 	}
-	if cfg.Kubernetes && cfg.KubePort == 0 {
-		port, err := vm.FreeLocalPort()
-		if err != nil {
-			return fmt.Errorf("choosing a port for the Kubernetes API: %w", err)
-		}
-		cfg.KubePort = port
-	}
 	if err := vm.WriteConfig(flagName, cfg); err != nil {
 		return fmt.Errorf("writing config: %w", err)
 	}
-	if turningOff {
-		if err := removeKubeContext(flagName); err != nil {
-			fmt.Printf("Warning: removing kubectl context %s: %v\n", kubeContextName(flagName), err)
-		}
+	if hadKube {
+		fmt.Printf("Kubernetes no longer runs on Docker hosts; use 'monolith cluster start'. %q's k3s data stays on its data disk until 'monolith docker rm'.\n", flagName)
+		removeLegacyKubeContext(flagName)
 	}
 
 	image, err := vm.LookupImage(cfg.Image)
 	if err != nil {
 		return err
 	}
-	if cfg.Kubernetes {
-		fmt.Printf("Preparing k3s %s...\n", vm.K3sVersionOf(cfg))
-	}
 	fmt.Println("Preparing docker base image...")
 	if _, err := image.Prepare(flagName, os.Stdout); err != nil {
 		return fmt.Errorf("preparing docker image: %w", err)
 	}
 
-	fmt.Printf("Booting Docker host %q (%s, %d vCPU, %s RAM)...\n", flagName, engineLabel(cfg), cfg.CPUs, clivm.FormatMemory(cfg.Memory))
+	fmt.Printf("Booting Docker host %q (%s, %d vCPU, %s RAM)...\n", flagName, vm.EngineOf(cfg), cfg.CPUs, clivm.FormatMemory(cfg.Memory))
 	return vm.SpawnVMDaemon(flagName, false, "")
 }
 
-// ready waits for the VM's engine, then for Kubernetes if it's on.
+// ready waits for the VM's engine.
 func ready() error {
 	cfg, err := vm.ReadConfig(flagName)
 	if err != nil {
 		return err
 	}
 	if vm.EngineOf(cfg) == vm.EngineContainerd {
-		err = readyContainerd()
-	} else {
-		err = readyDocker()
+		return readyContainerd()
 	}
-	if err != nil || !cfg.Kubernetes {
-		return err
-	}
-	return readyKubernetes(cfg)
+	return readyDocker()
 }
 
 // readyDocker waits for dockerd and makes the VM's docker context current.
@@ -475,9 +444,7 @@ func remove() error {
 	if err := removeContext(flagName); err != nil { // none for containerd hosts
 		fmt.Printf("Warning: removing context %s: %v\n", contextName(flagName), err)
 	}
-	if err := removeKubeContext(flagName); err != nil {
-		fmt.Printf("Warning: removing kubectl context %s: %v\n", kubeContextName(flagName), err)
-	}
+	removeLegacyKubeContext(flagName)
 	fmt.Printf("Docker host %q deleted.\n", flagName)
 	return nil
 }
@@ -517,24 +484,26 @@ func checkEngine(name, engine string) error {
 	return nil
 }
 
-// bootFlagsChange reports whether start's --kubernetes, --k3s-version or
-// --rosetta differ from the VM's config.
-func bootFlagsChange(cmd *cobra.Command, cfg vm.VMConfig) bool {
-	switch {
-	case cmd.Flags().Changed("kubernetes") && flagKube != cfg.Kubernetes:
-		return true
-	case cmd.Flags().Changed("rosetta") && flagRosetta != cfg.Rosetta:
-		return true
-	}
-	return cmd.Flags().Changed("k3s-version") && flagK3s != vm.K3sVersionOf(cfg)
+// dropKubernetes clears the Kubernetes settings of a Docker host created
+// when hosts could run k3s; 'monolith cluster' replaced that.
+func dropKubernetes(cfg *vm.VMConfig) {
+	cfg.Kubernetes = false
+	cfg.K3sVersion = ""
+	cfg.KubePort = 0
 }
 
-// engineLabel describes the VM's engine, e.g. "docker" or "containerd+k3s".
-func engineLabel(cfg vm.VMConfig) string {
-	if cfg.Kubernetes {
-		return vm.EngineOf(cfg) + "+k3s"
+// legacyKubeContext is the kubectl context a Docker host with Kubernetes
+// used to merge into the user's kubeconfig.
+func legacyKubeContext(vmName string) string {
+	return "k3s-" + vmName
+}
+
+// removeLegacyKubeContext deletes a Docker host's old kubectl context if it
+// is still in the user's kubeconfig.
+func removeLegacyKubeContext(vmName string) {
+	if err := kubeconfig.RemoveContext(legacyKubeContext(vmName), ""); err != nil {
+		fmt.Printf("Warning: removing kubectl context %s: %v\n", legacyKubeContext(vmName), err)
 	}
-	return vm.EngineOf(cfg)
 }
 
 func validEngine(engine string) bool {
@@ -616,16 +585,17 @@ func confirm(question string) bool {
 }
 
 func init() {
-	Cmd.AddCommand(startCmd, stopCmd, pauseCmd, resumeCmd, listCmd, rmCmd, envCmd, nerdctlCmd, kubeconfigCmd, linkSocketCmd)
+	Cmd.AddCommand(useCmd, startCmd, stopCmd, pauseCmd, resumeCmd, listCmd, rmCmd, envCmd, nerdctlCmd, linkSocketCmd)
 
-	for _, c := range []*cobra.Command{startCmd, stopCmd, pauseCmd, resumeCmd, rmCmd, envCmd, nerdctlCmd, kubeconfigCmd, linkSocketCmd} {
+	for _, c := range []*cobra.Command{startCmd, stopCmd, pauseCmd, resumeCmd, rmCmd, envCmd, nerdctlCmd, linkSocketCmd} {
 		c.Flags().StringVar(&flagName, "name", defaultName, "Docker host VM name")
+		_ = c.RegisterFlagCompletionFunc("name", func(*cobra.Command, []string, string) ([]string, cobra.ShellCompDirective) {
+			return dockerHostNames(), cobra.ShellCompDirectiveNoFileComp
+		})
 	}
 	startCmd.Flags().UintVarP(&flagCPUs, "cpus", "c", 0, "number of vCPUs (default: 2)")
 	startCmd.Flags().StringVarP(&flagMemory, "memory", "m", "", `RAM size, e.g. "2G", "4096M" (default: 2G)`)
 	startCmd.Flags().StringVar(&flagEngine, "engine", vm.EngineDocker, "container engine for a new VM: docker or containerd")
-	startCmd.Flags().BoolVar(&flagKube, "kubernetes", false, "run Kubernetes (k3s) on the engine; --kubernetes=false turns it off (saved)")
-	startCmd.Flags().StringVar(&flagK3s, "k3s-version", vm.DefaultK3sVersion, "k3s release for --kubernetes (saved)")
 	startCmd.Flags().BoolVar(&flagRosetta, "rosetta", true, "run x86-64 (amd64) images with Rosetta (opt-in; saved); --rosetta=false turns it off again")
 	stopCmd.Flags().BoolVarP(&flagForce, "force", "f", false, "discard a paused VM's saved state without asking")
 	rmCmd.Flags().BoolVarP(&flagForce, "force", "f", false, "delete without asking")
