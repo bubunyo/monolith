@@ -95,7 +95,19 @@ func startDockerServices(name string, cfg VMConfig, user *mnet.UserNetwork, logg
 		// show up as listening sockets, not published container ports.
 		s.publishedPorts = s.listeningPorts
 	}
-	if err := s.relaySocket(ctx, sockPath, sockPort); err != nil {
+	relayFn := relay
+	if engine == EngineDocker && cfg.Sandbox == nil {
+		// Refuse bind mounts of Mac paths the guest can't see instead of
+		// letting the container get an empty directory. (containerd's
+		// nerdctl runs in the guest over SSH, out of the daemon's view.)
+		roots := sharedRoots(cfg)
+		relayFn = func(client, guest net.Conn) {
+			relayDockerAPI(client, guest, func(body []byte) error {
+				return checkBindSources(body, name, roots, pathExists)
+			})
+		}
+	}
+	if err := s.relaySocket(ctx, sockPath, sockPort, relayFn); err != nil {
 		s.close()
 		return nil, err
 	}
@@ -110,7 +122,7 @@ func startDockerServices(name string, cfg VMConfig, user *mnet.UserNetwork, logg
 			return nil, fmt.Errorf("forwarding the Kubernetes API on localhost:%d: %w", cfg.KubePort, err)
 		}
 		s.listeners = append(s.listeners, l)
-		go s.serveListener(ctx, l, KubeAPIPort)
+		go s.serveListener(ctx, l, KubeAPIPort, relay)
 		engineHostPorts := s.publishedPorts
 		s.publishedPorts = func() (map[portKey]bool, error) {
 			ports, err := engineHostPorts()
@@ -151,7 +163,7 @@ func (s *dockerServices) dialGuest(ctx context.Context, port int) (net.Conn, err
 // relaySocket listens on a host unix socket and relays each connection to
 // port on the guest. Connections fail while the guest service is still
 // starting (nothing is listening yet).
-func (s *dockerServices) relaySocket(ctx context.Context, path string, port int) error {
+func (s *dockerServices) relaySocket(ctx context.Context, path string, port int, relayFn func(client, guest net.Conn)) error {
 	os.Remove(path) // stale socket from a crashed daemon
 	l, err := net.Listen("unix", path)
 	if err != nil {
@@ -159,12 +171,13 @@ func (s *dockerServices) relaySocket(ctx context.Context, path string, port int)
 	}
 	s.sockets = append(s.sockets, path)
 	s.listeners = append(s.listeners, l)
-	go s.serveListener(ctx, l, port)
+	go s.serveListener(ctx, l, port, relayFn)
 	return nil
 }
 
-// serveListener relays each connection accepted on l to port on the guest.
-func (s *dockerServices) serveListener(ctx context.Context, l net.Listener, port int) {
+// serveListener relays each connection accepted on l to port on the guest
+// with relayFn.
+func (s *dockerServices) serveListener(ctx context.Context, l net.Listener, port int, relayFn func(client, guest net.Conn)) {
 	for {
 		conn, err := l.Accept()
 		if err != nil {
@@ -176,7 +189,7 @@ func (s *dockerServices) serveListener(ctx context.Context, l net.Listener, port
 				conn.Close()
 				return
 			}
-			relay(conn, guest)
+			relayFn(conn, guest)
 		}()
 	}
 }
@@ -344,7 +357,7 @@ func (s *dockerServices) forward(ctx context.Context, key portKey) (func(), erro
 	if err != nil {
 		return nil, err
 	}
-	go s.serveListener(ctx, l, key.Port)
+	go s.serveListener(ctx, l, key.Port, relay)
 	return func() { l.Close() }, nil
 }
 
@@ -494,15 +507,20 @@ func relay(a, b net.Conn) {
 	pipe := func(dst, src net.Conn) {
 		defer wg.Done()
 		io.Copy(dst, src)
-		if cw, ok := dst.(interface{ CloseWrite() error }); ok {
-			cw.CloseWrite()
-		} else {
-			dst.Close()
-		}
+		closeWrite(dst)
 	}
 	go pipe(a, b)
 	go pipe(b, a)
 	wg.Wait()
 	a.Close()
 	b.Close()
+}
+
+// closeWrite half-closes c, or closes it if it can't half-close.
+func closeWrite(c net.Conn) {
+	if cw, ok := c.(interface{ CloseWrite() error }); ok {
+		cw.CloseWrite()
+	} else {
+		c.Close()
+	}
 }

@@ -131,6 +131,10 @@ else
 	# The Mac's /Users, at the same path, so bind mounts like -v ~/src:/src work.
 	mkdir -p /Users
 	mount -t virtiofs users /Users || echo "docker-setup: mounting /Users failed"
+	# The Mac's temp dirs ($TMPDIR, mktemp -d) under both spellings.
+	mkdir -p /var/folders /private/var
+	mount -t virtiofs varfolders /var/folders || echo "docker-setup: mounting /var/folders failed"
+	ln -sfn /var/folders /private/var/folders
 fi
 
 echo "docker-setup: done"
