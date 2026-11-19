@@ -58,6 +58,8 @@ var (
 	flagMemory string
 	flagK3s    string
 	flagForce  bool
+	flagStart  bool
+	flagQuiet  bool
 )
 
 var startCmd = &cobra.Command{
@@ -149,10 +151,32 @@ var listCmd = &cobra.Command{
 	Use:     "list",
 	Aliases: []string{"ls"},
 	Short:   "List cluster VMs",
-	Long:    "List cluster VMs with their state, k3s version, kubectl context (* = current) and API address.",
-	Args:    cobra.NoArgs,
+	Long: `List cluster VMs with their state, k3s version, kubectl context (* = current), API
+address and the service ports forwarded to localhost. A port marked "!" is
+exposed by a service but couldn't be forwarded, usually because another VM
+already uses it.`,
+	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return list()
+	},
+}
+
+var useCmd = &cobra.Command{
+	Use:     "use [name]",
+	Aliases: []string{"switch"},
+	Short:   "Make a cluster's kubectl context current",
+	Long: `Make a cluster's kubectl context (cluster-<name>) the current one, without booting
+anything. A cluster that isn't running is reported as such: bring it up with
+'cluster start' or 'cluster resume', or pass --start to do it here.
+
+With no name, print the current cluster.`,
+	Args:              cobra.MaximumNArgs(1),
+	ValidArgsFunction: completeNames,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if len(args) == 0 {
+			return showCurrent()
+		}
+		return use(args[0])
 	},
 }
 
@@ -466,16 +490,16 @@ func remove() error {
 	return nil
 }
 
-func list() error {
+// clusterNames lists the VMs that use the cluster image, sorted.
+func clusterNames() ([]string, error) {
 	dir, err := vm.VMsDir()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	entries, err := os.ReadDir(dir)
 	if err != nil && !os.IsNotExist(err) {
-		return err
+		return nil, err
 	}
-
 	var names []string
 	for _, e := range entries {
 		if !e.IsDir() || !vm.Exists(e.Name()) {
@@ -486,6 +510,28 @@ func list() error {
 		}
 	}
 	sort.Strings(names)
+	return names, nil
+}
+
+func completeNames(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	if len(args) > 0 {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	names, _ := clusterNames()
+	return names, cobra.ShellCompDirectiveNoFileComp
+}
+
+func list() error {
+	names, err := clusterNames()
+	if err != nil {
+		return err
+	}
+	if flagQuiet {
+		for _, n := range names {
+			fmt.Println(n)
+		}
+		return nil
+	}
 	if len(names) == 0 {
 		fmt.Println("No clusters. Create one with 'monolith cluster start'.")
 		return nil
@@ -493,7 +539,7 @@ func list() error {
 
 	current := kubeconfig.Current()
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-	fmt.Fprintln(w, "NAME\tSTATE\tK3S\tCONTEXT\tCPUS\tMEM\tDATA\tAPI")
+	fmt.Fprintln(w, "NAME\tSTATE\tK3S\tCONTEXT\tCPUS\tMEM\tDATA\tAPI\tPORTS")
 	for _, name := range names {
 		cfg, _ := vm.ReadConfig(name)
 		state := vm.StatusStopped
@@ -507,11 +553,14 @@ func list() error {
 		if ctx == current {
 			ctx += " *"
 		}
-		api := "-"
-		if state == vm.StatusRunning && cfg.KubePort != 0 {
-			api = fmt.Sprintf("localhost:%d", cfg.KubePort)
+		api, ports := "-", "-"
+		if state == vm.StatusRunning {
+			if cfg.KubePort != 0 {
+				api = fmt.Sprintf("localhost:%d", cfg.KubePort)
+			}
+			ports = vm.ForwardedPorts(name)
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\n", name, state, vm.K3sVersionOf(cfg), ctx, cfg.CPUs, clivm.FormatMemory(cfg.Memory), dataUsage(name), api)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\t%s\n", name, state, vm.K3sVersionOf(cfg), ctx, cfg.CPUs, clivm.FormatMemory(cfg.Memory), dataUsage(name), api, ports)
 	}
 	return w.Flush()
 }
@@ -562,11 +611,17 @@ func confirm(question string) bool {
 }
 
 func init() {
-	Cmd.AddCommand(startCmd, stopCmd, pauseCmd, resumeCmd, listCmd, rmCmd, kubeconfigCmd)
+	Cmd.AddCommand(useCmd, startCmd, stopCmd, pauseCmd, resumeCmd, listCmd, rmCmd, kubeconfigCmd)
 
 	for _, c := range []*cobra.Command{startCmd, stopCmd, pauseCmd, resumeCmd, rmCmd, kubeconfigCmd} {
 		c.Flags().StringVar(&flagName, "name", defaultName, "cluster VM name")
+		_ = c.RegisterFlagCompletionFunc("name", func(*cobra.Command, []string, string) ([]string, cobra.ShellCompDirective) {
+			names, _ := clusterNames()
+			return names, cobra.ShellCompDirectiveNoFileComp
+		})
 	}
+	useCmd.Flags().BoolVar(&flagStart, "start", false, "start or resume the cluster first if it isn't running")
+	listCmd.Flags().BoolVarP(&flagQuiet, "quiet", "q", false, "print only cluster names")
 	startCmd.Flags().UintVarP(&flagCPUs, "cpus", "c", 0, "number of vCPUs (default: 2)")
 	startCmd.Flags().StringVarP(&flagMemory, "memory", "m", "", `RAM size, e.g. "4G", "8192M" (default: 4G)`)
 	startCmd.Flags().StringVar(&flagK3s, "k3s-version", vm.DefaultK3sVersion, "k3s release (saved)")

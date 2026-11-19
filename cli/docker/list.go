@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"syscall"
 	"text/tabwriter"
@@ -64,7 +63,7 @@ func list() error {
 
 	current := currentContext()
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-	fmt.Fprintln(w, "NAME\tSTATE\tENGINE\tK8S\tCONTEXT\tCPUS\tMEM\tDATA\tPORTS")
+	fmt.Fprintln(w, "NAME\tSTATE\tENGINE\tCONTEXT\tCPUS\tMEM\tDATA\tPORTS")
 	for _, name := range names {
 		cfg, _ := vm.ReadConfig(name)
 		state := vm.StatusStopped
@@ -86,36 +85,14 @@ func list() error {
 		if state == vm.StatusRunning {
 			ports = forwardedPorts(name)
 		}
-		k8s := "-"
-		if cfg.Kubernetes {
-			k8s = vm.K3sVersionOf(cfg)
-		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\n", name, state, engine, k8s, ctx, cfg.CPUs, clivm.FormatMemory(cfg.Memory), dataUsage(name), ports)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\n", name, state, engine, ctx, cfg.CPUs, clivm.FormatMemory(cfg.Memory), dataUsage(name), ports)
 	}
 	return w.Flush()
 }
 
 // forwardedPorts asks the VM daemon for its published ports.
 func forwardedPorts(name string) string {
-	resp, err := vm.SendControlCommand(name, vm.ControlRequest{Cmd: vm.CmdStatus})
-	if err != nil || !resp.OK {
-		return "?"
-	}
-	if len(resp.Ports) == 0 {
-		return "-"
-	}
-	var parts []string
-	for _, p := range resp.Ports {
-		s := strconv.Itoa(p.Port)
-		if p.Protocol == "udp" {
-			s += "/udp"
-		}
-		if p.Error != "" {
-			s += "!"
-		}
-		parts = append(parts, s)
-	}
-	return strings.Join(parts, ",")
+	return vm.ForwardedPorts(name)
 }
 
 // dataUsage is the space the VM's sparse docker data disk actually uses.

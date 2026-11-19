@@ -20,9 +20,9 @@ type VMConfig struct {
 	HostInterface string `json:"host_interface,omitempty"` // physical NIC for "host" mode (e.g. "en0")
 	Image         string `json:"image,omitempty"`          // base image: "kata", "alpine", "docker", "container" or "cluster"
 	Engine        string `json:"engine,omitempty"`         // docker image only: "docker" (default) or "containerd"
-	Kubernetes    bool   `json:"kubernetes,omitempty"`     // docker image only: run k3s on the engine (clusters always run it)
-	K3sVersion    string `json:"k3s_version,omitempty"`    // docker and cluster images: k3s release, e.g. "v1.36.5+k3s1" (default DefaultK3sVersion)
-	KubePort      int    `json:"kube_port,omitempty"`      // docker and cluster images: host port on 127.0.0.1 forwarded to the k3s API
+	Kubernetes    bool   `json:"kubernetes,omitempty"`     // obsolete: docker hosts used to run k3s; read only so 'docker start' can clear it
+	K3sVersion    string `json:"k3s_version,omitempty"`    // cluster image: k3s release, e.g. "v1.36.5+k3s1" (default DefaultK3sVersion)
+	KubePort      int    `json:"kube_port,omitempty"`      // cluster image: host port on 127.0.0.1 forwarded to the k3s API
 	GuestLayout   int    `json:"guest_layout,omitempty"`   // docker and alpine images: GuestLayout its disk was created with
 	Rosetta       bool   `json:"rosetta,omitempty"`        // docker image only: run x86-64 binaries with Rosetta
 

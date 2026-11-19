@@ -52,22 +52,20 @@ monolith network rm <name>                        # stop daemon and delete the n
 monolith network logs <name>                      # stream the daemon log
 
 # Docker hosts (Colima-style); every command but list takes --name (default docker-lith-default)
-monolith docker use [name] [--start] [--kubernetes]  # switch the docker CLI to another host's context (no boot unless --start; no name: print current); alias switch
+monolith docker use [name] [--start]              # switch the docker CLI to another host's context (no boot unless --start; no name: print current); alias switch
 monolith docker start [--cpus N --memory 2G]      # boot (or resume) the VM, wait for dockerd, make context docker-<name> current
 monolith docker start --engine containerd         # new VM with containerd + nerdctl + BuildKit instead of dockerd (fixed at creation)
 monolith docker nerdctl [--name N] run -d nginx   # run nerdctl in a containerd host (args pass through; -it gets a TTY)
-monolith docker start --kubernetes [--k3s-version v1.36.5+k3s1]  # run k3s on the engine; merges kubectl context k3s-<name> and makes it current
-monolith docker start --kubernetes=false          # turn k3s off on the next boot (data kept; kubectl context removed)
-monolith docker kubeconfig                        # print the standalone kubeconfig (context k3s-<name>)
 monolith docker start --rosetta                   # run linux/amd64 images with Rosetta (opt-in, saved; --rosetta=false to turn off)
 monolith docker link-socket [--unlink]            # sudo-symlink /var/run/docker.sock to the host's docker.sock
 
 # Clusters: a single-node k3s in a VM (image cluster, user mode); every command but list takes --name (default cluster-default)
+monolith cluster use [name] [--start]             # make kubectl context cluster-<name> current (no boot unless --start; no name: print current); alias switch
 monolith cluster start [--cpus N --memory 4G --k3s-version v1.36.5+k3s1]  # boot (or resume) it, wait for the node, merge kubectl context cluster-<name> and make it current
 monolith cluster pause | resume                   # save the whole VM to disk and stop it / restore it (pods carry on)
 monolith cluster stop [--force]                   # stop it (state persists); on a paused cluster, discards the snapshot after asking
 monolith cluster kubeconfig                       # print the standalone kubeconfig (context cluster-<name>)
-monolith cluster list                             # clusters: state, k3s version, context (* = current), cpus, mem, data, API address
+monolith cluster list [-q]                        # clusters: state, k3s version, context (* = current), cpus, mem, data, API address, service ports (-q: names only)
 monolith cluster rm [--force]                     # delete the VM and its kubectl context (the previous current context comes back)
 
 # Repo sandboxes (untrusted code); the repo is the git root, else an existing parent sandbox, else cwd
@@ -108,8 +106,7 @@ If no name is given to `run`, one is auto-generated as `lith-NNNNN` (random 5-di
 go test ./...             # all tests
 go test -run TestRun ./vm # single test
 MONOLITH_TEST_DOCKER=1 go test -run TestDockerPauseResume ./vm  # docker host pause/resume (needs internet, docker CLI, unlocked Mac)
-MONOLITH_TEST_K8S=1 go test -run TestKubernetesPauseResume ./vm  # k3s on both engines: LB service, pause/resume (needs internet, kubectl, unlocked Mac)
-MONOLITH_TEST_K8S=1 go test -run TestClusterPauseResume ./vm  # cluster VM: nginx pod survives pause/resume (needs internet, kubectl, unlocked Mac)
+MONOLITH_TEST_K8S=1 go test -run TestClusterPauseResume ./vm  # cluster VM: nginx pod and its LoadBalancer port on localhost survive pause/resume (needs internet, kubectl, unlocked Mac)
 MONOLITH_TEST_SANDBOX=1 go test -run TestSandboxIsolation ./cli/sandbox  # hostile script in a real sandbox (needs docker CLI, unlocked Mac)
 MONOLITH_TEST_CONTAINER=1 go test -run TestContainerRun ./cli/container  # container VMs: exit codes, config, network, lifecycle (needs internet)
 ```
@@ -168,8 +165,12 @@ monolith/
       docker.go           — "docker start|stop|pause|resume|rm|env" for Docker host VMs (image docker, user mode), --engine
       ssh.go              — "docker nerdctl": execs ssh to the containerd host's internal sshd via ssh.sock
       link.go             — "docker link-socket": sudo ln -sfn docker.sock /var/run/docker.sock (refuses non-symlinks)
+      use.go              — "docker use": switch the docker context to another host; host-name completion
+      context.go          — creates/selects/removes the docker CLI context docker-<name> (shells out to docker)
+      list.go             — "docker list": docker VMs with context and forwarded ports (from the daemon's status reply)
     cluster/
       cluster.go          — "cluster start|stop|pause|resume|rm|list|kubeconfig" (image cluster, user mode)
+      use.go              — "cluster use": make another cluster's kubectl context current
     sandbox/
       sandbox.go          — "sandbox activate|exec|status|list|stop|rm": per-repo docker image VM, shell container, sessions
       firewall.go         — network policy as iptables rules applied in the VM via a privileged helper container
@@ -182,9 +183,6 @@ monolith/
       manage.go           — "container ps|logs|stop|start|rm|attach"
       images.go           — "container pull|images|rmi"
       prune.go            — "container prune", "container image prune"
-      kube.go             — "docker kubeconfig", kubeconfig fetch/rewrite, merge into $KUBECONFIG or ~/.kube/config, readiness
-      context.go          — creates/selects/removes the docker CLI context docker-<name> (shells out to docker)
-      list.go             — "docker list": docker VMs with context and forwarded ports (from the daemon's status reply)
   vm/                     — package vm: everything about a single VM. Imports net and the root package.
     vmd.go                — RunDaemon(name, restore, consoleLogPath): the per-VM daemon. Owns vz.VirtualMachine,
                             listens on a unix socket, dispatches console-attach and control
@@ -205,7 +203,10 @@ monolith/
                             sparse data.img, /Users virtio-fs share; EngineDocker/EngineContainerd, EngineOf.
     image_cluster.go      — cluster image: alpine + embeddings/cluster overlay, sparse data.img, k3s (ro, tag k3s) and
                             kubeconfig (rw, tag kube) shares; ImageCluster.
-    cluster.go            — clusterServices: forwards 127.0.0.1:<kube_port> to the guest's k3s API.
+    cluster.go            — clusterServices: forwards 127.0.0.1:<kube_port> to the guest's k3s API, and LoadBalancer/NodePort
+                            service ports (listed through that API) via portForwarder.
+    portfwd.go            — portForwarder: polls a VM's published ports and keeps localhost TCP/UDP forwards (docker + cluster);
+                            ForwardedPorts/FormatPorts for list columns.
     sshkey.go             — per-VM ed25519 key for the containerd engine's internal sshd.
     k3s.go                — k3s download/verify into the cache (ensureK3s), DefaultK3sVersion, GuestLayout(+per-feature minimums),
                             FreeLocalPort.
@@ -217,8 +218,8 @@ monolith/
     container_attach.go   — AttachContainer (tty: raw, Ctrl+P Ctrl+Q; no tty: signals forwarded), WaitContainerExit.
     container_agent.go    — containerAgent: the daemon's ttRPC client of monolith-init (Start/Wait/Shutdown, Signal, ResizeTTY).
     guestinit/            — embeds monolith-init (files/, built by `make init`) and writes the shared cpio initrd.
-    docker.go             — daemon-side services: engine socket relay (docker.sock or ssh.sock) and published-port
-                            forwarding (ports from dockerd's API or `nerdctl ps --format json`).
+    docker.go             — daemon-side services: engine socket relay (docker.sock or ssh.sock) and the published ports
+                            to forward (from dockerd's API or `nerdctl ps --format json`).
     alpine_kernel.go      — DefaultKernel() downloads Alpine ISO, extracts/decompresses kernel+initrd.
                             DefaultRootFS() downloads minirootfs tarball.
     alpine_disk.go        — DefaultDisk(tarball, modloop, name, overlays...) creates the per-VM 1 GiB ext4 disk image
@@ -239,7 +240,8 @@ monolith/
                             agent_linux.go (the Agent ttRPC service), grow_linux.go; main_other.go is a stub for the Mac.
   update/                 — latest release lookup, version comparison (x/mod/semver), download + checksum, codesign check, Replace.
   internal/ansi/          — terminal helpers: IsTerminal, UseColor, Paint, Size, Plain (console output → text).
-  internal/kubeconfig/    — the cluster's kubeconfig: parse/rewrite k3s's file, merge into and remove from the user's, readiness check.
+  internal/kubeconfig/    — the cluster's kubeconfig: parse/rewrite k3s's file, merge into, switch to (Use) and remove from the
+                            user's, TLS config, readiness check.
   internal/steps/         — the step view (vm run): running step's last 12 lines, finished steps folded to a line.
   net/                    — package net: networking. Imports only the root package (never vm).
                             Callers that also use the standard library import it as `mnet`.
@@ -376,16 +378,17 @@ Alpine guest configuration:
 - **First boot**: `docker-setup` (sysinit, after DHCP) reads the engine from `/etc/monolith-engine` (written by the containerd overlay; absent = docker), mounts cgroup2, loads modules, runs `apk add` for the engine's packages if any is missing (docker: `docker socat e2fsprogs`), formats `/dev/vdb` if it has no ext4, mounts it on `/var/lib/docker` (containerd: see below), and mounts the virtio-fs tag `users` (the Mac's `/Users`) at `/Users` so `-v ~/x:/x` resolves. About 20s with a warm Alpine cache; later boots take ~3s to a ready dockerd.
 - **API**: `docker-serve relay` runs `socat TCP-LISTEN:2375,bind=192.168.127.2,range=192.168.127.1/32` → `/var/run/docker.sock`. The daemon (`vm/docker.go`) listens on `vms/docker/docker.sock` on the Mac and relays each connection through `UserNetwork.DialGuest(2375)`. `range=` admits only the user-mode gateway, so containers can't reach dockerd. vsock was tried first, but vz's `VirtioSocketConnection` can't half-close (no `CloseWrite`), which broke attach (output lost, and `docker run -i` never sees stdin EOF). socat runs with `-t 86400` because its default closes a connection 0.5s after either side half-closes.
 - **Ports**: the daemon polls `GET /containers/json` every second and keeps a localhost forward for each published port: TCP through its own `127.0.0.1:<PublicPort>` listener relaying via `DialGuest`, UDP through gvisor-tap-vsock's port forwarder (`UserNetwork.ExposeUDP`, called in-process through its HTTP handler; it keeps a session per client address). Ports published on the guest's loopback (`-p 127.0.0.1:52093:6443`, as `kind` does) can't be dialed through the gateway, so their forward relays through `docker-serve loopback` (guest port 2381, gateway only): the daemon sends one request line (`<port>`, or `6 <port>` for `::1`) and `loopback-connect` validates it and `exec`s `socat STDIO TCP:127.0.0.1:<port>`. `portKey.Bind` tells the two kinds apart; UDP on loopback is reported as a failed forward (`!` in `docker list`). Other specific guest addresses are not forwarded. Forwards bind to localhost only; on macOS ports below 1024 listen on the wildcard address behind a loopback-only filter (`vm/portlisten.go`), since macOS refuses a specific-address bind there without root. `docker list` shows UDP ports as `53/udp`.
-- **`host.docker.internal`** and `gateway.docker.internal` are static records in the user-mode network's DNS server (`net/usernet.go`) resolving to `192.168.127.254`, which is NATed to the Mac's `127.0.0.1`. Containers and k3s pods resolve through the VM's resolver (the gateway), so the names work everywhere, as with Docker Desktop.
-- **Clean shutdown**: Virtualization.framework's stop request presses a virtual power button: the device tree's `gpio-keys` node is wired to GPIO line 6 of the PL061 controller. Alpine's virt kernel has the `gpio-pl061` module but no `gpio_keys`, so `docker-setup` loads `gpio-pl061` and `docker-serve power` waits on the line with `gpiomon` (libgpiod) and runs `poweroff`. init then runs `docker-serve shutdown` (stop k3s, then `nerdctl stop -t 10` in both namespaces + containerd, or SIGTERM dockerd, which stops its containers) before killing everything and unmounting. Containers get SIGTERM and Postgres writes its shutdown checkpoint; a stop takes ~4–7s. `BootSpec.HandlesStop` (guest layout ≥ 2) raises the daemon's wait before forcing from 10s to 30s. Found while testing: packages installed right before a forced stop came back as 0-byte files, so `docker-setup` now syncs after `apk add`.
+- **`host.docker.internal`** and `gateway.docker.internal` are static records in the user-mode network's DNS server (`net/usernet.go`) resolving to `192.168.127.254`, which is NATed to the Mac's `127.0.0.1`. Containers (and cluster pods) resolve through the VM's resolver (the gateway), so the names work everywhere, as with Docker Desktop.
+- **Clean shutdown**: Virtualization.framework's stop request presses a virtual power button: the device tree's `gpio-keys` node is wired to GPIO line 6 of the PL061 controller. Alpine's virt kernel has the `gpio-pl061` module but no `gpio_keys`, so `docker-setup` loads `gpio-pl061` and `docker-serve power` waits on the line with `gpiomon` (libgpiod) and runs `poweroff`. init then runs `docker-serve shutdown` (`nerdctl stop -t 10` + containerd, or SIGTERM dockerd, which stops its containers) before killing everything and unmounting. Containers get SIGTERM and Postgres writes its shutdown checkpoint; a stop takes ~4–7s. `BootSpec.HandlesStop` (guest layout ≥ 2) raises the daemon's wait before forcing from 10s to 30s. Found while testing: packages installed right before a forced stop came back as 0-byte files, so `docker-setup` now syncs after `apk add`.
 - **Rosetta** is opt-in: `start --rosetta` sets `rosetta: true` (changeable on a stopped VM with guest layout ≥ 2; `--rosetta=false` turns it off). It's off by default, like Colima's `--vz-rosetta`, so an amd64-only image fails with `exec format error` instead of silently running under emulation. `CheckRosetta` refuses when `vz.LinuxRosettaDirectoryShareAvailability()` says it isn't installed (`softwareupdate --install-rosetta`). The daemon adds a virtio-fs device with `vz.NewLinuxRosettaDirectoryShare()` (tag `rosetta`) and `monolith.rosetta=1`; `docker-setup` mounts it on `/mnt/rosetta` and registers `/mnt/rosetta/rosetta` in `binfmt_misc` for x86-64 ELF with flags `CF` (F: interpreter opened at registration, so it works inside containers). `docker run --platform linux/amd64` then runs x86-64 images. Save/restore works with the share attached.
 - **File-change events**: virtio-fs doesn't turn changes made on the Mac into inotify events in the guest, so watchers (hot reload, test runners) never fired. The daemon watches `/Users` with FSEvents (`github.com/fsnotify/fsevents`, file-level events, 100ms latency) and sends created/modified/renamed paths, one per line, over a persistent connection to guest port 2379 (gateway only), where `docker-serve touch-paths` runs `touch -c -r path path`: the times stay, and the guest raises `IN_ATTRIB`. Metadata-only events aren't forwarded and each path is muted for 2s after forwarding, so the guest's touch doesn't echo back; `~/.monolith` and `~/Library` are skipped. Removals aren't relayed.
 - **Guest layout 2** (`vm.GuestLayout`) carries the power, shutdown, fsnotify and Rosetta pieces (`libgpiod` joins the packages). VMs created earlier keep working without them (forced stop after 10s, no Rosetta, no file events) and are refused `--rosetta`.
 - **Contexts**: `start`/`resume` wait for `GET /_ping` (10 min timeout for slow first boots), then create or update the docker context `docker-<name>` (endpoint `unix://…/vms/<name>/docker.sock`) and `docker context use` it, which sets `currentContext` in `~/.docker/config.json` for all shells. `rm` deletes the context, switching to `default` first if it is current. They shell out to the `docker` CLI with `DOCKER_HOST`/`DOCKER_CONTEXT` removed from its environment; without the CLI on PATH, `start` just prints the socket. `start` warns when `DOCKER_HOST` is set, since it overrides contexts. `env` remains for scripts.
-- **Several hosts**: `docker use <name>` (`cli/docker/use.go`) switches between them: it recreates the context if needed, runs `docker context use`, and reports (without booting) a host that isn't running; `--start` boots or resumes it first, `--kubernetes` also sets current-context to `k3s-<name>`. `--name` and `use` complete host names. Each VM has its own private user-mode network (all use guest IP `192.168.127.2`), socket and context. Host ports are first come, first served: a port another VM already forwards is retried every poll, logged once, and reported with its bind error in the daemon's `status` reply (`ControlResponse.Ports`), which `docker list` shows as `8080!`.
+- **Several hosts**: `docker use <name>` (`cli/docker/use.go`) switches between them: it recreates the context if needed, runs `docker context use`, and reports (without booting) a host that isn't running; `--start` boots or resumes it first. `--name` and `use` complete host names. Each VM has its own private user-mode network (all use guest IP `192.168.127.2`), socket and context. Host ports are first come, first served: a port another VM already forwards is retried every poll, logged once, and reported with its bind error in the daemon's `status` reply (`ControlResponse.Ports`), which `docker list` shows as `8080!`.
 - **Pause/resume** are `vm suspend`/restore: the whole VM, virtio-fs share and file-handle NIC included, saves and restores (snapshot ≈ guest memory in use, ~100 MB for an idle 2 GiB host; restore ~3s). Containers carry on mid-instruction. The user-mode network stack lives in the daemon, which exits on pause, so TCP connections open through it (a `docker logs -f`, a container's outbound connection) are dropped on resume. `start` on a paused VM resumes it; `stop` on one discards the snapshot (asks unless `--force`). Restoring needs the Mac unlocked (see Gotchas). Don't touch `disk.img`/`data.img` while paused.
 - **Clock**: a restored guest's system clock is behind by the paused time; the RTC (pl031) follows the Mac's clock. `docker-serve clock` checks `/sys/class/rtc/rtc0/since_epoch` every 2s and runs `hwclock -s -u` when they differ by more than 2s. `resume` also waits (up to 10s) until dockerd's `/info` `SystemTime` is within 2s of the Mac's, so commands run right after it see the right time.
-- **Port forwards** are re-created by the restored daemon's first poll, which runs immediately.
+- **Port forwards** are re-created by the restored daemon's first poll, which runs immediately. The poll loop, the TCP/UDP forwards and the clash bookkeeping are `portForwarder` (`vm/portfwd.go`), shared with clusters; `dockerServices` only supplies the list of ports.
+- **No Kubernetes**: docker hosts used to run k3s (`start --kubernetes`); that moved to `monolith cluster`. A host whose `config.json` still has `kubernetes: true` boots without it: `start` clears `kubernetes`, `k3s_version` and `kube_port`, says once that it moved, and removes the old kubectl context `k3s-<name>` (`kubeconfig.RemoveContext`; `rm` does too). Its k3s state stays on the data disk until `rm`. Disks from then keep the old guest scripts, which idle without `monolith.k3s=1` on the command line (and reset containerd's CNI paths if k3s had changed them).
 - Guest scripts are written into `disk.img` when it is created; after changing `embeddings/docker` or `embeddings/containerd`, recreate the VM (`docker rm --name <n>`), which also reinstalls the engine and discards images.
 
 #### containerd engine
@@ -399,28 +402,18 @@ Alpine guest configuration:
 - **Readiness**: `start`/`resume` poll `nerdctl info` over ssh, then wait for the guest clock (`date +%s` over ssh) like the docker engine does through `/info`.
 - Pause/resume, `/Users`, the clock loop, port clash reporting and `rm` work as for the docker engine.
 
-#### Kubernetes (k3s)
-
-`start --kubernetes` runs a single-node k3s server on the VM's engine (Colima-style), so images built with `docker build` or `nerdctl build` are usable in pods without a registry. It's saved in `config.json` (`kubernetes`, `k3s_version`, `kube_port`) and can be turned on or off on any start of a stopped VM; `start` refuses to change it on a running or paused one (it changes the VM's devices and boot arguments). New VMs created with `--kubernetes` default to 4 GiB.
-
-- **k3s binary**: `ensureK3s` downloads `k3s-arm64` for the pinned version (`DefaultK3sVersion`, override with `--k3s-version`) from GitHub releases into `~/.monolith/k3s/<version>/k3s`, verified against the release's `sha256sum-arm64.txt`. That directory is shared read-only over virtio-fs (tag `k3s`, mounted at `/opt/monolith/k3s`), so every VM reuses one download, and `monolith.k3s=1` goes on the kernel command line. Turning Kubernetes off drops both.
-- **Guest layout**: the k3s services live in the inittab written when the disk is created, so `config.json` records `guest_layout` (`vm.GuestLayout`, currently 4; layout 1 is the k3s services) for new docker image VMs. VMs created earlier have none and are refused `--kubernetes` with a hint to recreate them.
-- **Guest**: with `monolith.k3s=1`, `docker-setup` loads `vxlan`, makes `/` rshared, mounts the share, and bind-mounts `/var/lib/rancher` and `/var/lib/kubelet` from the data disk (`/var/lib/docker/.monolith/…` for docker, `/data/…` for containerd). `docker-serve k3s` runs `k3s server --disable=traefik --node-name=<vm> --write-kubeconfig-mode=600` with `--docker` (k3s's built-in cri-dockerd) or `--container-runtime-endpoint=unix:///run/containerd/containerd.sock`. For containerd, `docker-setup` also points the CRI's CNI `bin_dir`/`conf_dir` at k3s's flannel (`/var/lib/rancher/k3s/data/current/bin`, `/var/lib/rancher/k3s/agent/etc/cni/net.d`) because nerdctl's own conflist sits in `/etc/cni/net.d`, and sets nerdctl's and BuildKit's namespace to `k8s.io` so built images are visible to pods; turning Kubernetes off reverts both. Without the flag, `docker-serve k3s|k8s-info` just sleep.
-- **API**: the daemon forwards `127.0.0.1:<kube_port>` (chosen once with `FreeLocalPort`, so several clusters coexist) to guest port 6443. k3s's serving certificate already covers 127.0.0.1.
-- **kubeconfig**: `docker-serve k8s-info` (guest port 2378, gateway only) answers a one-line request: `kubeconfig` → `/etc/rancher/k3s/k3s.yaml`, `services` → `k3s kubectl get svc -A -o json`. The daemon's `kubeconfig` control command returns the first; the CLI renames cluster/user/context to `k3s-<name>`, points the server at `kube_port`, and merges the entries into the first file in `$KUBECONFIG` (else `~/.kube/config`) as a generic YAML document, keeping other fields and saving the previous file as `<file>.monolith.bak`, then sets `current-context`. `rm` and `--kubernetes=false` remove the entries (clearing `current-context` if it was this VM's). `docker kubeconfig` prints the standalone file.
-- **Readiness**: after the engine, `start`/`resume` wait (up to 10 min; the first start pulls k3s's system images, ~25s on a warm cache) for the kubeconfig, `/readyz`, and the node's Ready condition, using the kubeconfig's client certificate.
-- **Service ports**: every poll the daemon adds Kubernetes service ports to the engine's: LoadBalancer ports (k3s's servicelb serves them on the node) and NodePorts, TCP only (`parseKubeServicePorts`). They're forwarded to localhost like container ports, with the same clash rules.
-- **list**: `docker list` has a K8S column with the k3s version; `vm list` shows `docker (docker+k3s)`.
-
 ### Clusters
 
-`monolith cluster` (`cli/cluster`) is the plain way to get Kubernetes: a VM with image `cluster` (`vm/image_cluster.go`, overlay `vm/embeddings/cluster`) that runs one k3s server on k3s's own bundled containerd. No Docker, nerdctl, BuildKit, sshd or socat in the guest, and no flags beyond `--cpus`, `--memory` and `--k3s-version` (saved in `config.json`; the version only changes while stopped). It is an ordinary VM otherwise: `vm attach|logs|list|rm` work on it. Not in `ValidImages`; only `cluster start` creates one. User-mode network only.
+`monolith cluster` (`cli/cluster`) is the way to get Kubernetes (docker hosts no longer run it): a VM with image `cluster` (`vm/image_cluster.go`, overlay `vm/embeddings/cluster`) that runs one k3s server on k3s's own bundled containerd. No Docker, nerdctl, BuildKit, sshd or socat in the guest, and no flags beyond `--cpus`, `--memory` and `--k3s-version` (saved in `config.json`; the version only changes while stopped). It is an ordinary VM otherwise: `vm attach|logs|list|rm` work on it. Not in `ValidImages`; only `cluster start` creates one. User-mode network only.
 
 - **Guest**: `cluster-setup` (sysinit) installs `e2fsprogs libgpiod iptables ip6tables` on first boot (needs network), loads `vxlan` and friends, mounts the data disk on `/data` with `/var/lib/rancher` and `/var/lib/kubelet` bind-mounted from it, makes `/` rshared, and mounts the shares. `cluster-serve k3s` runs `k3s server --disable=traefik --write-kubeconfig=/opt/monolith/out/kubeconfig`; `power`, `shutdown` (stop k3s, then the pods' shims) and `clock` are as in the docker host. Boot markers: network, setup, ready (steps Kernel, System, Network, Cluster).
-- **Shares**: the k3s binary read-only (tag `k3s`, `~/.monolith/k3s/<version>/`, shared with docker hosts) at `/opt/monolith/k3s`; `vms/<name>/kube/` read-write (tag `kube`) at `/opt/monolith/out`, where k3s writes its kubeconfig. That file replaces the docker host's `k8s-info` socat service and control command: the CLI just reads `VMKubeconfigPath`.
-- **API**: `clusterServices` (the daemon, `vm/cluster.go`) forwards `127.0.0.1:<kube_port>` to guest port 6443; `kube_port` is chosen once with `FreeLocalPort`. There is no service-port forwarding: LoadBalancer and NodePort services are not published on localhost (use `kubectl port-forward`).
+- **k3s binary**: `ensureK3s` downloads `k3s-arm64` for the pinned version (`DefaultK3sVersion`, override with `--k3s-version`) from GitHub releases into `~/.monolith/k3s/<version>/k3s`, verified against the release's `sha256sum-arm64.txt`, so every cluster reuses one download.
+- **Shares**: the k3s binary read-only (tag `k3s`, `~/.monolith/k3s/<version>/`) at `/opt/monolith/k3s`; `vms/<name>/kube/` read-write (tag `kube`) at `/opt/monolith/out`, where k3s writes its kubeconfig. The CLI reads it from `VMKubeconfigPath`; there is no control command or guest service for it.
+- **API**: `clusterServices` (the daemon, `vm/cluster.go`) forwards `127.0.0.1:<kube_port>` to guest port 6443; `kube_port` is chosen once with `FreeLocalPort`, so several clusters coexist. k3s's serving certificate covers 127.0.0.1.
+- **Service ports**: the daemon's `portForwarder` (as for docker hosts) polls every second for LoadBalancer ports (k3s's servicelb serves them on the node) and NodePorts, TCP and UDP (`parseKubeServicePorts`), and forwards each to the same port on localhost, first come first served across VMs. The list comes from `GET /api/v1/services` on the guest's API: the daemon parses the kubeconfig k3s wrote into the kube share (rebuilt when its mtime changes, i.e. each boot), and dials 6443 through `DialGuest` with the kubeconfig's CA and client certificate. Before k3s writes it, the poll fails and nothing is forwarded. The `status` reply carries them (`ControlResponse.Ports`); `cluster list` shows them in PORTS (`8080!` = couldn't bind).
+- **use**: `cluster use <name>` (`cli/cluster/use.go`, alias `switch`) makes `cluster-<name>` current with `kubeconfig.Use`, noting the replaced context in `prev-context` as a merge does, without booting; a cluster that never started has no entries (`ErrNoContext`). `--start` boots or resumes it instead (start merges and selects the context). No name: prints the current cluster. `list -q` prints names; `--name` and `use` complete them.
 - **start**: new VM or `start` on a stopped one deletes the stale kubeconfig file, `Prepare`s, spawns the daemon, then polls until the file exists, `/readyz` answers and the node is Ready (up to 10 min; ~10s on a warm cache), and merges the context. A suspended VM is resumed instead. `pause`/`resume`/`stop`/`rm` are as for the docker host.
-- **kubeconfig** (`internal/kubeconfig`): context, cluster and user are all named `cluster-<name>` (`ContextName`; never a bare name, so a user's own context can't be replaced). The merge edits the first file in `$KUBECONFIG` (else `~/.kube/config`) as a generic YAML document, keeping fields it doesn't know. The file as it was is saved once as `<file>.monolith.bak` (later merges don't touch it), and the context that was current is noted in `vms/<name>/prev-context`; `rm` removes the entries and makes that context current again if it still exists, else clears `current-context`. A file without the entries is not rewritten. (`docker start --kubernetes` still uses its own copy in `cli/docker/kube.go`, with the old behaviour.)
+- **kubeconfig** (`internal/kubeconfig`): context, cluster and user are all named `cluster-<name>` (`ContextName`; never a bare name, so a user's own context can't be replaced). The merge edits the first file in `$KUBECONFIG` (else `~/.kube/config`) as a generic YAML document, keeping fields it doesn't know. The file as it was is saved once as `<file>.monolith.bak` (later merges don't touch it), and the context that was current is noted in `vms/<name>/prev-context`; `rm` removes the entries and makes that context current again if it still exists, else clears `current-context`. A file without the entries is not rewritten.
 - **Not supported**: amd64-only images. containerd's CRI only pulls the node's platform (arm64), even with Rosetta in the guest. Tried on Alpine's containerd 2.0.0 and k3s's bundled 2.3.4: a pre-pull with `--platform linux/amd64` isn't seen by the CRI, and a second runtime handler with `runtime_platform = linux/amd64` plus a RuntimeClass and the alpha kubelet gate `RuntimeClassInImageCriApi` still fails with `no match for platform in manifest`. Multi-arch images work. There is no `--rosetta` for clusters.
 
 ### Sandboxes
@@ -462,7 +455,7 @@ Each VM gets a MAC address (saved as `mac` in `config.json`) and a generic machi
     vmlinuz-virt
     initramfs-virt
     minirootfs.tar.gz
-  k3s/v1.36.5+k3s1/k3s     — k3s binary, shared read-only into VMs with --kubernetes and into clusters
+  k3s/v1.36.5+k3s1/k3s     — k3s binary, shared read-only into clusters
   images/                  — container images (oci): refs.json, <config digest>/{rootfs.img, image.json},
                              blobs/sha256/<hex> (layer cache, shared between images)
   container/initrd-<hash>.img — the container VMs' initrd (monolith-init), one per init build

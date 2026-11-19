@@ -257,11 +257,7 @@ func imageLabel(cfg vm.VMConfig) string {
 		return fmt.Sprintf("%s (%s)", cfg.Image, cfg.Container.Image)
 	}
 	if cfg.Image == vm.ImageDocker {
-		engine := vm.EngineOf(cfg)
-		if cfg.Kubernetes {
-			engine += "+k3s"
-		}
-		return fmt.Sprintf("%s (%s)", cfg.Image, engine)
+		return fmt.Sprintf("%s (%s)", cfg.Image, vm.EngineOf(cfg))
 	}
 	return cfg.Image
 }

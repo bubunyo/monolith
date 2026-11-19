@@ -39,9 +39,6 @@
 ::respawn:/usr/local/bin/docker-serve fsnotify
 ::respawn:/usr/local/bin/docker-serve loopback
 ::respawn:/usr/local/bin/docker-serve listening
-# Kubernetes (k3s); idle unless the host enables it.
-::respawn:/usr/local/bin/docker-serve k3s
-::respawn:/usr/local/bin/docker-serve k8s-info
 
 hvc0::respawn:/sbin/getty -n -l /usr/local/bin/autologin 0 hvc0
 

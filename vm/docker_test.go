@@ -129,15 +129,19 @@ func TestParseNerdctlPorts(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestParseKubeServicePorts(t *testing.T) {
-	out := `{"items":[
- {"spec":{"type":"ClusterIP","ports":[{"protocol":"TCP","port":443}]}},
- {"spec":{"type":"LoadBalancer","ports":[{"protocol":"TCP","port":8080,"nodePort":31000},{"protocol":"UDP","port":53,"nodePort":31001}]}},
- {"spec":{"type":"NodePort","ports":[{"protocol":"TCP","port":80,"nodePort":30080}]}}
-]}`
-	ports, err := parseKubeServicePorts([]byte(out))
-	require.NoError(t, err)
-	require.Equal(t, map[portKey]bool{{"tcp", 8080, ""}: true, {"tcp", 31000, ""}: true, {"udp", 53, ""}: true, {"udp", 31001, ""}: true, {"tcp", 30080, ""}: true}, ports)
+// Docker hosts no longer run Kubernetes ('monolith cluster' does); their
+// guest files must not start k3s.
+func TestDockerGuestHasNoKubernetes(t *testing.T) {
+	for _, f := range []string{
+		"embeddings/docker/etc/inittab.tmpl",
+		"embeddings/containerd/etc/inittab.tmpl",
+		"embeddings/docker/usr/local/bin/docker-setup",
+		"embeddings/docker/usr/local/bin/docker-serve",
+	} {
+		data, err := embeddings.ReadFile(f)
+		require.NoError(t, err, f)
+		require.NotContains(t, strings.ToLower(string(data)), "k3s", f)
+	}
 }
 
 func TestParseListeningPorts(t *testing.T) {
