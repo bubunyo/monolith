@@ -14,7 +14,6 @@ import (
 
 var (
 	flagUseStart  bool
-	flagUseKube   bool
 	flagListQuiet bool
 )
 
@@ -26,7 +25,6 @@ var useCmd = &cobra.Command{
 booting anything. A stopped or paused host is reported as such: bring it up with
 'docker start' or 'docker resume', or pass --start to do it here.
 
-With --kubernetes, also make the host's kubectl context (k3s-<name>) current.
 With no name, print the current host.`,
 	Args:              cobra.MaximumNArgs(1),
 	ValidArgsFunction: completeHostNames,
@@ -130,19 +128,6 @@ func use(name string) error {
 		fmt.Printf("Warning: DOCKER_HOST=%s is set in this shell and overrides the context; run 'unset DOCKER_HOST'.\n", host)
 	}
 
-	if flagUseKube {
-		cfg, err := vm.ReadConfig(name)
-		if err != nil {
-			return err
-		}
-		if !cfg.Kubernetes {
-			return fmt.Errorf("Docker host %q has no Kubernetes; start it with 'monolith docker start --kubernetes --name %s'", name, name)
-		}
-		if err := setKubeContext(name); err != nil {
-			return err
-		}
-		fmt.Printf("kubectl context %s is current.\n", kubeContextName(name))
-	}
 	return nil
 }
 
@@ -153,27 +138,7 @@ func displayState(s string) string {
 	return s
 }
 
-// setKubeContext makes the VM's kubectl context current, if it is in the
-// user's kubeconfig.
-func setKubeContext(vmName string) error {
-	path, err := kubeconfigPath()
-	if err != nil {
-		return err
-	}
-	data, err := os.ReadFile(path)
-	if err != nil || !strings.Contains(string(data), kubeContextName(vmName)) {
-		return fmt.Errorf("no kubectl context %s; run 'monolith docker start --name %s' to create it", kubeContextName(vmName), vmName)
-	}
-	return editKubeconfig(func(doc map[string]any) {
-		doc["current-context"] = kubeContextName(vmName)
-	})
-}
-
 func init() {
 	useCmd.Flags().BoolVar(&flagUseStart, "start", false, "start or resume the host first if it isn't running")
-	useCmd.Flags().BoolVar(&flagUseKube, "kubernetes", false, "also make the host's kubectl context current")
-}
-
-func init() {
 	listCmd.Flags().BoolVarP(&flagListQuiet, "quiet", "q", false, "print only host names")
 }

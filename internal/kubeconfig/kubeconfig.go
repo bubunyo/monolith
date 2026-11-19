@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -146,7 +147,12 @@ func Merge(c *Config, prevFile string) error {
 // prevFile) becomes current again if it still exists, else none is. A
 // kubeconfig without the entries is left untouched.
 func Remove(vmName, prevFile string) error {
-	name := ContextName(vmName)
+	return RemoveContext(ContextName(vmName), prevFile)
+}
+
+// RemoveContext is Remove for entries called name exactly, e.g. the k3s-<name>
+// contexts Docker hosts used to merge. prevFile may be "" (no note).
+func RemoveContext(name, prevFile string) error {
 	err := edit(func(doc map[string]any) (changed, backup bool) {
 		if !hasNamed(doc, "contexts", name) {
 			return false, false
@@ -164,8 +170,39 @@ func Remove(vmName, prevFile string) error {
 		}
 		return true, false
 	})
-	if err == nil {
+	if err == nil && prevFile != "" {
 		os.Remove(prevFile)
+	}
+	return err
+}
+
+// ErrNoContext is returned by Use when the cluster's context isn't in the
+// user's kubeconfig.
+var ErrNoContext = errors.New("context not in kubeconfig")
+
+// Use makes the cluster VM's context current, noting the previous one in
+// prevFile as Merge does. It fails with ErrNoContext if the entries aren't
+// there (the cluster never started, or they were deleted).
+func Use(vmName, prevFile string) error {
+	name := ContextName(vmName)
+	missing := false
+	err := edit(func(doc map[string]any) (changed, backup bool) {
+		if !hasNamed(doc, "contexts", name) {
+			missing = true
+			return false, false
+		}
+		cur, _ := doc["current-context"].(string)
+		if cur == name {
+			return false, false
+		}
+		if cur != "" {
+			os.WriteFile(prevFile, []byte(cur), 0600)
+		}
+		doc["current-context"] = name
+		return true, false
+	})
+	if err == nil && missing {
+		return ErrNoContext
 	}
 	return err
 }
@@ -265,6 +302,19 @@ func removeNamed(doc map[string]any, key, name string) {
 
 // Client authenticates to the API with the kubeconfig's client certificate.
 func (c *Config) Client() (*http.Client, error) {
+	tlsCfg, err := c.TLSConfig()
+	if err != nil {
+		return nil, err
+	}
+	return &http.Client{
+		Timeout:   5 * time.Second,
+		Transport: &http.Transport{TLSClientConfig: tlsCfg},
+	}, nil
+}
+
+// TLSConfig trusts the cluster's CA and presents the kubeconfig's client
+// certificate, for callers that dial the API their own way.
+func (c *Config) TLSConfig() (*tls.Config, error) {
 	decode := func(s string) []byte {
 		b, _ := base64.StdEncoding.DecodeString(s)
 		return b
@@ -277,12 +327,7 @@ func (c *Config) Client() (*http.Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("k3s client certificate: %w", err)
 	}
-	return &http.Client{
-		Timeout: 5 * time.Second,
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{RootCAs: pool, Certificates: []tls.Certificate{cert}},
-		},
-	}, nil
+	return &tls.Config{RootCAs: pool, Certificates: []tls.Certificate{cert}}, nil
 }
 
 // NodeReady reports whether the API is healthy and the node's Ready

@@ -8,6 +8,42 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+func TestParseKubeServicePorts(t *testing.T) {
+	out := `{"kind":"ServiceList","items":[
+ {"spec":{"type":"ClusterIP","ports":[{"protocol":"TCP","port":443}]}},
+ {"spec":{"type":"LoadBalancer","ports":[{"protocol":"TCP","port":8080,"nodePort":31000},{"protocol":"UDP","port":53,"nodePort":31001}]}},
+ {"spec":{"type":"NodePort","ports":[{"protocol":"TCP","port":80,"nodePort":30080},{"protocol":"SCTP","port":9,"nodePort":30009}]}},
+ {"spec":{"type":"LoadBalancer","ports":[{"port":9000}]}}
+]}`
+	ports, err := parseKubeServicePorts([]byte(out))
+	require.NoError(t, err)
+	require.Equal(t, map[portKey]bool{
+		{"tcp", 8080, ""}: true, {"tcp", 31000, ""}: true, {"udp", 53, ""}: true, {"udp", 31001, ""}: true,
+		{"tcp", 30080, ""}: true, {"tcp", 9000, ""}: true,
+	}, ports)
+
+	_, err = parseKubeServicePorts([]byte("not json"))
+	require.Error(t, err)
+}
+
+// Without the kubeconfig k3s writes (k3s still starting), there are no
+// service ports to forward, and the forwarder keeps what it has.
+func TestClusterServicePortsBeforeK3s(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	s := &clusterServices{name: "c"}
+	_, err := s.servicePorts()
+	require.Error(t, err)
+}
+
+func TestFormatPorts(t *testing.T) {
+	require.Equal(t, "-", FormatPorts(nil))
+	require.Equal(t, "80,53/udp,8080!", FormatPorts([]PortForward{
+		{Port: 80, Protocol: "tcp"},
+		{Port: 53, Protocol: "udp"},
+		{Port: 8080, Protocol: "tcp", Error: "address already in use"},
+	}))
+}
+
 func TestClusterBootSteps(t *testing.T) {
 	steps := BootSteps(VMConfig{Image: ImageCluster, GuestLayout: GuestLayout})
 	require.Equal(t, []string{"Kernel", "System", "Network", "Cluster"}, titles(steps))

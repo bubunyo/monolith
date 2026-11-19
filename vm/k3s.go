@@ -16,10 +16,9 @@ import (
 	"github.com/bubunyo/monolith"
 )
 
-// Kubernetes (k3s) on docker image VMs. The host downloads the k3s binary
-// once per version and shares the directory read-only into the guest over
-// virtio-fs (tag "k3s"); the guest runs it as a single-node server on the
-// VM's engine.
+// Kubernetes (k3s) in cluster VMs. The host downloads the k3s binary once
+// per version and shares the directory read-only into the guest over
+// virtio-fs (tag "k3s"); the guest runs it as a single-node server.
 const (
 	// DefaultK3sVersion is the k3s release used when --k3s-version isn't given.
 	DefaultK3sVersion = "v1.36.5+k3s1"
@@ -27,25 +26,19 @@ const (
 	// KubeAPIPort is the k3s API server port in the guest.
 	KubeAPIPort = 6443
 
-	// K8sInfoPort is the guest TCP port (gateway only, like DockerAPIPort)
-	// that answers a one-line request, "kubeconfig" or "services", with
-	// k3s's kubeconfig or `kubectl get svc -A -o json`.
-	K8sInfoPort = 2378
-
 	// GuestLayout is the version of the guest files written into a docker
-	// image VM's disk when it's created. Layout 1 has the k3s services;
-	// layout 2 adds clean shutdown, Rosetta and file-change events; layout 3
-	// adds the sandbox pieces (repo overlay, listening-ports relay); layout 4
-	// adds the boot step markers, and is also recorded for alpine VMs.
+	// image VM's disk when it's created. Layout 1 had the k3s services (no
+	// longer used: docker hosts don't run Kubernetes); layout 2 adds clean
+	// shutdown, Rosetta and file-change events; layout 3 adds the sandbox
+	// pieces (repo overlay, listening-ports relay); layout 4 adds the boot
+	// step markers, and is also recorded for alpine VMs.
 	GuestLayout = 4
 
 	// Minimum GuestLayout for each feature that needs guest files.
-	GuestLayoutKubernetes = 1
-	GuestLayoutRosetta    = 2 // also clean shutdown and file-change events
-	GuestLayoutBootSteps  = 4
+	GuestLayoutRosetta   = 2 // also clean shutdown and file-change events
+	GuestLayoutBootSteps = 4
 
 	k3sShareTag       = "k3s"
-	k3sCmdlineArg     = "monolith.k3s"
 	k3sBinaryName     = "k3s"
 	k3sReleaseBaseURL = "https://github.com/k3s-io/k3s/releases/download/"
 )

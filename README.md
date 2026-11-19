@@ -4,18 +4,19 @@
 [![Release](https://img.shields.io/github/v/release/bubunyo/monolith?include_prereleases)](https://github.com/bubunyo/monolith/releases)
 
 Lightweight Linux VMs on macOS (Apple Silicon), built on Apple's
-Virtualization.framework: plain VMs, Colima-style Docker, containerd and
-Kubernetes hosts, sandboxes for code you don't trust, and its own container
+Virtualization.framework: plain VMs, Colima-style Docker and containerd hosts,
+Kubernetes clusters, sandboxes for code you don't trust, and its own container
 engine that runs each container in its own VM.
 
 - `monolith vm`: Alpine (default) or Kata VMs that boot in seconds, with
   pause, suspend-to-disk and several network modes.
 - `monolith docker`: Docker Engine or containerd hosts for the CLI on your Mac,
   with docker contexts, localhost port forwarding (TCP and UDP), `/Users`
-  bind mounts with file-change events, pause/resume to disk, optional Rosetta
-  for amd64 images, and optional Kubernetes (k3s).
+  bind mounts with file-change events, pause/resume to disk, and optional
+  Rosetta for amd64 images. `docker use` switches between hosts.
 - `monolith cluster`: a single-node Kubernetes (k3s) cluster in a VM, merged
-  into your kubeconfig, with pause/resume to disk.
+  into your kubeconfig, with LoadBalancer and NodePort services on localhost
+  and pause/resume to disk. `cluster use` switches between clusters.
 - `monolith sandbox`: run a repo you don't trust in a lith, like a virtualenv:
   only the repo is visible (read-only, changes reviewed with `diff`/`apply`),
   and the code can reach the internet but not your Mac or local network.

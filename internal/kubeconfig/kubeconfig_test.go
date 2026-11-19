@@ -245,3 +245,51 @@ func TestPathUsesTheFirstKubeconfigEntry(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "/a/one", path)
 }
+
+func TestUseSwitchesBetweenClusters(t *testing.T) {
+	path, prev := setup(t, userConfig)
+	require.NoError(t, Merge(parse(t, "dev"), prev))
+	require.NoError(t, Merge(parse(t, "prod"), prev))
+	require.Equal(t, "cluster-prod", load(t, path)["current-context"])
+
+	require.NoError(t, Use("dev", prev))
+	require.Equal(t, "cluster-dev", load(t, path)["current-context"])
+	note, err := os.ReadFile(prev)
+	require.NoError(t, err)
+	require.Equal(t, "cluster-prod", string(note), "the context it replaced is noted for Remove")
+
+	before, err := os.ReadFile(path)
+	require.NoError(t, err)
+	require.NoError(t, Use("dev", prev))
+	after, err := os.ReadFile(path)
+	require.NoError(t, err)
+	require.Equal(t, before, after, "already current: nothing is rewritten")
+}
+
+func TestUseWithoutTheContext(t *testing.T) {
+	path, prev := setup(t, userConfig)
+	require.ErrorIs(t, Use("dev", prev), ErrNoContext)
+	require.Equal(t, "gke-prod", load(t, path)["current-context"])
+	require.NoFileExists(t, prev)
+}
+
+// RemoveContext takes the exact name: Docker hosts used to merge k3s-<name>.
+func TestRemoveContextByExactName(t *testing.T) {
+	path, _ := setup(t, userConfig)
+	doc := load(t, path)
+	for _, key := range []string{"clusters", "users", "contexts"} {
+		doc[key] = append(doc[key].([]any), map[string]any{"name": "k3s-docker-lith-default"})
+	}
+	doc["current-context"] = "k3s-docker-lith-default"
+	out, err := yaml.Marshal(doc)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(path, out, 0600))
+
+	require.NoError(t, RemoveContext("k3s-docker-lith-default", ""))
+	doc = load(t, path)
+	require.Equal(t, []string{"gke-prod"}, names(doc, "contexts"))
+	require.Equal(t, []string{"gke-prod"}, names(doc, "clusters"))
+	require.Equal(t, "", doc["current-context"])
+
+	require.NoError(t, RemoveContext("k3s-docker-lith-default", ""), "already gone: no error")
+}

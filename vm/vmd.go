@@ -303,10 +303,18 @@ func RunDaemon(name string, restore bool, consoleLogPath string) error {
 	}
 
 	var agent *containerAgent
+	var ctrPorts *containerPorts
 	if cfg.Container != nil {
 		agent = newContainerAgent(name, cfg.Container, logger)
 		go agent.connect(vm)
 		defer agent.finish()
+		ctrPorts, err = startContainerPorts(name, cfg.Container.Ports, userNet, logger)
+		if err != nil {
+			return errors.Wrap(err, "container ports")
+		}
+		if ctrPorts != nil {
+			defer ctrPorts.close()
+		}
 	}
 
 	var services *dockerServices
@@ -317,8 +325,9 @@ func RunDaemon(name string, restore bool, consoleLogPath string) error {
 		}
 		defer services.close()
 	}
+	var cluster *clusterServices
 	if cfg.Image == ImageCluster {
-		cluster, err := startClusterServices(name, cfg, userNet, logger)
+		cluster, err = startClusterServices(name, cfg, userNet, logger)
 		if err != nil {
 			return errors.Wrap(err, "cluster services")
 		}
@@ -347,17 +356,18 @@ func RunDaemon(name string, restore bool, consoleLogPath string) error {
 
 	// Daemon state — tracks the current console client and VM status.
 	d = &vmDaemon{
-		name:       name,
-		vm:         vm,
-		vmCfg:      vmCfg,
-		pts:        pts,
-		mac:        macStr,
-		listener:   listener,
-		logger:     logger,
-		bus:        bus,
-		docker:     services,
-		kubernetes: cfg.Kubernetes,
-		container:  agent,
+		name:      name,
+		vm:        vm,
+		vmCfg:     vmCfg,
+		pts:       pts,
+		mac:       macStr,
+		listener:  listener,
+		logger:    logger,
+		bus:       bus,
+		docker:    services,
+		cluster:   cluster,
+		container: agent,
+		ctrPorts:  ctrPorts,
 
 		stopTimeout: gracefulStopTimeout,
 	}
@@ -433,17 +443,18 @@ func RunDaemon(name string, restore bool, consoleLogPath string) error {
 
 // vmDaemon holds the daemon's runtime state.
 type vmDaemon struct {
-	name       string
-	vm         *vz.VirtualMachine
-	vmCfg      *vz.VirtualMachineConfiguration
-	pts        *os.File // PTY slave for console relay
-	mac        string
-	listener   net.Listener
-	logger     *monolith.Logger
-	bus        *consoleBus
-	docker     *dockerServices // nil unless the VM uses the docker image
-	kubernetes bool            // k3s runs in the guest
-	container  *containerAgent // nil unless the VM is a container
+	name      string
+	vm        *vz.VirtualMachine
+	vmCfg     *vz.VirtualMachineConfiguration
+	pts       *os.File // PTY slave for console relay
+	mac       string
+	listener  net.Listener
+	logger    *monolith.Logger
+	bus       *consoleBus
+	docker    *dockerServices  // nil unless the VM uses the docker image
+	cluster   *clusterServices // nil unless the VM uses the cluster image
+	container *containerAgent  // nil unless the VM is a container
+	ctrPorts  *containerPorts  // nil unless the container publishes ports
 
 	stopTimeout time.Duration // wait for a clean shutdown before forcing
 
@@ -615,8 +626,6 @@ func (d *vmDaemon) handleControl(conn net.Conn) {
 		d.handleStatus(conn)
 	case CmdResize:
 		d.handleResize(conn, req.Rows, req.Cols)
-	case CmdKubeconfig:
-		d.handleKubeconfig(conn)
 	case CmdSignal:
 		d.handleSignal(conn, req.Signal)
 	default:
@@ -800,24 +809,15 @@ func (d *vmDaemon) handleStatus(conn net.Conn) {
 		status = fmt.Sprintf("vz:%d", int(state))
 	}
 	resp := ControlResponse{OK: true, Status: status}
-	if d.docker != nil {
+	switch {
+	case d.docker != nil:
 		resp.Ports = d.docker.forwards()
+	case d.cluster != nil:
+		resp.Ports = d.cluster.forwards()
+	case d.ctrPorts != nil:
+		resp.Ports = d.ctrPorts.forwards()
 	}
 	d.sendControlResponse(conn, resp)
-}
-
-// handleKubeconfig fetches k3s's kubeconfig from the guest.
-func (d *vmDaemon) handleKubeconfig(conn net.Conn) {
-	if d.docker == nil || !d.kubernetes {
-		d.sendControlResponse(conn, ControlResponse{OK: false, Error: "Kubernetes is not enabled on this VM"})
-		return
-	}
-	data, err := d.docker.kubeconfig()
-	if err != nil {
-		d.sendControlResponse(conn, ControlResponse{OK: false, Error: err.Error()})
-		return
-	}
-	d.sendControlResponse(conn, ControlResponse{OK: true, Data: string(data)})
 }
 
 // handleSignal delivers a signal to a container's process.

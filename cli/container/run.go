@@ -37,6 +37,7 @@ var (
 	flagMemory      string
 	flagDisk        string
 	flagPull        string
+	flagPublish     []string
 )
 
 var runCmd = &cobra.Command{
@@ -50,6 +51,11 @@ with the container's exit code. With -it you get an interactive terminal:
 every key, Ctrl+C included, goes to the container; Ctrl+P Ctrl+Q detaches.
 With -d the container runs in the background ('container logs' shows its
 output).
+
+-p publishes a container port on the Mac's localhost: -p 8080:80 makes
+localhost:8080 reach port 80 in the container (add /udp for UDP). With only
+a container port (-p 80) a free host port is picked and kept; 'container ps'
+shows it. Forwards listen on localhost only.
 
 The image is pulled if it isn't local (--pull always pulls first).`,
 	Args: cobra.MinimumNArgs(1),
@@ -75,6 +81,7 @@ func init() {
 	f.StringVarP(&flagMemory, "memory", "m", "512M", "memory limit of the container VM")
 	f.StringVar(&flagDisk, "disk", "8G", "size of the container's disk, image included (sparse: only what's written takes space)")
 	f.StringVar(&flagPull, "pull", "missing", "pull the image: missing, always or never")
+	f.StringArrayVarP(&flagPublish, "publish", "p", nil, "publish a port on localhost: [127.0.0.1:][HOST:]CONTAINER[/udp] (repeatable)")
 }
 
 func run(cmd *cobra.Command, ref string, cmdArgs []string) error {
@@ -96,6 +103,10 @@ func run(cmd *cobra.Command, ref string, cmdArgs []string) error {
 		return fmt.Errorf("--disk: %w", err)
 	}
 	env, err := userEnv()
+	if err != nil {
+		return err
+	}
+	ports, err := parsePublish(flagPublish)
 	if err != nil {
 		return err
 	}
@@ -128,6 +139,12 @@ func run(cmd *cobra.Command, ref string, cmdArgs []string) error {
 	if len(spec.Args) == 0 {
 		return fmt.Errorf("no command specified: %s has no entrypoint or cmd", ref)
 	}
+	if err := assignHostPorts(ports); err != nil {
+		return err
+	}
+	if err := checkHostPorts(name, ports); err != nil {
+		return err
+	}
 
 	cfg := vm.VMConfig{
 		CPUs:        flagCPUs,
@@ -142,6 +159,7 @@ func run(cmd *cobra.Command, ref string, cmdArgs []string) error {
 			Created:    time.Now(),
 			Attach:     !flagDetach,
 			AutoRemove: flagRm && flagDetach,
+			Ports:      ports,
 		},
 	}
 	store, err := oci.Open()

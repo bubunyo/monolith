@@ -2,6 +2,7 @@ package vm
 
 import (
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,9 +16,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestClusterPauseResume boots a cluster VM, runs nginx on it, pauses and
-// resumes the VM, and checks that the same pod is still running and the node
-// is Ready.
+// TestClusterPauseResume boots a cluster VM, runs nginx on it behind a
+// LoadBalancer service, pauses and resumes the VM, and checks that the same
+// pod is still running, the node is Ready, and the service answers on
+// localhost both times.
 //
 // It downloads k3s and installs packages on first boot (needs internet),
 // needs kubectl and an unlocked Mac, so it only runs with
@@ -89,16 +91,37 @@ func TestClusterPauseResume(t *testing.T) {
 		return out
 	}
 
+	// The LoadBalancer service is forwarded to this port on localhost.
+	lbPort, err := FreeLocalPort()
+	require.NoError(t, err)
+	serviceAnswers := func() {
+		url := "http://127.0.0.1:" + strconv.Itoa(lbPort) + "/"
+		require.Eventually(t, func() bool {
+			resp, err := http.Get(url)
+			if err != nil {
+				return false
+			}
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			return resp.StatusCode == http.StatusOK && strings.Contains(string(body), "nginx")
+		}, 3*time.Minute, time.Second, "the LoadBalancer service never answered on %s", url)
+		resp, err := SendControlCommand(name, ControlRequest{Cmd: CmdStatus})
+		require.NoError(t, err)
+		require.Contains(t, resp.Ports, PortForward{Port: lbPort, Protocol: "tcp"}, "status lists the forward")
+	}
+
 	spawn()
 	waitReady()
 	for _, args := range [][]string{
 		{"create", "deployment", "web", "--image=nginx:alpine"},
+		{"expose", "deployment", "web", "--type=LoadBalancer", "--port=" + strconv.Itoa(lbPort), "--target-port=80"},
 		{"rollout", "status", "deployment/web", "--timeout=5m"},
 	} {
 		out, err := kubectl(args...)
 		require.NoError(t, err, out)
 	}
 	before := webPod()
+	serviceAnswers()
 
 	resp, err := SendControlCommand(name, ControlRequest{Cmd: CmdSuspend})
 	require.NoError(t, err)
@@ -107,4 +130,5 @@ func TestClusterPauseResume(t *testing.T) {
 	spawn("--restore")
 	waitReady()
 	require.Equal(t, before, webPod(), "the pod was replaced across pause/resume")
+	serviceAnswers()
 }
