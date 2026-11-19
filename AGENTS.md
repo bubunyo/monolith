@@ -201,12 +201,9 @@ monolith/
     image_kata.go         — kata image: fetch kernel + rootfs from GHCR, dm-verity command line.
     image_alpine.go       — alpine image: wraps alpine_kernel.go + alpine_disk.go.
     image_docker.go       — docker image: alpine + embeddings/docker overlay (+ embeddings/containerd for that engine),
-<<<<<<< HEAD
                             sparse data.img, virtio-fs shares (hostShares); EngineDocker/EngineContainerd, EngineOf.
     bindcheck.go          — /Users + /var/folders shares (hostShares, sharedRoots, GuestLayoutTempShare) and relayDockerAPI,
                             which refuses container creates whose bind sources the guest can't see.
-=======
-                            sparse data.img, /Users virtio-fs share; EngineDocker/EngineContainerd, EngineOf.
     image_cluster.go      — cluster image: alpine + embeddings/cluster overlay, sparse data.img, k3s (ro, tag k3s) and
                             kubeconfig (rw, tag kube) shares; ImageCluster.
     cluster.go            — clusterServices: forwards 127.0.0.1:<kube_port> to the guest's k3s API, and LoadBalancer/NodePort
@@ -214,7 +211,6 @@ monolith/
     portfwd.go            — portForwarder: polls a VM's published ports and keeps localhost TCP/UDP forwards (docker + cluster),
                             direct or through the guest's loopback relay; portKey, serveRelay; ForwardedPorts/FormatPorts.
     portlisten.go         — listenLocalTCP: localhost listener for a forward; ports below 1024 on the wildcard, loopback-only.
->>>>>>> origin/master
     sshkey.go             — per-VM ed25519 key for the containerd engine's internal sshd.
     k3s.go                — k3s download/verify into the cache (ensureK3s), DefaultK3sVersion, GuestLayout(+per-feature minimums),
                             FreeLocalPort.
@@ -227,13 +223,8 @@ monolith/
     container_agent.go    — containerAgent: the daemon's ttRPC client of monolith-init (Start/Wait/Shutdown, Signal, ResizeTTY).
     container_ports.go    — PublishedPort; startContainerPorts: portForwarder over a container's fixed -p list.
     guestinit/            — embeds monolith-init (files/, built by `make init`) and writes the shared cpio initrd.
-<<<<<<< HEAD
-    docker.go             — daemon-side services: engine socket relay (docker.sock via relayDockerAPI, or ssh.sock) and published-port
-                            forwarding (ports from dockerd's API or `nerdctl ps --format json`).
-=======
-    docker.go             — daemon-side services: engine socket relay (docker.sock or ssh.sock) and the published ports
-                            to forward (from dockerd's API or `nerdctl ps --format json`).
->>>>>>> origin/master
+    docker.go             — daemon-side services: engine socket relay (docker.sock via relayDockerAPI, or ssh.sock) and the
+                            published ports to forward (from dockerd's API or `nerdctl ps --format json`).
     alpine_kernel.go      — DefaultKernel() downloads Alpine ISO, extracts/decompresses kernel+initrd.
                             DefaultRootFS() downloads minirootfs tarball.
     alpine_disk.go        — DefaultDisk(tarball, modloop, name, overlays...) creates the per-VM 1 GiB ext4 disk image
@@ -421,16 +412,6 @@ Alpine guest configuration:
 
 `monolith cluster` (`cli/cluster`) is the way to get Kubernetes (docker hosts no longer run it): a VM with image `cluster` (`vm/image_cluster.go`, overlay `vm/embeddings/cluster`) that runs one k3s server on k3s's own bundled containerd. No Docker, nerdctl, BuildKit, sshd or socat in the guest, and no flags beyond `--cpus`, `--memory` and `--k3s-version` (saved in `config.json`; the version only changes while stopped). It is an ordinary VM otherwise: `vm attach|logs|list|rm` work on it. Not in `ValidImages`; only `cluster start` creates one. User-mode network only.
 
-<<<<<<< HEAD
-- **k3s binary**: `ensureK3s` downloads `k3s-arm64` for the pinned version (`DefaultK3sVersion`, override with `--k3s-version`) from GitHub releases into `~/.monolith/k3s/<version>/k3s`, verified against the release's `sha256sum-arm64.txt`. That directory is shared read-only over virtio-fs (tag `k3s`, mounted at `/opt/monolith/k3s`), so every VM reuses one download, and `monolith.k3s=1` goes on the kernel command line. Turning Kubernetes off drops both.
-- **Guest layout**: the k3s services live in the inittab written when the disk is created, so `config.json` records `guest_layout` (`vm.GuestLayout`, currently 5; layout 1 is the k3s services, layout 5 the `/var/folders` share) for new docker image VMs. VMs created earlier have none and are refused `--kubernetes` with a hint to recreate them.
-- **Guest**: with `monolith.k3s=1`, `docker-setup` loads `vxlan`, makes `/` rshared, mounts the share, and bind-mounts `/var/lib/rancher` and `/var/lib/kubelet` from the data disk (`/var/lib/docker/.monolith/…` for docker, `/data/…` for containerd). `docker-serve k3s` runs `k3s server --disable=traefik --node-name=<vm> --write-kubeconfig-mode=600` with `--docker` (k3s's built-in cri-dockerd) or `--container-runtime-endpoint=unix:///run/containerd/containerd.sock`. For containerd, `docker-setup` also points the CRI's CNI `bin_dir`/`conf_dir` at k3s's flannel (`/var/lib/rancher/k3s/data/current/bin`, `/var/lib/rancher/k3s/agent/etc/cni/net.d`) because nerdctl's own conflist sits in `/etc/cni/net.d`, and sets nerdctl's and BuildKit's namespace to `k8s.io` so built images are visible to pods; turning Kubernetes off reverts both. Without the flag, `docker-serve k3s|k8s-info` just sleep.
-- **API**: the daemon forwards `127.0.0.1:<kube_port>` (chosen once with `FreeLocalPort`, so several clusters coexist) to guest port 6443. k3s's serving certificate already covers 127.0.0.1.
-- **kubeconfig**: `docker-serve k8s-info` (guest port 2378, gateway only) answers a one-line request: `kubeconfig` → `/etc/rancher/k3s/k3s.yaml`, `services` → `k3s kubectl get svc -A -o json`. The daemon's `kubeconfig` control command returns the first; the CLI renames cluster/user/context to `k3s-<name>`, points the server at `kube_port`, and merges the entries into the first file in `$KUBECONFIG` (else `~/.kube/config`) as a generic YAML document, keeping other fields and saving the previous file as `<file>.monolith.bak`, then sets `current-context`. `rm` and `--kubernetes=false` remove the entries (clearing `current-context` if it was this VM's). `docker kubeconfig` prints the standalone file.
-- **Readiness**: after the engine, `start`/`resume` wait (up to 10 min; the first start pulls k3s's system images, ~25s on a warm cache) for the kubeconfig, `/readyz`, and the node's Ready condition, using the kubeconfig's client certificate.
-- **Service ports**: every poll the daemon adds Kubernetes service ports to the engine's: LoadBalancer ports (k3s's servicelb serves them on the node) and NodePorts, TCP only (`parseKubeServicePorts`). They're forwarded to localhost like container ports, with the same clash rules.
-- **list**: `docker list` has a K8S column with the k3s version; `vm list` shows `docker (docker+k3s)`.
-=======
 - **Guest**: `cluster-setup` (sysinit) installs `e2fsprogs libgpiod iptables ip6tables` on first boot (needs network), loads `vxlan` and friends, mounts the data disk on `/data` with `/var/lib/rancher` and `/var/lib/kubelet` bind-mounted from it, makes `/` rshared, and mounts the shares. `cluster-serve k3s` runs `k3s server --disable=traefik --write-kubeconfig=/opt/monolith/out/kubeconfig`; `power`, `shutdown` (stop k3s, then the pods' shims) and `clock` are as in the docker host. Boot markers: network, setup, ready (steps Kernel, System, Network, Cluster).
 - **k3s binary**: `ensureK3s` downloads `k3s-arm64` for the pinned version (`DefaultK3sVersion`, override with `--k3s-version`) from GitHub releases into `~/.monolith/k3s/<version>/k3s`, verified against the release's `sha256sum-arm64.txt`, so every cluster reuses one download.
 - **Shares**: the k3s binary read-only (tag `k3s`, `~/.monolith/k3s/<version>/`) at `/opt/monolith/k3s`; `vms/<name>/kube/` read-write (tag `kube`) at `/opt/monolith/out`, where k3s writes its kubeconfig. The CLI reads it from `VMKubeconfigPath`; there is no control command or guest service for it.
@@ -440,7 +421,6 @@ Alpine guest configuration:
 - **start**: new VM or `start` on a stopped one deletes the stale kubeconfig file, `Prepare`s, spawns the daemon, then polls until the file exists, `/readyz` answers and the node is Ready (up to 10 min; ~10s on a warm cache), and merges the context. A suspended VM is resumed instead. `pause`/`resume`/`stop`/`rm` are as for the docker host.
 - **kubeconfig** (`internal/kubeconfig`): context, cluster and user are all named `cluster-<name>` (`ContextName`; never a bare name, so a user's own context can't be replaced). The merge edits the first file in `$KUBECONFIG` (else `~/.kube/config`) as a generic YAML document, keeping fields it doesn't know. The file as it was is saved once as `<file>.monolith.bak` (later merges don't touch it), and the context that was current is noted in `vms/<name>/prev-context`; `rm` removes the entries and makes that context current again if it still exists, else clears `current-context`. A file without the entries is not rewritten.
 - **Not supported**: amd64-only images. containerd's CRI only pulls the node's platform (arm64), even with Rosetta in the guest. Tried on Alpine's containerd 2.0.0 and k3s's bundled 2.3.4: a pre-pull with `--platform linux/amd64` isn't seen by the CRI, and a second runtime handler with `runtime_platform = linux/amd64` plus a RuntimeClass and the alpha kubelet gate `RuntimeClassInImageCriApi` still fails with `no match for platform in manifest`. Multi-arch images work. There is no `--rosetta` for clusters.
->>>>>>> origin/master
 
 ### Sandboxes
 

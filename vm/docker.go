@@ -82,7 +82,7 @@ func startDockerServices(name string, cfg VMConfig, user *mnet.UserNetwork, logg
 		// show up as listening sockets, not published container ports.
 		published = s.listeningPorts
 	}
-<<<<<<< HEAD
+	s.fwd = newPortForwarder(user, logger, published)
 	relayFn := relay
 	if engine == EngineDocker && cfg.Sandbox == nil {
 		// Refuse bind mounts of Mac paths the guest can't see instead of
@@ -99,42 +99,6 @@ func startDockerServices(name string, cfg VMConfig, user *mnet.UserNetwork, logg
 		s.close()
 		return nil, err
 	}
-	if cfg.Kubernetes {
-		if cfg.KubePort == 0 {
-			s.close()
-			return nil, fmt.Errorf("kubernetes is on but no kube_port is configured")
-		}
-		l, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(cfg.KubePort)))
-		if err != nil {
-			s.close()
-			return nil, fmt.Errorf("forwarding the Kubernetes API on localhost:%d: %w", cfg.KubePort, err)
-		}
-		s.listeners = append(s.listeners, l)
-		go s.serveListener(ctx, l, KubeAPIPort, relay)
-		engineHostPorts := s.publishedPorts
-		s.publishedPorts = func() (map[portKey]bool, error) {
-			ports, err := engineHostPorts()
-			if err != nil {
-				return nil, err
-			}
-			// Services come and go with k3s; the engine's ports still
-			// count while it's starting or restarting.
-			if svc, err := s.kubeServicePorts(); err == nil {
-				for p := range svc {
-					ports[p] = true
-				}
-			}
-			return ports, nil
-		}
-		logger.Info("Kubernetes API for %q on localhost:%d", name, cfg.KubePort)
-	}
-=======
-	s.fwd = newPortForwarder(user, logger, published)
-	if err := s.relaySocket(ctx, sockPath, sockPort); err != nil {
-		s.close()
-		return nil, err
-	}
->>>>>>> origin/master
 
 	go s.fwd.run(ctx)
 	if cfg.Sandbox != nil {
@@ -161,13 +125,13 @@ func (s *dockerServices) relaySocket(ctx context.Context, path string, port int,
 	}
 	s.sockets = append(s.sockets, path)
 	s.listeners = append(s.listeners, l)
-<<<<<<< HEAD
 	go s.serveListener(ctx, l, port, relayFn)
 	return nil
 }
 
 // serveListener relays each connection accepted on l to port on the guest
-// with relayFn.
+// with relayFn (relay, or the Docker API relay that checks bind mounts).
+// Published-port forwards use portForwarder instead.
 func (s *dockerServices) serveListener(ctx context.Context, l net.Listener, port int, relayFn func(client, guest net.Conn)) {
 	for {
 		conn, err := l.Accept()
@@ -182,9 +146,7 @@ func (s *dockerServices) serveListener(ctx context.Context, l net.Listener, port
 			}
 			relayFn(conn, guest)
 		}()
-=======
-	go serveGuest(ctx, s.user, l, port)
-	return nil
+	}
 }
 
 // publishScope classifies the address a container port is published on:
@@ -198,7 +160,6 @@ func publishScope(ip string) (bind string, ok bool) {
 		return "127.0.0.1", true
 	case "::1", "[::1]":
 		return "::1", true
->>>>>>> origin/master
 	}
 	return "", false
 }
@@ -215,103 +176,6 @@ type publishedPort struct {
 	Type       string `json:"Type"`
 }
 
-<<<<<<< HEAD
-// forwardPorts keeps a localhost forward for every published port. The
-// engine publishes on the guest; TCP forwards are listeners relaying through
-// DialGuest, UDP forwards use the user-mode network's port forwarder.
-// The first sync runs immediately, so after a restore the forwards are back
-// as soon as the engine answers.
-func (s *dockerServices) forwardPorts(ctx context.Context) {
-	ticker := time.NewTicker(portPollInterval)
-	defer ticker.Stop()
-	for {
-		s.syncPorts(ctx)
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-		}
-	}
-}
-
-func (s *dockerServices) syncPorts(ctx context.Context) {
-	want, err := s.publishedPorts()
-	if err != nil {
-		return // engine not up yet, or restarting
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for key := range s.failed {
-		if !want[key] {
-			delete(s.failed, key)
-		}
-	}
-	for key, stop := range s.ports {
-		if !want[key] {
-			stop()
-			delete(s.ports, key)
-			s.logger.Info("stopped forwarding localhost:%s", key)
-		}
-	}
-	for key := range want {
-		if _, ok := s.ports[key]; ok {
-			continue
-		}
-		stop, err := s.forward(ctx, key)
-		if err != nil {
-			// Retried on every poll; log only the first failure.
-			if _, logged := s.failed[key]; !logged {
-				s.logger.Warn("cannot forward localhost:%s: %v", key, err)
-			}
-			s.failed[key] = err.Error()
-			continue
-		}
-		delete(s.failed, key)
-		s.ports[key] = stop
-		s.logger.Info("forwarding localhost:%s to %s:%d", key, mnet.UserGuestIP, key.Port)
-	}
-}
-
-// forward starts forwarding localhost:key to the same port on the guest and
-// returns a func that stops it.
-func (s *dockerServices) forward(ctx context.Context, key portKey) (func(), error) {
-	if key.Proto == "udp" {
-		if err := s.user.ExposeUDP(key.Port, key.Port); err != nil {
-			return nil, err
-		}
-		return func() { s.user.UnexposeUDP(key.Port) }, nil
-	}
-	l, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(key.Port)))
-	if err != nil {
-		return nil, err
-	}
-	go s.serveListener(ctx, l, key.Port, relay)
-	return func() { l.Close() }, nil
-}
-
-// forwards lists the published ports, sorted, with the bind error for any
-// that couldn't be forwarded (typically another VM already holds the port).
-func (s *dockerServices) forwards() []PortForward {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	var out []PortForward
-	for key := range s.ports {
-		out = append(out, PortForward{Port: key.Port, Protocol: key.Proto})
-	}
-	for key, msg := range s.failed {
-		out = append(out, PortForward{Port: key.Port, Protocol: key.Proto, Error: msg})
-	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Port != out[j].Port {
-			return out[i].Port < out[j].Port
-		}
-		return out[i].Protocol < out[j].Protocol
-	})
-	return out
-}
-
-=======
->>>>>>> origin/master
 // dockerPorts returns the TCP and UDP ports published on all guest
 // interfaces or on its loopback, from dockerd's API. Ports on any other
 // specific guest address aren't reachable from the host, so they are skipped.
