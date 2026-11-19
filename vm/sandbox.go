@@ -52,8 +52,8 @@ const (
 
 	sandboxShareTag     = "repo"
 	sandboxCmdlineArg   = "monolith.sandbox"
-	sandboxGuestRelayLo = DockerAPIPort // 2375..2380 are monolith's relays
-	sandboxGuestRelayHi = ListeningPortsPort
+	sandboxGuestRelayLo = DockerAPIPort // 2375..2381 are monolith's relays
+	sandboxGuestRelayHi = LoopbackRelayPort
 )
 
 // sandboxCmdline encodes the repo path for the kernel command line, which
@@ -84,7 +84,7 @@ func parseListeningPorts(data []byte) map[portKey]bool {
 		if err != nil || port == 0 || port == SSHPort || (port >= sandboxGuestRelayLo && port <= sandboxGuestRelayHi) {
 			continue
 		}
-		ports[portKey{"tcp", int(port)}] = true
+		ports[portKey{"tcp", int(port), ""}] = true
 	}
 	return ports
 }

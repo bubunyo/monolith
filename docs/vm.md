@@ -294,8 +294,10 @@ monolith docker rm --name lith-2       # deletes the VM and its context
 - Images and containers live on a 64 GiB sparse `data.img` per VM.
 - Published TCP and UDP ports are forwarded to `127.0.0.1`. If two VMs publish
   the same port, the first one keeps it; `docker list` marks the other with
-  `!`. Ports bound to a specific address (`-p 127.0.0.1:80:80`) aren't
-  forwarded.
+  `!`. Ports published on the VM's loopback (`-p 127.0.0.1:52093:6443`, as
+  `kind` does) are forwarded too, through a relay in the VM. TCP only: a
+  loopback UDP port shows `!`. Ports bound to any other specific address
+  aren't forwarded. Ports below 1024 work without sudo.
 - Containers reach services on the Mac at `host.docker.internal`.
 - `start --rosetta` runs `--platform linux/amd64` images through Rosetta
   (opt-in; needs `softwareupdate --install-rosetta`). Without it, amd64-only
