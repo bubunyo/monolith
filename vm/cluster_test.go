@@ -18,8 +18,8 @@ func TestParseKubeServicePorts(t *testing.T) {
 	ports, err := parseKubeServicePorts([]byte(out))
 	require.NoError(t, err)
 	require.Equal(t, map[portKey]bool{
-		{"tcp", 8080}: true, {"tcp", 31000}: true, {"udp", 53}: true, {"udp", 31001}: true,
-		{"tcp", 30080}: true, {"tcp", 9000}: true,
+		{"tcp", 8080, ""}: true, {"tcp", 31000, ""}: true, {"udp", 53, ""}: true, {"udp", 31001, ""}: true,
+		{"tcp", 30080, ""}: true, {"tcp", 9000, ""}: true,
 	}, ports)
 
 	_, err = parseKubeServicePorts([]byte("not json"))

@@ -66,7 +66,8 @@ curl localhost:8080
 The forwards follow the services within a second. A port that another cluster
 or Docker host already holds isn't forwarded; `cluster list` shows it with a
 `!` (e.g. `8080!`) until it frees up. ClusterIP services stay inside the
-cluster; use `kubectl port-forward` for those. Traefik is disabled.
+cluster; use `kubectl port-forward` for those. Ports below 1024 work without
+sudo. Traefik is disabled.
 
 ## What's inside
 

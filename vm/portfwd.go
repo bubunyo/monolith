@@ -3,6 +3,7 @@ package vm
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"sort"
 	"strconv"
@@ -21,18 +22,35 @@ const portPollInterval = time.Second
 // dialTimeout bounds connecting to the guest through the user-mode network.
 const dialTimeout = 10 * time.Second
 
-// portKey is a forwarded port and its protocol ("tcp" or "udp").
+// portKey is a forwarded port and its protocol ("tcp" or "udp"). Bind is ""
+// for a port published on all guest interfaces (reachable from the gateway)
+// or the guest loopback address it is published on, "127.0.0.1" or "::1",
+// which only LoopbackRelayPort can reach. Docker can't publish one port
+// number on both, so Port and Proto stay unique in a set. Cluster services
+// are always "".
 type portKey struct {
 	Proto string
 	Port  int
+	Bind  string
 }
 
 func (k portKey) String() string { return fmt.Sprintf("%d/%s", k.Port, k.Proto) }
 
+// loopbackRequest is the line that makes the guest's loopback relay connect
+// to this port on the guest's loopback.
+func (k portKey) loopbackRequest() string {
+	if k.Bind == "::1" {
+		return fmt.Sprintf("6 %d\n", k.Port)
+	}
+	return fmt.Sprintf("%d\n", k.Port)
+}
+
 // portForwarder keeps a localhost forward for every port the guest
 // publishes: docker hosts' container ports, clusters' LoadBalancer and
-// NodePort services. TCP forwards are 127.0.0.1 listeners relaying through
-// DialGuest; UDP forwards use the user-mode network's port forwarder.
+// NodePort services. TCP forwards are localhost listeners (listenLocalTCP)
+// relaying through DialGuest, to the port itself or, for a port on the
+// guest's loopback, to the guest's loopback relay; UDP forwards use the
+// user-mode network's port forwarder.
 type portForwarder struct {
 	user   *mnet.UserNetwork
 	logger *monolith.Logger
@@ -106,7 +124,11 @@ func (f *portForwarder) sync(ctx context.Context) {
 		}
 		delete(f.failed, key)
 		f.ports[key] = stop
-		f.logger.Info("forwarding localhost:%s to %s:%d", key, mnet.UserGuestIP, key.Port)
+		if key.Bind != "" {
+			f.logger.Info("forwarding localhost:%s to guest loopback:%d", key, key.Port)
+		} else {
+			f.logger.Info("forwarding localhost:%s to %s:%d", key, mnet.UserGuestIP, key.Port)
+		}
 	}
 }
 
@@ -114,16 +136,25 @@ func (f *portForwarder) sync(ctx context.Context) {
 // returns a func that stops it.
 func (f *portForwarder) forward(ctx context.Context, key portKey) (func(), error) {
 	if key.Proto == "udp" {
+		if key.Bind != "" {
+			return nil, fmt.Errorf("UDP published on the VM's loopback can't be forwarded")
+		}
 		if err := f.user.ExposeUDP(key.Port, key.Port); err != nil {
 			return nil, err
 		}
 		return func() { f.user.UnexposeUDP(key.Port) }, nil
 	}
-	l, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(key.Port)))
+	l, err := listenLocalTCP(key.Port)
 	if err != nil {
 		return nil, err
 	}
-	go serveGuest(ctx, f.user, l, key.Port)
+	if key.Bind == "" {
+		go serveGuest(ctx, f.user, l, key.Port)
+	} else {
+		go serveRelay(l, key.loopbackRequest(), func() (net.Conn, error) {
+			return dialGuest(ctx, f.user, LoopbackRelayPort)
+		})
+	}
 	return func() { l.Close() }, nil
 }
 
@@ -197,16 +228,30 @@ func dialGuest(ctx context.Context, user *mnet.UserNetwork, port int) (net.Conn,
 // serveGuest relays each connection accepted on l to port on the guest.
 // Connections fail while nothing listens there yet.
 func serveGuest(ctx context.Context, user *mnet.UserNetwork, l net.Listener, port int) {
+	serveRelay(l, "", func() (net.Conn, error) { return dialGuest(ctx, user, port) })
+}
+
+// serveRelay relays each connection accepted on l to a connection from dial.
+// A non-empty hello is written to the guest first, ahead of the client's
+// bytes (the loopback relay's request line).
+func serveRelay(l net.Listener, hello string, dial func() (net.Conn, error)) {
 	for {
 		conn, err := l.Accept()
 		if err != nil {
 			return // listener closed
 		}
 		go func() {
-			guest, err := dialGuest(ctx, user, port)
+			guest, err := dial()
 			if err != nil {
 				conn.Close()
 				return
+			}
+			if hello != "" {
+				if _, err := io.WriteString(guest, hello); err != nil {
+					guest.Close()
+					conn.Close()
+					return
+				}
 			}
 			relay(conn, guest)
 		}()

@@ -117,55 +117,6 @@ func (s *dockerServices) relaySocket(ctx context.Context, path string, port int)
 	return nil
 }
 
-// serveRelay relays each connection accepted on l to a connection from dial.
-// A non-empty hello is written to the guest first, ahead of the client's
-// bytes (the loopback relay's request line).
-func serveRelay(l net.Listener, hello string, dial func() (net.Conn, error)) {
-	for {
-		conn, err := l.Accept()
-		if err != nil {
-			return // listener closed
-		}
-		go func() {
-			guest, err := dial()
-			if err != nil {
-				conn.Close()
-				return
-			}
-			if hello != "" {
-				if _, err := io.WriteString(guest, hello); err != nil {
-					guest.Close()
-					conn.Close()
-					return
-				}
-			}
-			relay(conn, guest)
-		}()
-	}
-}
-
-// portKey is a published port and its protocol ("tcp" or "udp"). Bind is ""
-// for a port published on all guest interfaces (reachable from the gateway)
-// or the guest loopback address it is published on, "127.0.0.1" or "::1",
-// which only LoopbackRelayPort can reach. Docker can't publish one port
-// number on both, so Port and Proto stay unique in a set.
-type portKey struct {
-	Proto string
-	Port  int
-	Bind  string
-}
-
-func (k portKey) String() string { return fmt.Sprintf("%d/%s", k.Port, k.Proto) }
-
-// loopbackRequest is the line that makes the guest's loopback relay connect
-// to this port on the guest's loopback.
-func (k portKey) loopbackRequest() string {
-	if k.Bind == "::1" {
-		return fmt.Sprintf("6 %d\n", k.Port)
-	}
-	return fmt.Sprintf("%d\n", k.Port)
-}
-
 // publishScope classifies the address a container port is published on:
 // all interfaces ("") and the guest loopback ("127.0.0.1", "::1") are
 // forwarded; any other specific address isn't reachable from the host.

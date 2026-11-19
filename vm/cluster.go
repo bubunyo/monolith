@@ -156,13 +156,13 @@ func parseKubeServicePorts(data []byte) (map[portKey]bool, error) {
 			}
 			switch svc.Spec.Type {
 			case "LoadBalancer":
-				ports[portKey{proto, p.Port}] = true
+				ports[portKey{proto, p.Port, ""}] = true
 				if p.NodePort > 0 {
-					ports[portKey{proto, p.NodePort}] = true
+					ports[portKey{proto, p.NodePort, ""}] = true
 				}
 			case "NodePort":
 				if p.NodePort > 0 {
-					ports[portKey{proto, p.NodePort}] = true
+					ports[portKey{proto, p.NodePort, ""}] = true
 				}
 			}
 		}
