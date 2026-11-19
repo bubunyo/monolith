@@ -18,6 +18,11 @@ const (
 	// gateway like DockerAPIPort. The daemon reads published ports from it.
 	NerdctlPortsPort = 2377
 
+	// LoopbackRelayPort is the guest TCP port (gateway only) that relays a
+	// connection to a port on the guest's loopback. The first line sent is
+	// the port ("<port>", or "6 <port>" for [::1]); the rest is the stream.
+	LoopbackRelayPort = 2381
+
 	// SSHPort is the guest's internal sshd (containerd engine), used by
 	// `monolith docker nerdctl` through the daemon's ssh.sock.
 	SSHPort = 22

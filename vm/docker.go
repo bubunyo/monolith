@@ -40,7 +40,7 @@ type dockerServices struct {
 	cancel    context.CancelFunc
 
 	// publishedPorts returns the host ports published on all guest
-	// interfaces, from dockerd's API or nerdctl.
+	// interfaces or its loopback, from dockerd's API or nerdctl.
 	publishedPorts func() (map[portKey]bool, error)
 
 	mu     sync.Mutex
@@ -165,16 +165,30 @@ func (s *dockerServices) relaySocket(ctx context.Context, path string, port int)
 
 // serveListener relays each connection accepted on l to port on the guest.
 func (s *dockerServices) serveListener(ctx context.Context, l net.Listener, port int) {
+	serveRelay(l, "", func() (net.Conn, error) { return s.dialGuest(ctx, port) })
+}
+
+// serveRelay relays each connection accepted on l to a connection from dial.
+// A non-empty hello is written to the guest first, ahead of the client's
+// bytes (the loopback relay's request line).
+func serveRelay(l net.Listener, hello string, dial func() (net.Conn, error)) {
 	for {
 		conn, err := l.Accept()
 		if err != nil {
 			return // listener closed
 		}
 		go func() {
-			guest, err := s.dialGuest(ctx, port)
+			guest, err := dial()
 			if err != nil {
 				conn.Close()
 				return
+			}
+			if hello != "" {
+				if _, err := io.WriteString(guest, hello); err != nil {
+					guest.Close()
+					conn.Close()
+					return
+				}
 			}
 			relay(conn, guest)
 		}()
@@ -246,13 +260,13 @@ func parseKubeServicePorts(data []byte) (map[portKey]bool, error) {
 			}
 			switch svc.Spec.Type {
 			case "LoadBalancer":
-				ports[portKey{proto, p.Port}] = true
+				ports[portKey{proto, p.Port, ""}] = true
 				if p.NodePort > 0 {
-					ports[portKey{proto, p.NodePort}] = true
+					ports[portKey{proto, p.NodePort, ""}] = true
 				}
 			case "NodePort":
 				if p.NodePort > 0 {
-					ports[portKey{proto, p.NodePort}] = true
+					ports[portKey{proto, p.NodePort, ""}] = true
 				}
 			}
 		}
@@ -260,13 +274,42 @@ func parseKubeServicePorts(data []byte) (map[portKey]bool, error) {
 	return ports, nil
 }
 
-// portKey is a published port and its protocol ("tcp" or "udp").
+// portKey is a published port and its protocol ("tcp" or "udp"). Bind is ""
+// for a port published on all guest interfaces (reachable from the gateway)
+// or the guest loopback address it is published on, "127.0.0.1" or "::1",
+// which only LoopbackRelayPort can reach. Docker can't publish one port
+// number on both, so Port and Proto stay unique in a set.
 type portKey struct {
 	Proto string
 	Port  int
+	Bind  string
 }
 
 func (k portKey) String() string { return fmt.Sprintf("%d/%s", k.Port, k.Proto) }
+
+// loopbackRequest is the line that makes the guest's loopback relay connect
+// to this port on the guest's loopback.
+func (k portKey) loopbackRequest() string {
+	if k.Bind == "::1" {
+		return fmt.Sprintf("6 %d\n", k.Port)
+	}
+	return fmt.Sprintf("%d\n", k.Port)
+}
+
+// publishScope classifies the address a container port is published on:
+// all interfaces ("") and the guest loopback ("127.0.0.1", "::1") are
+// forwarded; any other specific address isn't reachable from the host.
+func publishScope(ip string) (bind string, ok bool) {
+	switch ip {
+	case "", "0.0.0.0", "::", "[::]":
+		return "", true
+	case "127.0.0.1":
+		return "127.0.0.1", true
+	case "::1", "[::1]":
+		return "::1", true
+	}
+	return "", false
+}
 
 // publishedPort is the subset of GET /containers/json we use.
 type publishedPort struct {
@@ -327,7 +370,11 @@ func (s *dockerServices) syncPorts(ctx context.Context) {
 		}
 		delete(s.failed, key)
 		s.ports[key] = stop
-		s.logger.Info("forwarding localhost:%s to %s:%d", key, mnet.UserGuestIP, key.Port)
+		if key.Bind != "" {
+			s.logger.Info("forwarding localhost:%s to guest loopback:%d", key, key.Port)
+		} else {
+			s.logger.Info("forwarding localhost:%s to %s:%d", key, mnet.UserGuestIP, key.Port)
+		}
 	}
 }
 
@@ -335,16 +382,23 @@ func (s *dockerServices) syncPorts(ctx context.Context) {
 // returns a func that stops it.
 func (s *dockerServices) forward(ctx context.Context, key portKey) (func(), error) {
 	if key.Proto == "udp" {
+		if key.Bind != "" {
+			return nil, fmt.Errorf("UDP published on the VM's loopback can't be forwarded")
+		}
 		if err := s.user.ExposeUDP(key.Port, key.Port); err != nil {
 			return nil, err
 		}
 		return func() { s.user.UnexposeUDP(key.Port) }, nil
 	}
-	l, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(key.Port)))
+	l, err := listenLocalTCP(key.Port)
 	if err != nil {
 		return nil, err
 	}
-	go s.serveListener(ctx, l, key.Port)
+	if key.Bind == "" {
+		go s.serveListener(ctx, l, key.Port)
+	} else {
+		go serveRelay(l, key.loopbackRequest(), func() (net.Conn, error) { return s.dialGuest(ctx, LoopbackRelayPort) })
+	}
 	return func() { l.Close() }, nil
 }
 
@@ -370,9 +424,8 @@ func (s *dockerServices) forwards() []PortForward {
 }
 
 // dockerPorts returns the TCP and UDP ports published on all guest
-// interfaces, from dockerd's API. Ports bound to a specific guest address
-// (-p 127.0.0.1:80:80) aren't reachable from the gateway, so they are
-// skipped.
+// interfaces or on its loopback, from dockerd's API. Ports on any other
+// specific guest address aren't reachable from the host, so they are skipped.
 func (s *dockerServices) dockerPorts() (map[portKey]bool, error) {
 	resp, err := s.client.Get("http://docker/containers/json")
 	if err != nil {
@@ -391,17 +444,15 @@ func (s *dockerServices) dockerPorts() (map[portKey]bool, error) {
 	ports := map[portKey]bool{}
 	for _, c := range containers {
 		for _, p := range c.Ports {
-			if (p.Type != "tcp" && p.Type != "udp") || p.PublicPort == 0 || !allInterfaces(p.IP) {
+			if (p.Type != "tcp" && p.Type != "udp") || p.PublicPort == 0 {
 				continue
 			}
-			ports[portKey{p.Type, p.PublicPort}] = true
+			if bind, ok := publishScope(p.IP); ok {
+				ports[portKey{p.Type, p.PublicPort, bind}] = true
+			}
 		}
 	}
 	return ports, nil
-}
-
-func allInterfaces(ip string) bool {
-	return ip == "" || ip == "0.0.0.0" || ip == "::" || ip == "[::]"
 }
 
 // listeningPorts returns the TCP ports a sandbox's processes listen on (all
@@ -459,11 +510,15 @@ func parseNerdctlPorts(data []byte) (map[portKey]bool, error) {
 		}
 		for _, entry := range strings.Split(c.Ports, ",") {
 			m := nerdctlPortRE.FindStringSubmatch(strings.TrimSpace(entry))
-			if m == nil || m[3] == "sctp" || !allInterfaces(m[1]) {
+			if m == nil || m[3] == "sctp" {
+				continue
+			}
+			bind, ok := publishScope(m[1])
+			if !ok {
 				continue
 			}
 			if port, err := strconv.Atoi(m[2]); err == nil && port > 0 {
-				ports[portKey{m[3], port}] = true
+				ports[portKey{m[3], port, bind}] = true
 			}
 		}
 	}
