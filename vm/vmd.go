@@ -303,10 +303,18 @@ func RunDaemon(name string, restore bool, consoleLogPath string) error {
 	}
 
 	var agent *containerAgent
+	var ctrPorts *containerPorts
 	if cfg.Container != nil {
 		agent = newContainerAgent(name, cfg.Container, logger)
 		go agent.connect(vm)
 		defer agent.finish()
+		ctrPorts, err = startContainerPorts(name, cfg.Container.Ports, userNet, logger)
+		if err != nil {
+			return errors.Wrap(err, "container ports")
+		}
+		if ctrPorts != nil {
+			defer ctrPorts.close()
+		}
 	}
 
 	var services *dockerServices
@@ -359,6 +367,7 @@ func RunDaemon(name string, restore bool, consoleLogPath string) error {
 		docker:    services,
 		cluster:   cluster,
 		container: agent,
+		ctrPorts:  ctrPorts,
 
 		stopTimeout: gracefulStopTimeout,
 	}
@@ -445,6 +454,7 @@ type vmDaemon struct {
 	docker    *dockerServices  // nil unless the VM uses the docker image
 	cluster   *clusterServices // nil unless the VM uses the cluster image
 	container *containerAgent  // nil unless the VM is a container
+	ctrPorts  *containerPorts  // nil unless the container publishes ports
 
 	stopTimeout time.Duration // wait for a clean shutdown before forcing
 
@@ -804,6 +814,8 @@ func (d *vmDaemon) handleStatus(conn net.Conn) {
 		resp.Ports = d.docker.forwards()
 	case d.cluster != nil:
 		resp.Ports = d.cluster.forwards()
+	case d.ctrPorts != nil:
+		resp.Ports = d.ctrPorts.forwards()
 	}
 	d.sendControlResponse(conn, resp)
 }

@@ -47,6 +47,17 @@ func listenLocalTCP(port int) (net.Listener, error) {
 	return newMultiListener(loopbackOnly(l), loopbackOnly(l6)), nil
 }
 
+// CheckLocalPort reports whether a localhost TCP forward of port could
+// listen right now (nil) or not (the bind error), by binding it the way
+// listenLocalTCP does and closing it again.
+func CheckLocalPort(port int) error {
+	l, err := listenLocalTCP(port)
+	if err != nil {
+		return err
+	}
+	return l.Close()
+}
+
 // loopbackOnly wraps l so Accept only returns connections from a loopback
 // address; any other connection is closed. Accept errors pass through.
 func loopbackOnly(l net.Listener) net.Listener { return loopbackListener{l} }

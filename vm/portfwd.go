@@ -55,9 +55,14 @@ type portForwarder struct {
 	user   *mnet.UserNetwork
 	logger *monolith.Logger
 
-	// published returns the guest ports to forward. An error leaves the
-	// current forwards as they are (the guest service may be restarting).
+	// published returns the ports to forward. An error leaves the current
+	// forwards as they are (the guest service may be restarting).
 	published func() (map[portKey]bool, error)
+
+	// guestPorts maps a forwarded key to a different port in the guest
+	// (container `-p 8080:80`); a key without an entry goes to its own port.
+	// Set before run, read-only afterwards.
+	guestPorts map[portKey]int
 
 	mu     sync.Mutex
 	ports  map[portKey]func() // forwarded port -> stops its forward
@@ -127,19 +132,28 @@ func (f *portForwarder) sync(ctx context.Context) {
 		if key.Bind != "" {
 			f.logger.Info("forwarding localhost:%s to guest loopback:%d", key, key.Port)
 		} else {
-			f.logger.Info("forwarding localhost:%s to %s:%d", key, mnet.UserGuestIP, key.Port)
+			f.logger.Info("forwarding localhost:%s to %s:%d", key, mnet.UserGuestIP, f.guestPort(key))
 		}
 	}
 }
 
-// forward starts forwarding localhost:key to the same port on the guest and
+// guestPort is the guest port localhost:key forwards to.
+func (f *portForwarder) guestPort(key portKey) int {
+	if p, ok := f.guestPorts[key]; ok {
+		return p
+	}
+	return key.Port
+}
+
+// forward starts forwarding localhost:key to its port on the guest and
 // returns a func that stops it.
 func (f *portForwarder) forward(ctx context.Context, key portKey) (func(), error) {
+	guest := f.guestPort(key)
 	if key.Proto == "udp" {
 		if key.Bind != "" {
 			return nil, fmt.Errorf("UDP published on the VM's loopback can't be forwarded")
 		}
-		if err := f.user.ExposeUDP(key.Port, key.Port); err != nil {
+		if err := f.user.ExposeUDP(key.Port, guest); err != nil {
 			return nil, err
 		}
 		return func() { f.user.UnexposeUDP(key.Port) }, nil
@@ -149,7 +163,7 @@ func (f *portForwarder) forward(ctx context.Context, key portKey) (func(), error
 		return nil, err
 	}
 	if key.Bind == "" {
-		go serveGuest(ctx, f.user, l, key.Port)
+		go serveGuest(ctx, f.user, l, guest)
 	} else {
 		go serveRelay(l, key.loopbackRequest(), func() (net.Conn, error) {
 			return dialGuest(ctx, f.user, LoopbackRelayPort)

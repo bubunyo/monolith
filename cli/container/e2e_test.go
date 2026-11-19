@@ -2,9 +2,14 @@ package container
 
 import (
 	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -128,6 +133,52 @@ func TestContainerRun(t *testing.T) {
 		require.Zero(t, code)
 		out, _ = monolith("ps", "-a")
 		require.NotContains(t, out, name)
+	})
+
+	t.Run("published ports", func(t *testing.T) {
+		const name = "e2e-ports"
+		t.Cleanup(func() { monolith("rm", "-f", name) })
+		l, err := net.Listen("tcp", "127.0.0.1:0")
+		require.NoError(t, err)
+		host := l.Addr().(*net.TCPAddr).Port
+		l.Close()
+
+		get := func() bool {
+			resp, err := http.Get("http://127.0.0.1:" + strconv.Itoa(host) + "/")
+			if err != nil {
+				return false
+			}
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			return resp.StatusCode == http.StatusOK && strings.Contains(string(body), "nginx")
+		}
+		want := fmt.Sprintf("127.0.0.1:%d->80/tcp", host)
+
+		out, code := monolith("run", "-d", "--name", name, "-p", fmt.Sprintf("%d:80", host), "nginx:1.29")
+		require.Zero(t, code, out)
+		require.Eventually(t, get, 60*time.Second, 300*time.Millisecond, "localhost:%d reaches nginx on 80", host)
+		out, _ = monolith("ps")
+		require.Regexp(t, name+`\s.*`+regexp.QuoteMeta(want), out)
+
+		// The host port is taken now, by this container: a second one is refused.
+		out, code = monolith("run", "-d", "--name", name+"-2", "-p", fmt.Sprintf("%d:80", host), "nginx:1.29")
+		require.NotZero(t, code, out)
+		require.Contains(t, out, "already in use")
+		monolith("rm", "-f", name+"-2")
+
+		// The ports are saved with the container: back after stop/start.
+		out, code = monolith("stop", name)
+		require.Zero(t, code, out)
+		require.False(t, get(), "the forward goes away with the container")
+		out, _ = monolith("ps", "-a")
+		require.Regexp(t, name+`\s.*`+regexp.QuoteMeta(want), out, "stopped containers still list their ports")
+		out, code = monolith("start", name)
+		require.Zero(t, code, out)
+		require.Eventually(t, get, 60*time.Second, 300*time.Millisecond, "the forward is back after start")
+
+		out, code = monolith("run", "--rm", "-p", "0.0.0.0:80:80", alpine, "true")
+		require.NotZero(t, code)
+		require.Contains(t, out, "only on the Mac's localhost")
 	})
 
 	t.Run("prune", func(t *testing.T) {

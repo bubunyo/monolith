@@ -223,9 +223,11 @@ func TestServeRelayHello(t *testing.T) {
 			return
 		}
 		defer c.Close()
-		line, _ := bufio.NewReader(c).ReadString('\n')
-		// Read the rest until the client half-closes, then answer.
-		rest, _ := io.ReadAll(c)
+		br := bufio.NewReader(c)
+		line, _ := br.ReadString('\n')
+		// Read the rest until the client half-closes, then answer. From br:
+		// the client's bytes can arrive in the same read as the line.
+		rest, _ := io.ReadAll(br)
 		c.Write([]byte("pong"))
 		guestDone <- line + "|" + string(rest)
 	}()
