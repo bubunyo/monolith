@@ -32,8 +32,9 @@ const (
 	// shutdown, Rosetta and file-change events; layout 3 adds the sandbox
 	// pieces (repo overlay, listening-ports relay); layout 4 adds the boot
 	// step markers, and is also recorded for alpine VMs; layout 5 mounts the
-	// Mac's /var/folders (GuestLayoutTempShare).
-	GuestLayout = 5
+	// Mac's /var/folders (GuestLayoutTempShare); layout 6 grows the data
+	// disk's filesystem (GuestLayoutDiskResize).
+	GuestLayout = 6
 
 	// Minimum GuestLayout for each feature that needs guest files.
 	GuestLayoutRosetta   = 2 // also clean shutdown and file-change events

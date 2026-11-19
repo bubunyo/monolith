@@ -56,6 +56,7 @@ var (
 	flagName    string
 	flagCPUs    uint
 	flagMemory  string
+	flagDisk    string
 	flagForce   bool
 	flagEngine  string
 	flagRosetta bool
@@ -161,6 +162,24 @@ func start(cmd *cobra.Command) error {
 		if engine := vm.EngineOf(cfg); cmd.Flags().Changed("engine") && flagEngine != engine {
 			return fmt.Errorf("%q was created with the %s engine; the engine can't be changed (remove it or pick another --name)", flagName, engine)
 		}
+		if cmd.Flags().Changed("disk") {
+			size, err := parseDisk()
+			if err != nil {
+				return err
+			}
+			if err := vm.CheckDataDiskSize(flagName, cfg, size); err != nil {
+				return err
+			}
+			// The disk is attached at boot; a paused VM's saved state
+			// expects the old size.
+			current, err := vm.DataDiskSize(flagName)
+			if err != nil {
+				return err
+			}
+			if status, err := vm.ReadState(flagName); err == nil && status.State != vm.StatusStopped && current != 0 && current != size {
+				return fmt.Errorf("%q is %s; stop it to change --disk", flagName, status.State)
+			}
+		}
 		// Rosetta changes the VM's devices and boot arguments, so it can
 		// only change on a fresh boot.
 		if status, err := vm.ReadState(flagName); err == nil && status.State != vm.StatusStopped &&
@@ -219,6 +238,16 @@ func boot(cmd *cobra.Command) error {
 			return err
 		}
 		cfg.Memory = mem
+	}
+	if cmd.Flags().Changed("disk") {
+		size, err := parseDisk()
+		if err != nil {
+			return err
+		}
+		if err := vm.CheckDataDiskSize(flagName, cfg, size); err != nil {
+			return err
+		}
+		cfg.DataDiskSize = size
 	}
 	hadKube := cfg.Kubernetes
 	dropKubernetes(&cfg)
@@ -484,6 +513,15 @@ func checkEngine(name, engine string) error {
 	return nil
 }
 
+// parseDisk parses --disk ("40G", "40960M") into bytes.
+func parseDisk() (int64, error) {
+	size, err := clivm.ParseMemory(flagDisk)
+	if err != nil {
+		return 0, fmt.Errorf("--disk: %w", err)
+	}
+	return int64(size), nil
+}
+
 // dropKubernetes clears the Kubernetes settings of a Docker host created
 // when hosts could run k3s; 'monolith cluster' replaced that.
 func dropKubernetes(cfg *vm.VMConfig) {
@@ -595,6 +633,7 @@ func init() {
 	}
 	startCmd.Flags().UintVarP(&flagCPUs, "cpus", "c", 0, "number of vCPUs (default: 2)")
 	startCmd.Flags().StringVarP(&flagMemory, "memory", "m", "", `RAM size, e.g. "2G", "4096M" (default: 2G)`)
+	startCmd.Flags().StringVar(&flagDisk, "disk", "", `data disk size for images, containers and volumes, e.g. "40G" (default: 20G; sparse; an existing disk can grow, not shrink)`)
 	startCmd.Flags().StringVar(&flagEngine, "engine", vm.EngineDocker, "container engine for a new VM: docker or containerd")
 	startCmd.Flags().BoolVar(&flagRosetta, "rosetta", true, "run x86-64 (amd64) images with Rosetta (opt-in; saved); --rosetta=false turns it off again")
 	stopCmd.Flags().BoolVarP(&flagForce, "force", "f", false, "discard a paused VM's saved state without asking")

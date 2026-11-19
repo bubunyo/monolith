@@ -28,7 +28,6 @@ const (
 	SSHPort = 22
 
 	dockerDataDiskName  = "data.img"
-	dockerDataDiskSize  = 64 << 30 // sparse; grows as images are pulled
 	dockerOverlay       = "docker/manifest.yaml"
 	containerdOverlay   = "containerd/manifest.yaml"
 	sshPubKeyCmdlineArg = "monolith.ssh_pubkey"
@@ -134,10 +133,14 @@ func (dockerImage) Prepare(name string, log io.Writer) (*BootSpec, error) {
 	}
 
 	dataDisk := filepath.Join(vmDir, dockerDataDiskName)
-	if !exists(dataDisk) {
-		// Left unformatted; docker-setup runs mkfs.ext4 on first boot.
-		if err := createSparseFile(dataDisk, dockerDataDiskSize); err != nil {
-			return nil, fmt.Errorf("creating docker data disk: %w", err)
+	size, err := ensureDataDisk(name, dataDisk, cfg)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.DataDiskSize != size {
+		cfg.DataDiskSize = size
+		if err := WriteConfig(name, cfg); err != nil {
+			return nil, err
 		}
 	}
 

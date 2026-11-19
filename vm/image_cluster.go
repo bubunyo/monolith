@@ -15,6 +15,11 @@ const (
 
 	clusterOverlay = "cluster/manifest.yaml"
 	kubeShareTag   = "kube"
+
+	// clusterDataDiskSize is a cluster's data disk (images, datastore,
+	// pods): sparse, so a ceiling rather than space used. Docker hosts size
+	// theirs with --disk (datadisk.go); clusters have no such flag yet.
+	clusterDataDiskSize = 64 << 30
 )
 
 // clusterImage is a Kubernetes VM: the Alpine image plus the files in
@@ -75,7 +80,7 @@ func (clusterImage) Prepare(name string, log io.Writer) (*BootSpec, error) {
 	dataDisk := filepath.Join(vmDir, dockerDataDiskName)
 	if !exists(dataDisk) {
 		// Left unformatted; cluster-setup runs mkfs.ext4 on first boot.
-		if err := createSparseFile(dataDisk, dockerDataDiskSize); err != nil {
+		if err := createSparseFile(dataDisk, clusterDataDiskSize); err != nil {
 			return nil, fmt.Errorf("creating the cluster data disk: %w", err)
 		}
 	}
