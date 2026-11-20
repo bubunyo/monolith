@@ -55,8 +55,8 @@ func EngineOf(cfg VMConfig) string {
 // dockerImage is a container host: the Alpine image plus the files in
 // embeddings/docker, which install the engine on first boot and run it.
 // Images and containers go on a separate sparse data disk (/dev/vdb) and the
-// Mac's /Users is shared over virtio-fs at the same path so bind mounts
-// resolve. The daemon forwards published ports to localhost and, depending
+// Mac's /Users and /var/folders (temp dirs) are shared over virtio-fs at the
+// same path so bind mounts resolve. The daemon forwards published ports to localhost and, depending
 // on the engine, exposes dockerd's API as docker.sock (docker) or the
 // guest's internal sshd as ssh.sock for nerdctl (containerd, which adds the
 // embeddings/containerd overlay and a per-VM SSH key). All of it goes
@@ -99,7 +99,7 @@ func (dockerImage) Prepare(name string, log io.Writer) (*BootSpec, error) {
 		cfg.GuestLayout = GuestLayout
 	}
 
-	shares := []Share{{Tag: "users", HostPath: "/Users"}}
+	shares := hostShares(cfg)
 	if cfg.Sandbox != nil {
 		// Only the repo, read-only; the guest overlays it at the same path.
 		if cfg.GuestLayout < GuestLayoutSandbox {

@@ -31,8 +31,9 @@ const (
 	// longer used: docker hosts don't run Kubernetes); layout 2 adds clean
 	// shutdown, Rosetta and file-change events; layout 3 adds the sandbox
 	// pieces (repo overlay, listening-ports relay); layout 4 adds the boot
-	// step markers, and is also recorded for alpine VMs.
-	GuestLayout = 4
+	// step markers, and is also recorded for alpine VMs; layout 5 mounts the
+	// Mac's /var/folders (GuestLayoutTempShare).
+	GuestLayout = 5
 
 	// Minimum GuestLayout for each feature that needs guest files.
 	GuestLayoutRosetta   = 2 // also clean shutdown and file-change events
