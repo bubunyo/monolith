@@ -34,8 +34,9 @@ log. k3s's own log is `/var/log/k3s.log` in the VM.
 
 Every command except `list` takes `--name` (default `cluster-default`), so
 several clusters can run at once. `start` also takes `--cpus` (default 2),
-`--memory` (default 4G) and `--k3s-version`; they are saved for later starts,
-and the k3s version only changes while the cluster is stopped.
+`--memory` (default 4G), `--k3s-version` and `--rosetta` (see
+[amd64 images](#amd64-images-rosetta)); they are saved for later starts, and
+the k3s version and Rosetta only change while the cluster is stopped.
 
 ## Your kubeconfig
 
@@ -69,6 +70,26 @@ or Docker host already holds isn't forwarded; `cluster list` shows it with a
 cluster; use `kubectl port-forward` for those. Ports below 1024 work without
 sudo. Traefik is disabled.
 
+## amd64 images (Rosetta)
+
+`cluster start --rosetta` lets pods run x86-64 (amd64) binaries through Rosetta.
+It needs Rosetta on the Mac (`softwareupdate --install-rosetta`).
+
+The node still only pulls images labelled for its own platform (arm64), so an
+amd64-only image fails with `no match for platform in manifest` even with
+Rosetta. Relabel the image as arm64 and push it under a tag of your own; the
+binaries inside stay x86-64 and Rosetta runs them:
+
+```bash
+crane mutate vendor/app@$(crane digest --platform linux/amd64 vendor/app:1.2) \
+  --set-platform linux/arm64 -t registry.example.com/vendor/app:1.2-rosetta
+```
+
+Then use `registry.example.com/vendor/app:1.2-rosetta` in the pod spec.
+Multi-arch images need none of this; they run natively. Expect amd64 code to
+run slower than native (around 1.4× in a CPU-bound test), and programs that
+need CPU features Rosetta doesn't provide (such as AVX-512) won't run.
+
 ## What's inside
 
 Alpine with k3s running on its own bundled containerd; no Docker. The VM uses
@@ -79,9 +100,9 @@ datastore and pods live on a sparse 64 GiB data disk.
 
 ## Limits
 
-- **Multi-arch images only.** Pods can't pull images that only exist for amd64:
-  containerd's CRI pulls the node's platform (arm64), and Rosetta in the guest
-  doesn't change that. The error is `no match for platform in manifest`.
+- **amd64-only images need relabelling.** Pods can't pull images that only
+  exist for amd64: containerd's CRI pulls the node's platform (arm64). With
+  `--rosetta` they run once relabelled, see [amd64 images](#amd64-images-rosetta).
 - **No local image builds into pods.** Pods pull from a registry; push images
   you build there first.
 - A cluster can't be created with `monolith vm run`; `cluster start` creates it.

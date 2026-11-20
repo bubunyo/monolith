@@ -635,7 +635,7 @@ func init() {
 	startCmd.Flags().StringVarP(&flagMemory, "memory", "m", "", `RAM size, e.g. "2G", "4096M" (default: 2G)`)
 	startCmd.Flags().StringVar(&flagDisk, "disk", "", `data disk size for images, containers and volumes, e.g. "40G" (default: 20G; sparse; an existing disk can grow, not shrink)`)
 	startCmd.Flags().StringVar(&flagEngine, "engine", vm.EngineDocker, "container engine for a new VM: docker or containerd")
-	startCmd.Flags().BoolVar(&flagRosetta, "rosetta", true, "run x86-64 (amd64) images with Rosetta (opt-in; saved); --rosetta=false turns it off again")
+	startCmd.Flags().BoolVar(&flagRosetta, "rosetta", false, "run x86-64 (amd64) images with Rosetta (opt-in; saved); --rosetta=false turns it off again")
 	stopCmd.Flags().BoolVarP(&flagForce, "force", "f", false, "discard a paused VM's saved state without asking")
 	rmCmd.Flags().BoolVarP(&flagForce, "force", "f", false, "delete without asking")
 }

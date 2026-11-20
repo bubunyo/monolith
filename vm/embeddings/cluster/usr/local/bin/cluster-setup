@@ -53,4 +53,16 @@ mkdir -p "$K3S_DIR" "$OUT_DIR"
 mount -t virtiofs -o ro k3s "$K3S_DIR" || echo "cluster-setup: mounting k3s failed"
 mount -t virtiofs kube "$OUT_DIR" || echo "cluster-setup: mounting the kubeconfig share failed"
 
+# Rosetta runs x86-64 binaries when the host passes monolith.rosetta=1 and
+# shares it (virtio-fs tag rosetta). Flag F opens the interpreter now, so it
+# works inside pods; C keeps setuid. Same registration as docker-setup.
+if tr ' ' '\n' </proc/cmdline | grep -qx 'monolith\.rosetta=1'; then
+	mkdir -p /mnt/rosetta
+	mount -t virtiofs -o ro rosetta /mnt/rosetta || echo "cluster-setup: mounting rosetta failed"
+	mount -t binfmt_misc binfmt_misc /proc/sys/fs/binfmt_misc 2>/dev/null
+	if [ ! -e /proc/sys/fs/binfmt_misc/rosetta ]; then
+		printf '%s\n' ':rosetta:M::\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x3e\x00:\xff\xff\xff\xff\xff\xfe\xfe\x00\xff\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff:/mnt/rosetta/rosetta:CF' >/proc/sys/fs/binfmt_misc/register
+	fi
+fi
+
 echo "cluster-setup: done"
