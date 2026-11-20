@@ -71,7 +71,7 @@ func init() {
 	f.BoolVarP(&flagInteractive, "interactive", "i", false, "keep stdin open (needs -t for now)")
 	f.BoolVarP(&flagTTY, "tty", "t", false, "allocate a terminal")
 	f.BoolVar(&flagRm, "rm", false, "remove the container when it exits")
-	f.StringVar(&flagName, "name", "", "container name (default: <image>-<random>)")
+	f.StringVarP(&flagName, "name", "n", "", "container name (default: <image>-<random>)")
 	f.StringArrayVarP(&flagEnv, "env", "e", nil, "set an environment variable (KEY=VALUE, or KEY to copy it from here)")
 	f.StringArrayVar(&flagEnvFile, "env-file", nil, "read environment variables from a file")
 	f.StringVarP(&flagWorkdir, "workdir", "w", "", "working directory in the container")

@@ -46,7 +46,7 @@ container still only has a VM with nothing in it but itself.
 
 | Command | |
 |---|---|
-| `run [flags] IMAGE [COMMAND...]` | Create and start a container. `-d` background, `-it` interactive terminal, `--rm` remove on exit, `--name`, `-e KEY=VALUE` / `-e KEY` (copied from your shell), `--env-file`, `-w DIR`, `-u USER[:GROUP]`, `--entrypoint`, `--cpus` (1), `-m/--memory` (512M), `--disk` (8G: the container's disk, image included; only what's written takes space on the Mac, and it can't be smaller than the image's filesystem, at least 1G), `--pull missing\|always\|never`, `-p [127.0.0.1:][HOST:]CONTAINER[/udp]` (repeatable; see [Ports](#ports)). Flags after IMAGE belong to the command. |
+| `run [flags] IMAGE [COMMAND...]` | Create and start a container. `-d` background, `-it` interactive terminal, `--rm` remove on exit, `-n`/`--name`, `-e KEY=VALUE` / `-e KEY` (copied from your shell), `--env-file`, `-w DIR`, `-u USER[:GROUP]`, `--entrypoint`, `--cpus` (1), `-m/--memory` (512M), `--disk` (8G: the container's disk, image included; only what's written takes space on the Mac, and it can't be smaller than the image's filesystem, at least 1G), `--pull missing\|always\|never`, `-p [127.0.0.1:][HOST:]CONTAINER[/udp]` (repeatable; see [Ports](#ports)). Flags after IMAGE belong to the command. |
 | `ps [-a] [-q]` | Running containers; `-a` includes stopped ones. PORTS shows published ports. |
 | `logs [-f] [-n N] NAME` | The container's output (stdout and stderr together). |
 | `stop [-t 10] NAME...` | Send the image's stop signal (`STOPSIGNAL`, default SIGTERM), then SIGKILL after `-t` seconds. |

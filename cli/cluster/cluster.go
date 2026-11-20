@@ -614,7 +614,7 @@ func init() {
 	Cmd.AddCommand(useCmd, startCmd, stopCmd, pauseCmd, resumeCmd, listCmd, rmCmd, kubeconfigCmd)
 
 	for _, c := range []*cobra.Command{startCmd, stopCmd, pauseCmd, resumeCmd, rmCmd, kubeconfigCmd} {
-		c.Flags().StringVar(&flagName, "name", defaultName, "cluster VM name")
+		c.Flags().StringVarP(&flagName, "name", "n", defaultName, "cluster VM name")
 		_ = c.RegisterFlagCompletionFunc("name", func(*cobra.Command, []string, string) ([]string, cobra.ShellCompDirective) {
 			names, _ := clusterNames()
 			return names, cobra.ShellCompDirectiveNoFileComp

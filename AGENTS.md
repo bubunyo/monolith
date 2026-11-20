@@ -6,8 +6,9 @@
 make build   # builds to ./bin/monolith AND codesigns with entitlements.plist
 make run     # builds and runs: monolith vm run (auto-generated name)
 make lint    # gofmt check + go vet (CI also runs golangci-lint with .golangci.yml)
-make test    # unit tests: go test -short (skips tests that boot VMs)
-make test-vm # build, then every test, including VM-booting ones
+make test     # unit tests (no VMs)
+make test-e2e # build, then the end-to-end suite in e2e/ (real VMs; see Tests)
+make release VERSION=vX.Y.Z  # lint, unit and e2e tests, then tag and push (starts the Release workflow)
 make dist    # dist/monolith_<version>_darwin_arm64.tar.gz + checksums.txt from bin/monolith
 make init    # cross-compile monolith-init (container VMs' PID 1) into vm/guestinit/files; build runs it
 make proto   # regenerate containerinit/agentpb from agent.proto (needs only Go: buf + plugins via go run/install)
@@ -51,16 +52,16 @@ monolith network list                             # list networks with attached 
 monolith network rm <name>                        # stop daemon and delete the named network
 monolith network logs <name>                      # stream the daemon log
 
-# Docker hosts (Colima-style); every command but list takes --name (default docker-lith-default)
+# Docker hosts (Colima-style); every command but list and use takes -n/--name (default docker-lith-default)
 monolith docker use [name] [--start]              # switch the docker CLI to another host's context (no boot unless --start; no name: print current); alias switch
 monolith docker start [--cpus N --memory 2G]      # boot (or resume) the VM, wait for dockerd, make context docker-<name> current
 monolith docker start --disk 40G                  # data disk size (default 20G, sparse; saved; a stopped VM's disk can grow, never shrink)
 monolith docker start --engine containerd         # new VM with containerd + nerdctl + BuildKit instead of dockerd (fixed at creation)
-monolith docker nerdctl [--name N] run -d nginx   # run nerdctl in a containerd host (args pass through; -it gets a TTY)
+monolith docker nerdctl [-n N] run -d nginx       # run nerdctl in a containerd host (args pass through; -it gets a TTY)
 monolith docker start --rosetta                   # run linux/amd64 images with Rosetta (opt-in, saved; --rosetta=false to turn off)
 monolith docker link-socket [--unlink]            # sudo-symlink /var/run/docker.sock to the host's docker.sock
 
-# Clusters: a single-node k3s in a VM (image cluster, user mode); every command but list takes --name (default cluster-default)
+# Clusters: a single-node k3s in a VM (image cluster, user mode); every command but list and use takes -n/--name (default cluster-default)
 monolith cluster use [name] [--start]             # make kubectl context cluster-<name> current (no boot unless --start; no name: print current); alias switch
 monolith cluster start [--cpus N --memory 4G --k3s-version v1.36.5+k3s1]  # boot (or resume) it, wait for the node, merge kubectl context cluster-<name> and make it current
 monolith cluster pause | resume                   # save the whole VM to disk and stop it / restore it (pods carry on)
@@ -83,7 +84,7 @@ monolith docker rm [--force]                      # delete the VM and its docker
 monolith docker env                               # print: export DOCKER_HOST=unix://…/vms/<name>/docker.sock
 
 # Containers, each in its own VM (alias c); images pulled and converted into ~/.monolith/images
-monolith container run [-d] [-it] [--rm] [--name N] [-e K=V] [--env-file F] [-w DIR] [-u USER] [--entrypoint E] [--cpus N] [-m 512M] [--disk 8G] [--pull missing|always|never] [-p [127.0.0.1:][HOST:]CONTAINER[/udp]]... IMAGE [CMD...]
+monolith container run [-d] [-it] [--rm] [-n|--name N] [-e K=V] [--env-file F] [-w DIR] [-u USER] [--entrypoint E] [--cpus N] [-m 512M] [--disk 8G] [--pull missing|always|never] [-p [127.0.0.1:][HOST:]CONTAINER[/udp]]... IMAGE [CMD...]
 monolith container ps [-a] [-q]                   # NAME IMAGE COMMAND CREATED STATUS (Up …, Exited (N) …, Created) PORTS
 monolith container logs [-f] [-n N] NAME          # the container's console output (console.log)
 monolith container stop [-t 10] NAME...           # the image's STOPSIGNAL (default SIGTERM), SIGKILL after -t
@@ -104,15 +105,19 @@ If no name is given to `run`, one is auto-generated as `lith-NNNNN` (random 5-di
 ## Tests
 
 ```bash
-go test ./...             # all tests
-go test -run TestRun ./vm # single test
-MONOLITH_TEST_DOCKER=1 go test -run TestDockerPauseResume ./vm  # docker host pause/resume (needs internet, docker CLI, unlocked Mac)
-MONOLITH_TEST_K8S=1 go test -run TestClusterPauseResume ./vm  # cluster VM: nginx pod and its LoadBalancer port on localhost survive pause/resume (needs internet, kubectl, unlocked Mac)
-MONOLITH_TEST_SANDBOX=1 go test -run TestSandboxIsolation ./cli/sandbox  # hostile script in a real sandbox (needs docker CLI, unlocked Mac)
-MONOLITH_TEST_CONTAINER=1 go test -run TestContainerRun ./cli/container  # container VMs: exit codes, config, network, published ports, lifecycle (needs internet)
+make test                        # unit tests (go test -short ./...; -short skips oci's slow image conversions)
+go test -run TestParseKube ./vm  # single unit test
+make test-e2e                    # end-to-end: real VMs through the CLI (e2e/, build tag e2e)
+make test-e2e RUN=TestDocker     # one suite: TestContainer, TestSandbox, TestDocker, TestCluster, TestVMDaemon, TestKataVM, TestNetworkSubnet
 ```
 
-**Many tests boot a real VM.** They require macOS on Apple Silicon with Virtualization.framework and the signed `bin/monolith`. Those tests skip under `go test -short` (`make test`), which is what CI runs: GitHub's macOS runners are VMs without nested virtualization. The remaining unit tests (parsers, command lines) run anywhere monolith builds.
+**Unit tests never boot a VM**, so `go test ./...` is safe anywhere monolith builds, and it's what CI runs. Everything that boots a VM or creates a vmnet network is in `e2e/`, behind `//go:build e2e`:
+
+- It drives the real binary (`MONOLITH_BIN`, else `../bin/monolith`), mostly through the CLI as a user would; `vm`/`net` exported helpers only where the CLI has no equivalent (spawning `__vmd`, reading state).
+- `TestMain` sets `HOME` to `MONOLITH_E2E_HOME` (default `~/.cache/monolith-e2e`, at most 60 bytes because VM socket paths must fit macOS's 104-byte limit) and unsets `DOCKER_HOST`, `DOCKER_CONTEXT` and `KUBECONFIG`. VMs, docker contexts and kubeconfig therefore never touch the user's. The download caches (`alpine`, `kata`, `k3s`, `images`, `container`) are symlinked from the user's real `~/.monolith` (`linkCaches`), so nothing is fetched twice; the suite's pulls land in the user's image store. The cluster suite uses its own `KUBECONFIG` seeded with a stand-in user context, to check that `cluster rm` brings it back.
+- It needs an unlocked Mac (restores), internet, the docker CLI and kubectl; a missing tool fails the suite rather than skipping it. Suites run one at a time (`-p 1`); VM names start with `e2e-` and each suite removes its VMs.
+- `make test-e2e` builds with `--options runtime` (the hardened runtime releases use) before running, with a 75 min timeout.
+- GitHub's macOS runners are VMs without nested virtualization, so the suite runs on the maintainer's Mac before each release: `make release VERSION=vX.Y.Z` checks the tree (clean, on master, in sync with origin, tag new), runs `make lint test test-e2e`, then tags and pushes, which starts the Release workflow.
 
 ## CI and Releases
 
@@ -235,7 +240,7 @@ monolith/
     paths.go              — VMsDir, VMDir, VMSockPath, VMSuspendPath, VMLogPath, VMMachineIDPath, VMDockerSockPath,
                             VMKubeDir, VMKubeconfigPath, VMSSHKeyPath, VMSSHSockPath.
     keybag.go             — keybagLocked() (MobileKeyBag via dlopen, cgo): restore is refused while the Mac is locked.
-    *_test.go             — tests (boot real VMs via ../bin/monolith; image_kata_test.go also has unit tests).
+    *_test.go             — unit tests (no VMs; those are in e2e/).
   oci/                    — image store (~/.monolith/images): pull (go-containerregistry, Docker keychain),
                             refs, Lookup by ref or ID prefix, Remove; Convert flattens layers into a sparse ext4 disk.
   containerinit/          — shared by monolith-init and the daemon: Spec, Command (entrypoint/cmd), env, ResolveUser,
@@ -246,6 +251,8 @@ monolith/
   cmd/monolith-init/      — PID 1 of container VMs (linux/arm64, static): main_linux.go (setup, mounts, reaping, shutdown),
                             agent_linux.go (the Agent ttRPC service), grow_linux.go; main_other.go is a stub for the Mac.
   update/                 — latest release lookup, version comparison (x/mod/semver), download + checksum, codesign check, Replace.
+  e2e/                    — //go:build e2e: real-VM suites through the CLI (container, sandbox, docker, cluster, vm, network);
+                            main_test.go isolates HOME and holds the helpers. `make test-e2e`.
   internal/ansi/          — terminal helpers: IsTerminal, UseColor, Paint, Size, Plain (console output → text).
   internal/kubeconfig/    — the cluster's kubeconfig: parse/rewrite k3s's file, merge into, switch to (Use) and remove from the
                             user's, TLS config, readiness check.
@@ -262,7 +269,6 @@ monolith/
                             (plist, launchctl bootstrap/bootout), Mach service naming.
     ip.go                 — LookupIPForMode (DHCP leases + ARP fallback), VmenetForMAC, NetworkStats.
     paths.go              — NetworksDir, NetworkDir, NetworkLogPath.
-    network_subnet_test.go — named-network subnet tests (via ../bin/monolith).
   paths.go                — CachePath(): root of every ~/.monolith path.
   privatesize.go          — PrivateSize(path): a file's bytes not shared with its APFS clones.
   process.go              — ProcessAlive(pid).
@@ -380,7 +386,7 @@ Alpine guest configuration:
 
 ### Docker host
 
-`monolith docker` manages Docker host VMs: any VM with image `docker` and network mode `user` (default 2 vCPU / 2 GiB). `--name` picks one (default `docker-lith-default`); commands refuse VMs with another image. `vm run --image docker` also works and defaults to user mode. It is Colima's design on monolith. Each VM has an **engine**, `engine` in `config.json` (empty = docker), chosen by `start --engine` when the VM is created and fixed afterwards because it's installed on the VM's disk; `start` refuses a different `--engine` for an existing VM. See [containerd engine](#containerd-engine) for the second one.
+`monolith docker` manages Docker host VMs: any VM with image `docker` and network mode `user` (default 2 vCPU / 2 GiB). `-n`/`--name` picks one (default `docker-lith-default`); commands refuse VMs with another image. `vm run --image docker` also works and defaults to user mode. It is Colima's design on monolith. Each VM has an **engine**, `engine` in `config.json` (empty = docker), chosen by `start --engine` when the VM is created and fixed afterwards because it's installed on the VM's disk; `start` refuses a different `--engine` for an existing VM. See [containerd engine](#containerd-engine) for the second one.
 
 - **First boot**: `docker-setup` (sysinit, after DHCP) reads the engine from `/etc/monolith-engine` (written by the containerd overlay; absent = docker), mounts cgroup2, loads modules, runs `apk add` for the engine's packages if any is missing (docker: `docker socat e2fsprogs e2fsprogs-extra`), formats `/dev/vdb` if it has no ext4, mounts it on `/var/lib/docker` (containerd: see below), runs `resize2fs` on it (grows the filesystem after `--disk`; a no-op otherwise), and mounts the virtio-fs tag `users` (the Mac's `/Users`) at `/Users` so `-v ~/x:/x` resolves, plus (guest layout ≥ 5) tag `varfolders` (the Mac's `/private/var/folders`, where `$TMPDIR` and `mktemp -d` live) at `/var/folders` with `/private/var/folders` symlinked to it, as Docker Desktop, Colima and OrbStack do. File-change events are relayed only for `/Users` (temp dirs churn). About 20s with a warm Alpine cache; later boots take ~3s to a ready dockerd.
 - **API**: `docker-serve relay` runs `socat TCP-LISTEN:2375,bind=192.168.127.2,range=192.168.127.1/32` → `/var/run/docker.sock`. The daemon (`vm/docker.go`) listens on `vms/docker/docker.sock` on the Mac and relays each connection through `UserNetwork.DialGuest(2375)`. `range=` admits only the user-mode gateway, so containers can't reach dockerd. vsock was tried first, but vz's `VirtioSocketConnection` can't half-close (no `CloseWrite`), which broke attach (output lost, and `docker run -i` never sees stdin EOF). socat runs with `-t 86400` because its default closes a connection 0.5s after either side half-closes.
