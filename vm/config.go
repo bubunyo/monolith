@@ -25,6 +25,7 @@ type VMConfig struct {
 	KubePort      int    `json:"kube_port,omitempty"`      // cluster image: host port on 127.0.0.1 forwarded to the k3s API
 	GuestLayout   int    `json:"guest_layout,omitempty"`   // docker and alpine images: GuestLayout its disk was created with
 	Rosetta       bool   `json:"rosetta,omitempty"`        // docker image only: run x86-64 binaries with Rosetta
+	DataDiskSize  int64  `json:"data_disk_size,omitempty"` // docker image only: data disk bytes (--disk; default DefaultDataDiskSize)
 
 	// Sandbox makes a docker image VM a repo sandbox (`monolith sandbox`).
 	Sandbox *SandboxConfig `json:"sandbox,omitempty"`

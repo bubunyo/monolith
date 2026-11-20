@@ -12,12 +12,12 @@ ROSETTA=$(tr ' ' '\n' </proc/cmdline | grep -cx 'monolith\.rosetta=1')
 # libgpiod's gpiomon watches the power button (docker-serve power).
 case "$ENGINE" in
 containerd)
-	PACKAGES="containerd nerdctl cni-plugins buildkit buildctl iptables ip6tables openssh-server socat e2fsprogs libgpiod"
-	NEEDED="containerd nerdctl buildkitd sshd socat mkfs.ext4 gpiomon"
+	PACKAGES="containerd nerdctl cni-plugins buildkit buildctl iptables ip6tables openssh-server socat e2fsprogs e2fsprogs-extra libgpiod"
+	NEEDED="containerd nerdctl buildkitd sshd socat mkfs.ext4 resize2fs gpiomon"
 	;;
 *)
-	PACKAGES="docker socat e2fsprogs libgpiod"
-	NEEDED="dockerd socat mkfs.ext4 gpiomon"
+	PACKAGES="docker socat e2fsprogs e2fsprogs-extra libgpiod"
+	NEEDED="dockerd socat mkfs.ext4 resize2fs gpiomon"
 	;;
 esac
 
@@ -59,6 +59,9 @@ else
 	mkdir -p /var/lib/docker
 	mount -t ext4 "$DATA_DISK" /var/lib/docker
 fi
+# `monolith docker start --disk` grows the disk on the Mac; grow the
+# filesystem to match (online; a no-op when it already fills the disk).
+resize2fs "$DATA_DISK" >/dev/null 2>&1 || echo "docker-setup: resizing $DATA_DISK failed"
 
 if [ "$ENGINE" = containerd ]; then
 	# Internal sshd for `monolith docker nerdctl`: root's key comes from the

@@ -95,7 +95,8 @@ func forwardedPorts(name string) string {
 	return vm.ForwardedPorts(name)
 }
 
-// dataUsage is the space the VM's sparse docker data disk actually uses.
+// dataUsage is the space the VM's sparse docker data disk actually uses,
+// out of its size, e.g. "1.2 GiB/20 GiB".
 func dataUsage(name string) string {
 	dir, err := vm.VMDir(name)
 	if err != nil {
@@ -110,9 +111,10 @@ func dataUsage(name string) string {
 		return "-"
 	}
 	used := uint64(st.Blocks) * 512
+	size := fmt.Sprintf("%.0f GiB", float64(fi.Size())/(1<<30))
 	const mib = 1 << 20
 	if used < 1<<30 {
-		return fmt.Sprintf("%.0f MiB", float64(used)/mib)
+		return fmt.Sprintf("%.0f MiB/%s", float64(used)/mib, size)
 	}
-	return fmt.Sprintf("%.1f GiB", float64(used)/(1<<30))
+	return fmt.Sprintf("%.1f GiB/%s", float64(used)/(1<<30), size)
 }
