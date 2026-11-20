@@ -27,7 +27,9 @@ mkdir -p /sys/fs/cgroup
 mount -t cgroup2 cgroup2 /sys/fs/cgroup
 
 # gpio-pl061 drives the GPIO controller the VM's power button is wired to.
-modprobe -a overlay br_netfilter veth virtiofs gpio-pl061 binfmt_misc 2>/dev/null
+# autofs4 must exist before containers start: systemd in kind nodes checks
+# /dev/autofs once and otherwise never mounts binfmt_misc.
+modprobe -a overlay br_netfilter veth virtiofs gpio-pl061 binfmt_misc autofs4 2>/dev/null
 sysctl -qw net.ipv4.ip_forward=1
 
 for cmd in $NEEDED; do
