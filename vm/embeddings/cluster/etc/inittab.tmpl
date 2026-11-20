@@ -31,11 +31,12 @@
 ::sysinit:/usr/local/bin/cluster-setup
 ::sysinit:printf '\033]7777;monolith;ready\007'
 
-# k3s, the clock sync that corrects the time after a restore, and the power
-# button.
+# k3s, the clock sync that corrects the time after a restore, the power
+# button, and image loads.
 ::respawn:/usr/local/bin/cluster-serve k3s
 ::respawn:/usr/local/bin/cluster-serve clock
 ::respawn:/usr/local/bin/cluster-serve power
+::respawn:/usr/local/bin/cluster-serve load
 
 hvc0::respawn:/sbin/getty -n -l /usr/local/bin/autologin 0 hvc0
 

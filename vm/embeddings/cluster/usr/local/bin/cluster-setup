@@ -6,9 +6,10 @@ DATA_DISK=/dev/vdb
 K3S_DIR=/opt/monolith/k3s
 OUT_DIR=/opt/monolith/out
 
-# libgpiod's gpiomon watches the power button (cluster-serve power).
-PACKAGES="e2fsprogs libgpiod iptables ip6tables"
-NEEDED="mkfs.ext4 gpiomon iptables"
+# libgpiod's gpiomon watches the power button (cluster-serve power); socat
+# serves image loads (cluster-serve load).
+PACKAGES="e2fsprogs libgpiod iptables ip6tables socat"
+NEEDED="mkfs.ext4 gpiomon iptables socat"
 
 echo "cluster-setup: preparing Kubernetes (k3s)"
 

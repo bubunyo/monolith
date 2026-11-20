@@ -1,6 +1,7 @@
 package vm
 
 import (
+	"fmt"
 	"path/filepath"
 	"testing"
 
@@ -79,6 +80,11 @@ func TestClusterOverlay(t *testing.T) {
 	serve, err := embeddings.ReadFile("embeddings/cluster/usr/local/bin/cluster-serve")
 	require.NoError(t, err)
 	require.Contains(t, string(serve), "KUBECONFIG_OUT=/opt/monolith/out/"+filepath.Base(hostPath))
+	require.Contains(t, string(serve), fmt.Sprintf("socat -t 86400 TCP-LISTEN:%d,bind=192.168.127.2,range=192.168.127.1/32", ClusterLoadPort),
+		"the load service: gateway only, and not closed 0.5s after the host half-closes")
+	inittab, err := embeddings.ReadFile("embeddings/cluster/etc/inittab.tmpl")
+	require.NoError(t, err)
+	require.Contains(t, string(inittab), "::respawn:/usr/local/bin/cluster-serve load")
 
 	setup, err := embeddings.ReadFile("embeddings/cluster/usr/local/bin/cluster-setup")
 	require.NoError(t, err)

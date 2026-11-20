@@ -16,8 +16,9 @@ engine that runs each container in its own VM.
   Rosetta for amd64 images. `docker use` switches between hosts.
 - `monolith cluster`: a single-node Kubernetes (k3s) cluster in a VM, merged
   into your kubeconfig, with LoadBalancer and NodePort services on localhost,
-  pause/resume to disk, and optional Rosetta for amd64 images. `cluster use`
-  switches between clusters.
+  pause/resume to disk, optional Rosetta for amd64 images, and `cluster load`
+  for images without a registry (from registries, a monolith docker host or
+  `docker save`). `cluster use` switches between clusters.
 - `monolith sandbox`: run a repo you don't trust in a lith, like a virtualenv:
   only the repo is visible (read-only, changes reviewed with `diff`/`apply`),
   and the code can reach the internet but not your Mac or local network.

@@ -30,6 +30,7 @@ log. k3s's own log is `/var/log/k3s.log` in the VM.
 | `cluster stop` | Stop the VM. On a paused cluster it discards the saved state (after asking, unless `--force`). |
 | `cluster kubeconfig` | Print a standalone kubeconfig, for `KUBECONFIG=<file>` in scripts. |
 | `cluster list` | State, k3s version, context (`*` = current), CPUs, memory, data disk use, API address and forwarded service ports. `-q` prints only names. |
+| `cluster load IMAGE...` | Load images into the node without a registry, see [Loading images](#loading-images). |
 | `cluster rm` | Delete the VM and its context. |
 
 Every command except `list` and `use` takes `-n`/`--name` (default `cluster-default`), so
@@ -70,6 +71,47 @@ or Docker host already holds isn't forwarded; `cluster list` shows it with a
 cluster; use `kubectl port-forward` for those. Ports below 1024 work without
 sudo. Traefik is disabled.
 
+## Loading images
+
+`cluster load` puts images straight into the node's containerd, so pods that
+use the same name run them without a registry:
+
+```bash
+monolith cluster load nginx:1.27 redis:7 vendor/app:1.2
+monolith cluster load -f images.txt               # one image per line
+cat images.txt | monolith cluster load            # the list on stdin
+monolith cluster load --from docker myapp:dev     # from a monolith docker host
+docker save myapp:dev | monolith cluster load -i -
+```
+
+- **Lists:** images come from the arguments, `-f FILE` (`-f -` for stdin), or
+  stdin when it's piped and nothing else is given. Blank lines and `#` comments
+  are skipped, and duplicates are loaded once.
+- **Concurrency:** `-j N` loads N images at once (default 3). Layers download
+  into the same cache as `container pull` (`~/.monolith/images/blobs`), so a
+  layer shared between images, or loaded before, downloads once.
+- **Progress:** like `docker pull`, with a block per image (its layers and the
+  load into the cluster) and a line for the ones waiting. Finished images fold
+  to one line. Off a terminal, each image prints a line per step.
+- **Platform:** the arm64 variant when there is one, otherwise linux/amd64,
+  relabelled to run through Rosetta ([below](#amd64-images-rosetta)).
+  `--platform linux/arm64|linux/amd64` picks one.
+- **From a docker host:** `--from docker` (or `docker:NAME`; default
+  `docker-lith-default`) exports images from a running monolith docker host,
+  e.g. ones built with `docker build` there. The image travels through the Mac
+  between the two VMs' sockets; it never touches the network. containerd-engine
+  hosts aren't supported yet.
+- **Archives:** `-i FILE` (or `-i -`) loads a `docker save` archive as it is,
+  without relabelling.
+- **Names:** an image is loaded under the name you give, so `nginx:1.27` in a
+  pod spec finds it. Kubernetes pulls `:latest` images again unless the pod sets
+  `imagePullPolicy: IfNotPresent` or `Never`; `load` warns when that would fail
+  (amd64 or docker-host images, which aren't in a registry in that form).
+  Loading by digest isn't supported.
+- One failed image doesn't stop the others; the summary lists the failures and
+  the exit status is 1. Clusters created before `cluster load` existed need to
+  be recreated (its guest service is set up when the cluster is created).
+
 ## amd64 images (Rosetta)
 
 `cluster start --rosetta` lets pods run x86-64 (amd64) binaries through Rosetta.
@@ -77,18 +119,22 @@ It needs Rosetta on the Mac (`softwareupdate --install-rosetta`).
 
 The node still only pulls images labelled for its own platform (arm64), so an
 amd64-only image fails with `no match for platform in manifest` even with
-Rosetta. Relabel the image as arm64 and push it under a tag of your own; the
-binaries inside stay x86-64 and Rosetta runs them:
+Rosetta. `cluster load` takes care of it: an image with no arm64 variant is
+relabelled as arm64 (its layers, and the x86-64 binaries in them, are
+unchanged) and Rosetta runs it. Without `--rosetta`, `load` refuses such
+images.
+
+To run one from a registry instead, relabel and push it yourself, e.g. with
+[crane](https://github.com/google/go-containerregistry/tree/main/cmd/crane):
 
 ```bash
 crane mutate vendor/app@$(crane digest --platform linux/amd64 vendor/app:1.2) \
   --set-platform linux/arm64 -t registry.example.com/vendor/app:1.2-rosetta
 ```
 
-Then use `registry.example.com/vendor/app:1.2-rosetta` in the pod spec.
-Multi-arch images need none of this; they run natively. Expect amd64 code to
-run slower than native (around 1.4× in a CPU-bound test), and programs that
-need CPU features Rosetta doesn't provide (such as AVX-512) won't run.
+Multi-arch images run natively. Expect amd64 code to run slower than native
+(around 1.4× in a CPU-bound test), and programs that need CPU features Rosetta
+doesn't provide (such as AVX-512) won't run.
 
 ## What's inside
 
@@ -102,7 +148,6 @@ datastore and pods live on a sparse 64 GiB data disk.
 
 - **amd64-only images need relabelling.** Pods can't pull images that only
   exist for amd64: containerd's CRI pulls the node's platform (arm64). With
-  `--rosetta` they run once relabelled, see [amd64 images](#amd64-images-rosetta).
-- **No local image builds into pods.** Pods pull from a registry; push images
-  you build there first.
+  `--rosetta`, `cluster load` relabels and loads them, see
+  [amd64 images](#amd64-images-rosetta).
 - A cluster can't be created with `monolith vm run`; `cluster start` creates it.

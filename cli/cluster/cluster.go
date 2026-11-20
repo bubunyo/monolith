@@ -637,9 +637,9 @@ func addStartFlags(c *cobra.Command) {
 }
 
 func init() {
-	Cmd.AddCommand(useCmd, startCmd, stopCmd, pauseCmd, resumeCmd, listCmd, rmCmd, kubeconfigCmd)
+	Cmd.AddCommand(useCmd, startCmd, stopCmd, pauseCmd, resumeCmd, listCmd, rmCmd, kubeconfigCmd, loadCmd)
 
-	for _, c := range []*cobra.Command{startCmd, stopCmd, pauseCmd, resumeCmd, rmCmd, kubeconfigCmd} {
+	for _, c := range []*cobra.Command{startCmd, stopCmd, pauseCmd, resumeCmd, rmCmd, kubeconfigCmd, loadCmd} {
 		c.Flags().StringVarP(&flagName, "name", "n", defaultName, "cluster VM name")
 		_ = c.RegisterFlagCompletionFunc("name", func(*cobra.Command, []string, string) ([]string, cobra.ShellCompDirective) {
 			names, _ := clusterNames()
@@ -649,6 +649,11 @@ func init() {
 	useCmd.Flags().BoolVar(&flagStart, "start", false, "start or resume the cluster first if it isn't running")
 	listCmd.Flags().BoolVarP(&flagQuiet, "quiet", "q", false, "print only cluster names")
 	addStartFlags(startCmd)
+	loadCmd.Flags().StringVarP(&flagLoadFile, "file", "f", "", "read images from FILE, one per line ('-' for stdin)")
+	loadCmd.Flags().StringArrayVarP(&flagLoadInputs, "input", "i", nil, "load a 'docker save' archive as it is ('-' for stdin; repeatable)")
+	loadCmd.Flags().StringVar(&flagLoadPlatform, "platform", "", "variant to load: linux/arm64 or linux/amd64 (default: arm64 if there is one, else amd64)")
+	loadCmd.Flags().StringVar(&flagLoadFrom, "from", "registry", "where images come from: registry, docker or docker:NAME (a monolith docker host)")
+	loadCmd.Flags().IntVarP(&flagLoadConcurrency, "concurrency", "j", 3, "images to load at once")
 	stopCmd.Flags().BoolVarP(&flagForce, "force", "f", false, "discard a paused cluster's saved state without asking")
 	rmCmd.Flags().BoolVarP(&flagForce, "force", "f", false, "delete without asking")
 }
