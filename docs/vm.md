@@ -266,7 +266,7 @@ name and actual disk usage of each VM to be pruned.
 ## Docker Host
 
 `monolith docker` runs Docker Engine in VMs and points the docker CLI on the
-Mac at them, like Colima. Every command except `list` takes `--name`
+Mac at them, like Colima. Every command except `list` and `use` takes `-n`/`--name`
 (default `docker-lith-default`).
 
 ```bash

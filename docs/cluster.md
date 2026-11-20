@@ -32,7 +32,7 @@ log. k3s's own log is `/var/log/k3s.log` in the VM.
 | `cluster list` | State, k3s version, context (`*` = current), CPUs, memory, data disk use, API address and forwarded service ports. `-q` prints only names. |
 | `cluster rm` | Delete the VM and its context. |
 
-Every command except `list` takes `--name` (default `cluster-default`), so
+Every command except `list` and `use` takes `-n`/`--name` (default `cluster-default`), so
 several clusters can run at once. `start` also takes `--cpus` (default 2),
 `--memory` (default 4G) and `--k3s-version`; they are saved for later starts,
 and the k3s version only changes while the cluster is stopped.

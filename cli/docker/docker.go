@@ -626,7 +626,7 @@ func init() {
 	Cmd.AddCommand(useCmd, startCmd, stopCmd, pauseCmd, resumeCmd, listCmd, rmCmd, envCmd, nerdctlCmd, linkSocketCmd)
 
 	for _, c := range []*cobra.Command{startCmd, stopCmd, pauseCmd, resumeCmd, rmCmd, envCmd, nerdctlCmd, linkSocketCmd} {
-		c.Flags().StringVar(&flagName, "name", defaultName, "Docker host VM name")
+		c.Flags().StringVarP(&flagName, "name", "n", defaultName, "Docker host VM name")
 		_ = c.RegisterFlagCompletionFunc("name", func(*cobra.Command, []string, string) ([]string, cobra.ShellCompDirective) {
 			return dockerHostNames(), cobra.ShellCompDirectiveNoFileComp
 		})

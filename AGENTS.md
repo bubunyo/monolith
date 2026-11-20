@@ -52,16 +52,16 @@ monolith network list                             # list networks with attached 
 monolith network rm <name>                        # stop daemon and delete the named network
 monolith network logs <name>                      # stream the daemon log
 
-# Docker hosts (Colima-style); every command but list takes --name (default docker-lith-default)
+# Docker hosts (Colima-style); every command but list and use takes -n/--name (default docker-lith-default)
 monolith docker use [name] [--start]              # switch the docker CLI to another host's context (no boot unless --start; no name: print current); alias switch
 monolith docker start [--cpus N --memory 2G]      # boot (or resume) the VM, wait for dockerd, make context docker-<name> current
 monolith docker start --disk 40G                  # data disk size (default 20G, sparse; saved; a stopped VM's disk can grow, never shrink)
 monolith docker start --engine containerd         # new VM with containerd + nerdctl + BuildKit instead of dockerd (fixed at creation)
-monolith docker nerdctl [--name N] run -d nginx   # run nerdctl in a containerd host (args pass through; -it gets a TTY)
+monolith docker nerdctl [-n N] run -d nginx       # run nerdctl in a containerd host (args pass through; -it gets a TTY)
 monolith docker start --rosetta                   # run linux/amd64 images with Rosetta (opt-in, saved; --rosetta=false to turn off)
 monolith docker link-socket [--unlink]            # sudo-symlink /var/run/docker.sock to the host's docker.sock
 
-# Clusters: a single-node k3s in a VM (image cluster, user mode); every command but list takes --name (default cluster-default)
+# Clusters: a single-node k3s in a VM (image cluster, user mode); every command but list and use takes -n/--name (default cluster-default)
 monolith cluster use [name] [--start]             # make kubectl context cluster-<name> current (no boot unless --start; no name: print current); alias switch
 monolith cluster start [--cpus N --memory 4G --k3s-version v1.36.5+k3s1]  # boot (or resume) it, wait for the node, merge kubectl context cluster-<name> and make it current
 monolith cluster pause | resume                   # save the whole VM to disk and stop it / restore it (pods carry on)
@@ -84,7 +84,7 @@ monolith docker rm [--force]                      # delete the VM and its docker
 monolith docker env                               # print: export DOCKER_HOST=unix://…/vms/<name>/docker.sock
 
 # Containers, each in its own VM (alias c); images pulled and converted into ~/.monolith/images
-monolith container run [-d] [-it] [--rm] [--name N] [-e K=V] [--env-file F] [-w DIR] [-u USER] [--entrypoint E] [--cpus N] [-m 512M] [--disk 8G] [--pull missing|always|never] [-p [127.0.0.1:][HOST:]CONTAINER[/udp]]... IMAGE [CMD...]
+monolith container run [-d] [-it] [--rm] [-n|--name N] [-e K=V] [--env-file F] [-w DIR] [-u USER] [--entrypoint E] [--cpus N] [-m 512M] [--disk 8G] [--pull missing|always|never] [-p [127.0.0.1:][HOST:]CONTAINER[/udp]]... IMAGE [CMD...]
 monolith container ps [-a] [-q]                   # NAME IMAGE COMMAND CREATED STATUS (Up …, Exited (N) …, Created) PORTS
 monolith container logs [-f] [-n N] NAME          # the container's console output (console.log)
 monolith container stop [-t 10] NAME...           # the image's STOPSIGNAL (default SIGTERM), SIGKILL after -t
@@ -386,7 +386,7 @@ Alpine guest configuration:
 
 ### Docker host
 
-`monolith docker` manages Docker host VMs: any VM with image `docker` and network mode `user` (default 2 vCPU / 2 GiB). `--name` picks one (default `docker-lith-default`); commands refuse VMs with another image. `vm run --image docker` also works and defaults to user mode. It is Colima's design on monolith. Each VM has an **engine**, `engine` in `config.json` (empty = docker), chosen by `start --engine` when the VM is created and fixed afterwards because it's installed on the VM's disk; `start` refuses a different `--engine` for an existing VM. See [containerd engine](#containerd-engine) for the second one.
+`monolith docker` manages Docker host VMs: any VM with image `docker` and network mode `user` (default 2 vCPU / 2 GiB). `-n`/`--name` picks one (default `docker-lith-default`); commands refuse VMs with another image. `vm run --image docker` also works and defaults to user mode. It is Colima's design on monolith. Each VM has an **engine**, `engine` in `config.json` (empty = docker), chosen by `start --engine` when the VM is created and fixed afterwards because it's installed on the VM's disk; `start` refuses a different `--engine` for an existing VM. See [containerd engine](#containerd-engine) for the second one.
 
 - **First boot**: `docker-setup` (sysinit, after DHCP) reads the engine from `/etc/monolith-engine` (written by the containerd overlay; absent = docker), mounts cgroup2, loads modules, runs `apk add` for the engine's packages if any is missing (docker: `docker socat e2fsprogs e2fsprogs-extra`), formats `/dev/vdb` if it has no ext4, mounts it on `/var/lib/docker` (containerd: see below), runs `resize2fs` on it (grows the filesystem after `--disk`; a no-op otherwise), and mounts the virtio-fs tag `users` (the Mac's `/Users`) at `/Users` so `-v ~/x:/x` resolves, plus (guest layout ≥ 5) tag `varfolders` (the Mac's `/private/var/folders`, where `$TMPDIR` and `mktemp -d` live) at `/var/folders` with `/private/var/folders` symlinked to it, as Docker Desktop, Colima and OrbStack do. File-change events are relayed only for `/Users` (temp dirs churn). About 20s with a warm Alpine cache; later boots take ~3s to a ready dockerd.
 - **API**: `docker-serve relay` runs `socat TCP-LISTEN:2375,bind=192.168.127.2,range=192.168.127.1/32` → `/var/run/docker.sock`. The daemon (`vm/docker.go`) listens on `vms/docker/docker.sock` on the Mac and relays each connection through `UserNetwork.DialGuest(2375)`. `range=` admits only the user-mode gateway, so containers can't reach dockerd. vsock was tried first, but vz's `VirtioSocketConnection` can't half-close (no `CloseWrite`), which broke attach (output lost, and `docker run -i` never sees stdin EOF). socat runs with `-t 86400` because its default closes a connection 0.5s after either side half-closes.
