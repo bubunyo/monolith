@@ -15,6 +15,7 @@ import (
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/klauspost/compress/zstd"
 	"golang.org/x/sync/errgroup"
+	"golang.org/x/sync/singleflight"
 )
 
 // Layers are downloaded into blobs/sha256/<hex> (compressed, as the
@@ -27,6 +28,16 @@ const (
 	parallelDownloads = 8
 )
 
+// layerView is where download reports each layer: line i of a pullView, or
+// of an image in a LoadView.
+type layerView interface {
+	set(i int, status string, done, total int64)
+}
+
+// downloads joins concurrent downloads of the same blob in this process
+// (cluster load fetches several images at once, often sharing layers).
+var downloads singleflight.Group
+
 func (s *Store) blobPath(d v1.Hash) string {
 	return filepath.Join(s.dir, blobsDir, d.Algorithm, d.Hex)
 }
@@ -34,7 +45,7 @@ func (s *Store) blobPath(d v1.Hash) string {
 // download fetches the layers that aren't cached yet, up to
 // parallelDownloads at a time, reporting each on line i of the view. A
 // cached layer is reported with the image it came from.
-func (s *Store) download(ctx context.Context, layers []v1.Layer, view *pullView) error {
+func (s *Store) download(ctx context.Context, layers []v1.Layer, view layerView) error {
 	owners := s.layerOwners()
 	g, ctx := errgroup.WithContext(ctx)
 	g.SetLimit(parallelDownloads)
@@ -46,7 +57,7 @@ func (s *Store) download(ctx context.Context, layers []v1.Layer, view *pullView)
 	return g.Wait()
 }
 
-func (s *Store) downloadLayer(ctx context.Context, i int, l v1.Layer, view *pullView, owners map[string][]string) error {
+func (s *Store) downloadLayer(ctx context.Context, i int, l v1.Layer, view layerView, owners map[string][]string) error {
 	d, err := l.Digest()
 	if err != nil {
 		return err
@@ -58,6 +69,23 @@ func (s *Store) downloadLayer(ctx context.Context, i int, l v1.Layer, view *pull
 			status += " (" + names[0] + ")"
 		}
 		view.set(i, status, 0, 0)
+		return nil
+	}
+	leader := false
+	_, err, _ = downloads.Do(path, func() (any, error) {
+		leader = true
+		return nil, s.fetchBlob(ctx, i, l, d, path, view)
+	})
+	if err == nil && !leader {
+		view.set(i, "Download complete", 0, 0)
+	}
+	return err
+}
+
+// fetchBlob downloads layer l into the blob cache at path.
+func (s *Store) fetchBlob(ctx context.Context, i int, l v1.Layer, d v1.Hash, path string, view layerView) error {
+	if _, err := os.Stat(path); err == nil {
+		view.set(i, "Download complete", 0, 0)
 		return nil
 	}
 	size, _ := l.Size()

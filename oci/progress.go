@@ -164,14 +164,18 @@ const (
 	styleWarn  = "33"
 	styleBold  = "1"
 	styleGreen = "1;32"
+	styleFail  = "31"
 )
 
 func statusStyle(status string) string {
 	switch {
 	case strings.HasPrefix(status, "Downloading"):
 		return styleBusy
-	case strings.HasPrefix(status, "Extracting"), strings.HasPrefix(status, "Converting"):
+	case strings.HasPrefix(status, "Extracting"), strings.HasPrefix(status, "Converting"),
+		strings.HasPrefix(status, "Loading"), strings.HasPrefix(status, "Exporting"), strings.HasPrefix(status, "Relabelling"):
 		return styleWork
+	case strings.HasPrefix(status, "Resolving"):
+		return styleBusy
 	case strings.HasPrefix(status, "Retrying"):
 		return styleWarn
 	case strings.HasPrefix(status, "Waiting"):

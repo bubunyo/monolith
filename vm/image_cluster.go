@@ -16,6 +16,10 @@ const (
 	clusterOverlay = "cluster/manifest.yaml"
 	kubeShareTag   = "kube"
 
+	// ClusterLoadPort is the guest's image load service (cluster-serve
+	// load), reached through the daemon's load.sock.
+	ClusterLoadPort = 2382
+
 	// clusterDataDiskSize is a cluster's data disk (images, datastore,
 	// pods): sparse, so a ceiling rather than space used. Docker hosts size
 	// theirs with --disk (datadisk.go); clusters have no such flag yet.

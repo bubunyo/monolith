@@ -20,12 +20,15 @@ import (
 // clusterServices exposes a cluster VM on localhost through the user-mode
 // network: 127.0.0.1:<kube_port> relays to the k3s API server in the guest,
 // and every LoadBalancer and NodePort service gets a forward on its port, as
-// a docker host does for published container ports. Connections fail while
-// k3s is still starting (nothing is listening yet).
+// a docker host does for published container ports. vms/<name>/load.sock
+// relays to the guest's image load service. Connections fail while k3s is
+// still starting (nothing is listening yet).
 type clusterServices struct {
 	name     string
 	user     *mnet.UserNetwork
 	listener net.Listener
+	load     net.Listener
+	loadPath string
 	cancel   context.CancelFunc
 	fwd      *portForwarder
 
@@ -47,10 +50,22 @@ func startClusterServices(name string, cfg VMConfig, user *mnet.UserNetwork, log
 	if err != nil {
 		return nil, fmt.Errorf("forwarding the Kubernetes API on localhost:%d: %w", cfg.KubePort, err)
 	}
+	loadPath, err := VMLoadSockPath(name)
+	if err != nil {
+		l.Close()
+		return nil, err
+	}
+	os.Remove(loadPath) // stale socket from a crashed daemon
+	load, err := net.Listen("unix", loadPath)
+	if err != nil {
+		l.Close()
+		return nil, fmt.Errorf("listening on %s: %w", loadPath, err)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
-	s := &clusterServices{name: name, user: user, listener: l, cancel: cancel}
+	s := &clusterServices{name: name, user: user, listener: l, load: load, loadPath: loadPath, cancel: cancel}
 	s.fwd = newPortForwarder(user, logger, s.servicePorts)
 	go serveGuest(ctx, user, l, KubeAPIPort)
+	go serveGuest(ctx, user, load, ClusterLoadPort)
 	go s.fwd.run(ctx)
 	logger.Info("Kubernetes API for %q on localhost:%d", name, cfg.KubePort)
 	return s, nil
@@ -173,5 +188,7 @@ func parseKubeServicePorts(data []byte) (map[portKey]bool, error) {
 func (s *clusterServices) close() {
 	s.cancel()
 	s.listener.Close()
+	s.load.Close()
+	os.Remove(s.loadPath)
 	s.fwd.stop()
 }

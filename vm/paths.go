@@ -56,6 +56,12 @@ func VMSSHKeyPath(name string) (string, error) {
 	return monolith.CachePath("vms", name, "ssh_key")
 }
 
+// VMLoadSockPath returns the host socket relayed to a cluster VM's image
+// load service (`monolith cluster load` writes an image tarball to it).
+func VMLoadSockPath(name string) (string, error) {
+	return monolith.CachePath("vms", name, "load.sock")
+}
+
 // VMSSHSockPath returns the host socket relayed to a containerd engine VM's
 // internal sshd (use with ssh -o ProxyCommand="nc -U <path>").
 func VMSSHSockPath(name string) (string, error) {

@@ -33,12 +33,14 @@ const (
 	// pieces (repo overlay, listening-ports relay); layout 4 adds the boot
 	// step markers, and is also recorded for alpine VMs; layout 5 mounts the
 	// Mac's /var/folders (GuestLayoutTempShare); layout 6 grows the data
-	// disk's filesystem (GuestLayoutDiskResize).
-	GuestLayout = 6
+	// disk's filesystem (GuestLayoutDiskResize); layout 7 adds the cluster
+	// image's load service (GuestLayoutImageLoad).
+	GuestLayout = 7
 
 	// Minimum GuestLayout for each feature that needs guest files.
 	GuestLayoutRosetta   = 2 // also clean shutdown and file-change events
 	GuestLayoutBootSteps = 4
+	GuestLayoutImageLoad = 7 // cluster image: `monolith cluster load`
 
 	k3sShareTag       = "k3s"
 	k3sBinaryName     = "k3s"

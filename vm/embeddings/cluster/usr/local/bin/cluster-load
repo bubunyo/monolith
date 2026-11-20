@@ -1,0 +1,15 @@
+#!/bin/sh
+# cluster-load — one `monolith cluster load` connection (cluster-serve load):
+# imports the image tarball on stdin into k3s's containerd and answers with
+# one line, "ok" or "error <reason>". On failure the rest of stdin is
+# drained so the host can finish writing and read the answer.
+
+K3S=/opt/monolith/k3s/k3s
+log=$(mktemp)
+if "$K3S" ctr -n k8s.io images import - >"$log" 2>&1; then
+	echo ok
+else
+	cat >/dev/null
+	echo "error $(tail -n 3 "$log" | tr '\n' ' ')"
+fi
+rm -f "$log"

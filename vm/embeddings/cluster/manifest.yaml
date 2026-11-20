@@ -12,3 +12,6 @@ files:
   - src: cluster/usr/local/bin/cluster-serve
     dst: usr/local/bin/cluster-serve
     mode: "0755"
+  - src: cluster/usr/local/bin/cluster-load
+    dst: usr/local/bin/cluster-load
+    mode: "0755"

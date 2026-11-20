@@ -437,11 +437,22 @@ func (s *Store) writeRefs(refs map[string]string) error {
 
 // lock serializes pulls and removals across monolith processes.
 func (s *Store) lock() (func(), error) {
+	return s.flock(syscall.LOCK_EX)
+}
+
+// SharedLock keeps pulls and removals (which prune unused blobs) out while
+// the caller reads the blob cache, but lets other shared holders in: one
+// `cluster load` takes it for its whole run.
+func (s *Store) SharedLock() (func(), error) {
+	return s.flock(syscall.LOCK_SH)
+}
+
+func (s *Store) flock(how int) (func(), error) {
 	f, err := os.OpenFile(filepath.Join(s.dir, lockFile), os.O_CREATE|os.O_RDWR, 0644)
 	if err != nil {
 		return nil, err
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+	if err := syscall.Flock(int(f.Fd()), how); err != nil {
 		f.Close()
 		return nil, err
 	}
