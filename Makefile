@@ -1,4 +1,4 @@
-.PHONY: all build install init proto run exec test test-vm lint dist clean
+.PHONY: all build install init proto run exec test test-e2e lint dist release clean
 
 # Read signing identity from .codesign_identity file if it exists,
 # fall back to ad-hoc signing (-). Override with CODESIGN_IDENTITY env var.
@@ -46,17 +46,20 @@ run: build exec
 exec:
 	@./bin/monolith vm run
 
-# Unit tests only: -short skips tests that boot VMs or create vmnet networks.
+# Unit tests (-short skips the slow image conversions). VM tests are in e2e/.
 test:
 	@go test -short -count=1 ./...
 
-# Everything, including tests that boot real VMs (needs the signed binary).
-test-vm: build
-	@go test -count=1 ./...
+# End-to-end tests: real VMs through the CLI, built with the hardened runtime
+# like a release. RUN=TestDocker picks suites. See e2e/main_test.go.
+test-e2e:
+	@$(MAKE) build CODESIGN_FLAGS="--options runtime"
+	@go test -tags e2e -count=1 -p 1 -v -timeout 75m $(if $(RUN),-run '$(RUN)') ./e2e/
 
 lint:
 	@test -z "$$(gofmt -l $$(git ls-files '*.go'))" || { echo "gofmt needed:"; gofmt -l $$(git ls-files '*.go'); exit 1; }
 	@go vet ./...
+	@go vet -tags e2e ./e2e/
 	@GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go vet ./cmd/monolith-init ./containerinit
 
 # Release archive (binary, LICENSE, README) and its checksum in dist/.
@@ -69,6 +72,20 @@ dist:
 	@rm -rf $(DIST)/$(DIST_NAME)
 	@cd $(DIST) && shasum -a 256 $(DIST_NAME).tar.gz > checksums.txt
 	@echo "$(DIST)/$(DIST_NAME).tar.gz"
+
+# Tag and push a release once lint, unit and e2e tests pass on this Mac:
+# make release VERSION=v0.3.0. The Release workflow builds and publishes it.
+release:
+	@test "$(origin VERSION)" != file || { echo "usage: make release VERSION=vX.Y.Z[-rc.N]"; exit 1; }
+	@echo "$(VERSION)" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$$' || { echo "$(VERSION) isn't vX.Y.Z[-rc.N]"; exit 1; }
+	@test -z "$$(git status --porcelain)" || { echo "the working tree has uncommitted changes"; exit 1; }
+	@test "$$(git branch --show-current)" = master || { echo "release from master"; exit 1; }
+	@git fetch -q origin master
+	@test "$$(git rev-parse HEAD)" = "$$(git rev-parse origin/master)" || { echo "master isn't in sync with origin/master"; exit 1; }
+	@! git rev-parse -q --verify "refs/tags/$(VERSION)" >/dev/null || { echo "tag $(VERSION) already exists"; exit 1; }
+	@$(MAKE) lint test test-e2e
+	@git tag -a "$(VERSION)" -m "$(VERSION)"
+	@git push origin "$(VERSION)"
 
 clean:
 	@rm -rf bin $(DIST) $(INIT_BIN)

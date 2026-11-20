@@ -1,13 +1,10 @@
-package container
+//go:build e2e
+
+package e2e
 
 import (
-	"errors"
 	"fmt"
-	"io"
-	"net"
-	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -18,57 +15,42 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestContainerRun runs real container VMs: exit codes, the image's config
-// and overrides, the network, and the background lifecycle. It pulls
-// images, so it only runs with MONOLITH_TEST_CONTAINER=1 and a built
-// ../../bin/monolith.
-func TestContainerRun(t *testing.T) {
-	if os.Getenv("MONOLITH_TEST_CONTAINER") != "1" {
-		t.Skip("set MONOLITH_TEST_CONTAINER=1 to run (boots container VMs)")
-	}
-	binary, err := filepath.Abs("../../bin/monolith")
-	require.NoError(t, err)
-	if _, err := os.Stat(binary); err != nil {
-		t.Skipf("binary not found at %s — run 'make build' first", binary)
-	}
-	monolith := func(args ...string) (string, int) {
-		out, err := exec.Command(binary, append([]string{"container"}, args...)...).CombinedOutput()
-		var exit *exec.ExitError
-		if errors.As(err, &exit) {
-			return string(out), exit.ExitCode()
-		}
-		require.NoError(t, err)
-		return string(out), 0
+// TestContainer runs container VMs: exit codes, the image's config and
+// overrides, the network, published ports and the background lifecycle.
+func TestContainer(t *testing.T) {
+	ctr := func(args ...string) (string, int) {
+		t.Helper()
+		return monolith(t, append([]string{"container"}, args...)...)
 	}
 	const alpine = "alpine:3.21"
 
 	t.Run("exit code and output", func(t *testing.T) {
-		out, code := monolith("run", "--rm", alpine, "sh", "-c", "echo hello; exit 3")
+		out, code := ctr("run", "--rm", alpine, "sh", "-c", "echo hello; exit 3")
 		require.Equal(t, 3, code, out)
 		require.Contains(t, out, "hello\n", "plain output, no CR")
 	})
 
 	t.Run("config and overrides", func(t *testing.T) {
-		out, code := monolith("run", "--rm", "-e", "FOO=bar", "-w", "/work/dir", "-u", "nobody",
+		out, code := ctr("run", "--rm", "-e", "FOO=bar", "-w", "/work/dir", "-u", "nobody",
 			"--name", "e2e-config", alpine, "sh", "-c", `echo "$FOO $(pwd) $(id -u) $(hostname) $HOME"`)
 		require.Zero(t, code, out)
 		require.Contains(t, out, "bar /work/dir 65534 e2e-config /\n")
 
-		out, code = monolith("run", "--rm", "--entrypoint", "printenv", alpine, "PATH")
+		out, code = ctr("run", "--rm", "--entrypoint", "printenv", alpine, "PATH")
 		require.Zero(t, code, out)
 		require.Contains(t, out, "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
 	})
 
 	t.Run("command errors", func(t *testing.T) {
-		out, code := monolith("run", "--rm", alpine, "no-such-command")
+		out, code := ctr("run", "--rm", alpine, "no-such-command")
 		require.Equal(t, 127, code, out)
 		require.Contains(t, out, "executable file not found")
-		_, code = monolith("run", "--rm", alpine, "/etc/passwd")
+		_, code = ctr("run", "--rm", alpine, "/etc/passwd")
 		require.Equal(t, 126, code)
 	})
 
 	t.Run("devices and network", func(t *testing.T) {
-		out, code := monolith("run", "--rm", alpine, "sh", "-c",
+		out, code := ctr("run", "--rm", alpine, "sh", "-c",
 			`ls -l /dev/stdout /dev/stderr >/dev/null && echo devs-ok; wget -q -O- http://example.com | grep -o '<title>.*</title>'`)
 		require.Zero(t, code, out)
 		require.Contains(t, out, "devs-ok")
@@ -76,9 +58,8 @@ func TestContainerRun(t *testing.T) {
 	})
 
 	t.Run("disk size", func(t *testing.T) {
-		// df -k: 1K blocks of /. The filesystem grows to fill --disk at boot.
 		size := func(args ...string) int {
-			out, code := monolith(append(append([]string{"run", "--rm"}, args...), alpine, "sh", "-c", "df -k / | awk 'NR==2 {print $2}'")...)
+			out, code := ctr(append(append([]string{"run", "--rm"}, args...), alpine, "sh", "-c", "df -k / | awk 'NR==2 {print $2}'")...)
 			require.Zero(t, code, out)
 			kb, err := strconv.Atoi(strings.TrimSpace(lastLine(out)))
 			require.NoError(t, err, out)
@@ -86,122 +67,104 @@ func TestContainerRun(t *testing.T) {
 		}
 		require.InDelta(t, 8<<20, size(), 0.06*(8<<20), "default 8G")
 		require.InDelta(t, 20<<20, size("--disk", "20G"), 0.06*(20<<20))
-		out, code := monolith("run", "--rm", "--disk", "100M", alpine, "true")
+		out, code := ctr("run", "--rm", "--disk", "100M", alpine, "true")
 		require.NotZero(t, code)
 		require.Contains(t, out, "--disk must be at least")
 	})
 
 	t.Run("--rm removes the container", func(t *testing.T) {
-		_, code := monolith("run", "--rm", "--name", "e2e-rm", alpine, "true")
+		_, code := ctr("run", "--rm", "--name", "e2e-rm", alpine, "true")
 		require.Zero(t, code)
-		_, code = monolith("logs", "e2e-rm")
+		_, code = ctr("logs", "e2e-rm")
 		require.NotZero(t, code, "gone")
 	})
 
 	t.Run("background lifecycle", func(t *testing.T) {
 		const name = "e2e-web"
-		t.Cleanup(func() { monolith("rm", "-f", name) })
-		out, code := monolith("run", "-d", "--name", name, "nginx:1.29")
+		t.Cleanup(func() { ctr("rm", "-f", name) })
+		out, code := ctr("run", "-d", "--name", name, "nginx:1.29")
 		require.Zero(t, code, out)
 		require.Equal(t, name+"\n", lastLine(out))
 
 		require.Eventually(t, func() bool {
-			out, _ := monolith("logs", name)
+			out, _ := ctr("logs", name)
 			return strings.Contains(out, "start worker process")
 		}, 30*time.Second, 200*time.Millisecond, "nginx logs to /dev/stderr")
-		out, _ = monolith("ps")
+		out, _ = ctr("ps")
 		require.Regexp(t, name+`\s+nginx:1.29\s+.*Up `, out)
 
 		start := time.Now()
-		out, code = monolith("stop", name)
+		out, code = ctr("stop", name)
 		require.Zero(t, code, out)
 		require.Less(t, time.Since(start), 8*time.Second, "SIGQUIT (the image's stop signal) stops nginx at once")
-		out, _ = monolith("logs", name)
+		out, _ = ctr("logs", name)
 		require.Contains(t, out, "gracefully shutting down")
-		out, _ = monolith("ps", "-a")
+		out, _ = ctr("ps", "-a")
 		require.Regexp(t, name+`.*Exited \(0\)`, out)
 
-		out, code = monolith("start", name)
+		out, code = ctr("start", name)
 		require.Zero(t, code, out)
-		out, _ = monolith("ps")
+		out, _ = ctr("ps")
 		require.Contains(t, out, name)
 
-		out, code = monolith("rm", name)
+		out, code = ctr("rm", name)
 		require.NotZero(t, code, "rm refuses a running container")
 		require.Contains(t, out, "use -f")
-		_, code = monolith("rm", "-f", name)
+		_, code = ctr("rm", "-f", name)
 		require.Zero(t, code)
-		out, _ = monolith("ps", "-a")
+		out, _ = ctr("ps", "-a")
 		require.NotContains(t, out, name)
 	})
 
 	t.Run("published ports", func(t *testing.T) {
 		const name = "e2e-ports"
-		t.Cleanup(func() { monolith("rm", "-f", name) })
-		l, err := net.Listen("tcp", "127.0.0.1:0")
-		require.NoError(t, err)
-		host := l.Addr().(*net.TCPAddr).Port
-		l.Close()
-
-		get := func() bool {
-			resp, err := http.Get("http://127.0.0.1:" + strconv.Itoa(host) + "/")
-			if err != nil {
-				return false
-			}
-			body, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
-			return resp.StatusCode == http.StatusOK && strings.Contains(string(body), "nginx")
-		}
+		t.Cleanup(func() { ctr("rm", "-f", name) })
+		host := freePort(t)
 		want := fmt.Sprintf("127.0.0.1:%d->80/tcp", host)
 
-		out, code := monolith("run", "-d", "--name", name, "-p", fmt.Sprintf("%d:80", host), "nginx:1.29")
+		out, code := ctr("run", "-d", "--name", name, "-p", fmt.Sprintf("%d:80", host), "nginx:1.29")
 		require.Zero(t, code, out)
-		require.Eventually(t, get, 60*time.Second, 300*time.Millisecond, "localhost:%d reaches nginx on 80", host)
-		out, _ = monolith("ps")
+		waitServes(t, host, "nginx", time.Minute)
+		out, _ = ctr("ps")
 		require.Regexp(t, name+`\s.*`+regexp.QuoteMeta(want), out)
 
-		// The host port is taken now, by this container: a second one is refused.
-		out, code = monolith("run", "-d", "--name", name+"-2", "-p", fmt.Sprintf("%d:80", host), "nginx:1.29")
+		out, code = ctr("run", "-d", "--name", name+"-2", "-p", fmt.Sprintf("%d:80", host), "nginx:1.29")
 		require.NotZero(t, code, out)
 		require.Contains(t, out, "already in use")
-		monolith("rm", "-f", name+"-2")
+		ctr("rm", "-f", name+"-2")
 
-		// The ports are saved with the container: back after stop/start.
-		out, code = monolith("stop", name)
+		out, code = ctr("stop", name)
 		require.Zero(t, code, out)
-		require.False(t, get(), "the forward goes away with the container")
-		out, _ = monolith("ps", "-a")
+		require.False(t, serves(host, "nginx"), "the forward goes away with the container")
+		out, _ = ctr("ps", "-a")
 		require.Regexp(t, name+`\s.*`+regexp.QuoteMeta(want), out, "stopped containers still list their ports")
-		out, code = monolith("start", name)
+		out, code = ctr("start", name)
 		require.Zero(t, code, out)
-		require.Eventually(t, get, 60*time.Second, 300*time.Millisecond, "the forward is back after start")
+		waitServes(t, host, "nginx", time.Minute)
 
-		out, code = monolith("run", "--rm", "-p", "0.0.0.0:80:80", alpine, "true")
+		low := freePrivilegedPort(t)
+		out, code = ctr("run", "-d", "--name", name+"-low", "-p", fmt.Sprintf("%d:80", low), "nginx:1.29")
+		require.Zero(t, code, out)
+		t.Cleanup(func() { ctr("rm", "-f", name+"-low") })
+		waitServes(t, low, "nginx", time.Minute)
+
+		out, code = ctr("run", "--rm", "-p", "0.0.0.0:80:80", alpine, "true")
 		require.NotZero(t, code)
 		require.Contains(t, out, "only on the Mac's localhost")
 	})
 
 	t.Run("prune", func(t *testing.T) {
-		// prune removes every stopped container, so this runs against its
-		// own cache (sharing the Kata kernel) rather than the user's. Under
-		// /tmp: the daemon's socket path must fit macOS's 104 bytes.
+		// prune removes every stopped container, so it gets its own HOME
+		// (sharing the Kata kernel). Under /tmp: socket paths must fit 104 bytes.
 		home, err := os.MkdirTemp("/tmp", "ml-")
 		require.NoError(t, err)
 		t.Cleanup(func() { os.RemoveAll(home) })
-		realHome, err := os.UserHomeDir()
+		shared, err := os.UserHomeDir()
 		require.NoError(t, err)
 		require.NoError(t, os.MkdirAll(filepath.Join(home, ".monolith"), 0755))
-		require.NoError(t, os.Symlink(filepath.Join(realHome, ".monolith/kata"), filepath.Join(home, ".monolith/kata")))
+		require.NoError(t, os.Symlink(filepath.Join(shared, ".monolith/kata"), filepath.Join(home, ".monolith/kata")))
 		isolated := func(args ...string) (string, int) {
-			cmd := exec.Command(binary, append([]string{"container"}, args...)...)
-			cmd.Env = append(os.Environ(), "HOME="+home)
-			out, err := cmd.CombinedOutput()
-			var exit *exec.ExitError
-			if errors.As(err, &exit) {
-				return string(out), exit.ExitCode()
-			}
-			require.NoError(t, err)
-			return string(out), 0
+			return run(t, []string{"HOME=" + home}, binary, append([]string{"container"}, args...)...)
 		}
 		t.Cleanup(func() { isolated("rm", "-f", "p-running") })
 
@@ -223,9 +186,8 @@ func TestContainerRun(t *testing.T) {
 		require.Zero(t, code)
 		require.Contains(t, out, "Nothing to prune.")
 
-		// alpine is used by p-running: image prune -a keeps it until it's gone.
 		out, _ = isolated("image", "prune", "-a", "-f")
-		require.Contains(t, out, "Nothing to prune.")
+		require.Contains(t, out, "Nothing to prune.", "alpine is still used by p-running")
 		_, code = isolated("rm", "-f", "p-running")
 		require.Zero(t, code)
 		out, code = isolated("image", "prune", "-a", "-f")
@@ -236,16 +198,11 @@ func TestContainerRun(t *testing.T) {
 	})
 
 	t.Run("detached --rm removes itself", func(t *testing.T) {
-		out, code := monolith("run", "-d", "--rm", "--name", "e2e-drm", alpine, "true")
+		out, code := ctr("run", "-d", "--rm", "--name", "e2e-drm", alpine, "true")
 		require.Zero(t, code, out)
 		require.Eventually(t, func() bool {
-			out, _ := monolith("ps", "-a")
+			out, _ := ctr("ps", "-a")
 			return !strings.Contains(out, "e2e-drm")
 		}, 30*time.Second, 200*time.Millisecond)
 	})
-}
-
-func lastLine(s string) string {
-	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
-	return lines[len(lines)-1] + "\n"
 }

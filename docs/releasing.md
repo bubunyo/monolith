@@ -18,17 +18,35 @@ two in step. CI shellchecks it.
 
 ## Cutting a release
 
+On your Mac, from an up-to-date `master` checkout:
+
 ```bash
-git checkout master && git pull
-make lint test
-git tag -a v0.1.0 -m "v0.1.0"
-git push origin v0.1.0
+make release VERSION=v0.1.0
 ```
+
+It refuses unless the tree is clean, on `master`, in sync with
+`origin/master` and the tag is new. Then it runs `make lint test test-e2e` and,
+if everything passes, tags and pushes, which starts the Release workflow.
+
+The end-to-end suite (`e2e/`) boots real VMs, so it can't run on GitHub's
+runners (no nested virtualization); this is where it runs. It takes a few
+minutes with a warm cache (longer the first time, or after a version bump of
+Alpine, Kata or k3s) and needs:
+
+- the Mac unlocked for the whole run (pause/resume restores need it)
+- internet (image pulls, first-run downloads)
+- the docker CLI and kubectl on `PATH`
+
+Its VMs, docker contexts and kubeconfig live in `~/.cache/monolith-e2e` (or
+`MONOLITH_E2E_HOME`), never in your `~/.monolith`, `~/.docker` or `~/.kube`.
+Downloads (Alpine, Kata, k3s, images) are shared with your `~/.monolith`, so
+nothing is fetched twice. To run one suite while working on
+it: `make test-e2e RUN=TestDocker`.
 
 A tag with a `-` (for example `v0.2.0-rc.1`) is published as a prerelease.
 
 You can also create the release in GitHub's UI (Releases → Draft a new release,
-with a new tag). Publishing it creates the tag, which starts the workflow; the
+with a new tag); run `make test-e2e` first, since that path skips it. Publishing it creates the tag, which starts the workflow; the
 workflow then attaches the archive and checksums to that release and keeps the
 title, notes and prerelease setting you chose. The release has no assets for
 the few minutes the workflow takes, so `install.sh` fails for that window.

@@ -6,8 +6,9 @@
 make build   # builds to ./bin/monolith AND codesigns with entitlements.plist
 make run     # builds and runs: monolith vm run (auto-generated name)
 make lint    # gofmt check + go vet (CI also runs golangci-lint with .golangci.yml)
-make test    # unit tests: go test -short (skips tests that boot VMs)
-make test-vm # build, then every test, including VM-booting ones
+make test     # unit tests (no VMs)
+make test-e2e # build, then the end-to-end suite in e2e/ (real VMs; see Tests)
+make release VERSION=vX.Y.Z  # lint, unit and e2e tests, then tag and push (starts the Release workflow)
 make dist    # dist/monolith_<version>_darwin_arm64.tar.gz + checksums.txt from bin/monolith
 make init    # cross-compile monolith-init (container VMs' PID 1) into vm/guestinit/files; build runs it
 make proto   # regenerate containerinit/agentpb from agent.proto (needs only Go: buf + plugins via go run/install)
@@ -104,15 +105,19 @@ If no name is given to `run`, one is auto-generated as `lith-NNNNN` (random 5-di
 ## Tests
 
 ```bash
-go test ./...             # all tests
-go test -run TestRun ./vm # single test
-MONOLITH_TEST_DOCKER=1 go test -run TestDockerPauseResume ./vm  # docker host pause/resume (needs internet, docker CLI, unlocked Mac)
-MONOLITH_TEST_K8S=1 go test -run TestClusterPauseResume ./vm  # cluster VM: nginx pod and its LoadBalancer port on localhost survive pause/resume (needs internet, kubectl, unlocked Mac)
-MONOLITH_TEST_SANDBOX=1 go test -run TestSandboxIsolation ./cli/sandbox  # hostile script in a real sandbox (needs docker CLI, unlocked Mac)
-MONOLITH_TEST_CONTAINER=1 go test -run TestContainerRun ./cli/container  # container VMs: exit codes, config, network, published ports, lifecycle (needs internet)
+make test                        # unit tests (go test -short ./...; -short skips oci's slow image conversions)
+go test -run TestParseKube ./vm  # single unit test
+make test-e2e                    # end-to-end: real VMs through the CLI (e2e/, build tag e2e)
+make test-e2e RUN=TestDocker     # one suite: TestContainer, TestSandbox, TestDocker, TestCluster, TestVMDaemon, TestKataVM, TestNetworkSubnet
 ```
 
-**Many tests boot a real VM.** They require macOS on Apple Silicon with Virtualization.framework and the signed `bin/monolith`. Those tests skip under `go test -short` (`make test`), which is what CI runs: GitHub's macOS runners are VMs without nested virtualization. The remaining unit tests (parsers, command lines) run anywhere monolith builds.
+**Unit tests never boot a VM**, so `go test ./...` is safe anywhere monolith builds, and it's what CI runs. Everything that boots a VM or creates a vmnet network is in `e2e/`, behind `//go:build e2e`:
+
+- It drives the real binary (`MONOLITH_BIN`, else `../bin/monolith`), mostly through the CLI as a user would; `vm`/`net` exported helpers only where the CLI has no equivalent (spawning `__vmd`, reading state).
+- `TestMain` sets `HOME` to `MONOLITH_E2E_HOME` (default `~/.cache/monolith-e2e`, at most 60 bytes because VM socket paths must fit macOS's 104-byte limit) and unsets `DOCKER_HOST`, `DOCKER_CONTEXT` and `KUBECONFIG`. VMs, docker contexts and kubeconfig therefore never touch the user's. The download caches (`alpine`, `kata`, `k3s`, `images`, `container`) are symlinked from the user's real `~/.monolith` (`linkCaches`), so nothing is fetched twice; the suite's pulls land in the user's image store. The cluster suite uses its own `KUBECONFIG` seeded with a stand-in user context, to check that `cluster rm` brings it back.
+- It needs an unlocked Mac (restores), internet, the docker CLI and kubectl; a missing tool fails the suite rather than skipping it. Suites run one at a time (`-p 1`); VM names start with `e2e-` and each suite removes its VMs.
+- `make test-e2e` builds with `--options runtime` (the hardened runtime releases use) before running, with a 75 min timeout.
+- GitHub's macOS runners are VMs without nested virtualization, so the suite runs on the maintainer's Mac before each release: `make release VERSION=vX.Y.Z` checks the tree (clean, on master, in sync with origin, tag new), runs `make lint test test-e2e`, then tags and pushes, which starts the Release workflow.
 
 ## CI and Releases
 
@@ -235,7 +240,7 @@ monolith/
     paths.go              — VMsDir, VMDir, VMSockPath, VMSuspendPath, VMLogPath, VMMachineIDPath, VMDockerSockPath,
                             VMKubeDir, VMKubeconfigPath, VMSSHKeyPath, VMSSHSockPath.
     keybag.go             — keybagLocked() (MobileKeyBag via dlopen, cgo): restore is refused while the Mac is locked.
-    *_test.go             — tests (boot real VMs via ../bin/monolith; image_kata_test.go also has unit tests).
+    *_test.go             — unit tests (no VMs; those are in e2e/).
   oci/                    — image store (~/.monolith/images): pull (go-containerregistry, Docker keychain),
                             refs, Lookup by ref or ID prefix, Remove; Convert flattens layers into a sparse ext4 disk.
   containerinit/          — shared by monolith-init and the daemon: Spec, Command (entrypoint/cmd), env, ResolveUser,
@@ -246,6 +251,8 @@ monolith/
   cmd/monolith-init/      — PID 1 of container VMs (linux/arm64, static): main_linux.go (setup, mounts, reaping, shutdown),
                             agent_linux.go (the Agent ttRPC service), grow_linux.go; main_other.go is a stub for the Mac.
   update/                 — latest release lookup, version comparison (x/mod/semver), download + checksum, codesign check, Replace.
+  e2e/                    — //go:build e2e: real-VM suites through the CLI (container, sandbox, docker, cluster, vm, network);
+                            main_test.go isolates HOME and holds the helpers. `make test-e2e`.
   internal/ansi/          — terminal helpers: IsTerminal, UseColor, Paint, Size, Plain (console output → text).
   internal/kubeconfig/    — the cluster's kubeconfig: parse/rewrite k3s's file, merge into, switch to (Use) and remove from the
                             user's, TLS config, readiness check.
@@ -262,7 +269,6 @@ monolith/
                             (plist, launchctl bootstrap/bootout), Mach service naming.
     ip.go                 — LookupIPForMode (DHCP leases + ARP fallback), VmenetForMAC, NetworkStats.
     paths.go              — NetworksDir, NetworkDir, NetworkLogPath.
-    network_subnet_test.go — named-network subnet tests (via ../bin/monolith).
   paths.go                — CachePath(): root of every ~/.monolith path.
   privatesize.go          — PrivateSize(path): a file's bytes not shared with its APFS clones.
   process.go              — ProcessAlive(pid).
