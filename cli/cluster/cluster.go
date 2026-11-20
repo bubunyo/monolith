@@ -53,13 +53,14 @@ Every command except list takes --name (default "cluster-default").`,
 }
 
 var (
-	flagName   string
-	flagCPUs   uint
-	flagMemory string
-	flagK3s    string
-	flagForce  bool
-	flagStart  bool
-	flagQuiet  bool
+	flagName    string
+	flagCPUs    uint
+	flagMemory  string
+	flagK3s     string
+	flagRosetta bool
+	flagForce   bool
+	flagStart   bool
+	flagQuiet   bool
 )
 
 var startCmd = &cobra.Command{
@@ -70,8 +71,8 @@ Its kubectl context (cluster-<name>) becomes the current one. A paused cluster i
 resumed instead. The first start downloads k3s and Alpine and pulls k3s's system
 images, which takes a minute or so.
 
---cpus, --memory and --k3s-version apply when the VM boots; they are saved for
-later starts.`,
+--cpus, --memory, --k3s-version and --rosetta apply when the VM boots; they are
+saved for later starts.`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return start(cmd)
@@ -197,6 +198,11 @@ func start(cmd *cobra.Command) error {
 			cmd.Flags().Changed("k3s-version") && flagK3s != vm.K3sVersionOf(cfg) {
 			return fmt.Errorf("%q is %s; stop it to change --k3s-version", flagName, status.State)
 		}
+		// Rosetta is a device and a boot argument too.
+		if status, err := vm.ReadState(flagName); err == nil && status.State != vm.StatusStopped &&
+			cmd.Flags().Changed("rosetta") && flagRosetta != cfg.Rosetta {
+			return fmt.Errorf("%q is %s; stop it to change --rosetta", flagName, status.State)
+		}
 	}
 	status, err := vm.ReadState(flagName)
 	if err != nil {
@@ -220,15 +226,16 @@ func start(cmd *cobra.Command) error {
 	return ready()
 }
 
-// boot writes the VM's config and spawns its daemon.
-func boot(cmd *cobra.Command) error {
+// startConfig is the cluster's saved config (or the defaults) with the
+// start flags given on this command line applied.
+func startConfig(cmd *cobra.Command) (vm.VMConfig, error) {
 	cfg := vm.DefaultConfig()
 	cfg.CPUs = defaultCPUs
 	cfg.Memory = defaultMemory
 	if vm.Exists(flagName) {
 		var err error
 		if cfg, err = vm.ReadConfig(flagName); err != nil {
-			return err
+			return cfg, err
 		}
 	}
 	cfg.Image = vm.ImageCluster
@@ -239,12 +246,24 @@ func boot(cmd *cobra.Command) error {
 	if cmd.Flags().Changed("memory") {
 		mem, err := clivm.ParseMemory(flagMemory)
 		if err != nil {
-			return err
+			return cfg, err
 		}
 		cfg.Memory = mem
 	}
 	if cmd.Flags().Changed("k3s-version") {
 		cfg.K3sVersion = flagK3s
+	}
+	if cmd.Flags().Changed("rosetta") {
+		cfg.Rosetta = flagRosetta
+	}
+	return cfg, nil
+}
+
+// boot writes the VM's config and spawns its daemon.
+func boot(cmd *cobra.Command) error {
+	cfg, err := startConfig(cmd)
+	if err != nil {
+		return err
 	}
 	if cfg.KubePort == 0 {
 		port, err := vm.FreeLocalPort()
@@ -610,6 +629,13 @@ func confirm(question string) bool {
 	return answer == "y" || answer == "yes"
 }
 
+func addStartFlags(c *cobra.Command) {
+	c.Flags().UintVarP(&flagCPUs, "cpus", "c", 0, "number of vCPUs (default: 2)")
+	c.Flags().StringVarP(&flagMemory, "memory", "m", "", `RAM size, e.g. "4G", "8192M" (default: 4G)`)
+	c.Flags().StringVar(&flagK3s, "k3s-version", vm.DefaultK3sVersion, "k3s release (saved)")
+	c.Flags().BoolVar(&flagRosetta, "rosetta", false, "run linux/amd64 binaries in pods with Rosetta (saved); the image must be labelled arm64, see docs/cluster.md")
+}
+
 func init() {
 	Cmd.AddCommand(useCmd, startCmd, stopCmd, pauseCmd, resumeCmd, listCmd, rmCmd, kubeconfigCmd)
 
@@ -622,9 +648,7 @@ func init() {
 	}
 	useCmd.Flags().BoolVar(&flagStart, "start", false, "start or resume the cluster first if it isn't running")
 	listCmd.Flags().BoolVarP(&flagQuiet, "quiet", "q", false, "print only cluster names")
-	startCmd.Flags().UintVarP(&flagCPUs, "cpus", "c", 0, "number of vCPUs (default: 2)")
-	startCmd.Flags().StringVarP(&flagMemory, "memory", "m", "", `RAM size, e.g. "4G", "8192M" (default: 4G)`)
-	startCmd.Flags().StringVar(&flagK3s, "k3s-version", vm.DefaultK3sVersion, "k3s release (saved)")
+	addStartFlags(startCmd)
 	stopCmd.Flags().BoolVarP(&flagForce, "force", "f", false, "discard a paused cluster's saved state without asking")
 	rmCmd.Flags().BoolVarP(&flagForce, "force", "f", false, "delete without asking")
 }

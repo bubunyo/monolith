@@ -77,6 +77,17 @@ func (clusterImage) Prepare(name string, log io.Writer) (*BootSpec, error) {
 		}
 	}
 
+	commandLine := alpineCommandLine
+	if cfg.Rosetta {
+		if cfg.GuestLayout < GuestLayoutRosetta {
+			return nil, fmt.Errorf("VM %q was created before Rosetta support; recreate it to use --rosetta", name)
+		}
+		if err := CheckRosetta(); err != nil {
+			return nil, err
+		}
+		commandLine += " " + rosettaCmdlineArg + "=1"
+	}
+
 	dataDisk := filepath.Join(vmDir, dockerDataDiskName)
 	if !exists(dataDisk) {
 		// Left unformatted; cluster-setup runs mkfs.ext4 on first boot.
@@ -88,7 +99,7 @@ func (clusterImage) Prepare(name string, log io.Writer) (*BootSpec, error) {
 	return &BootSpec{
 		KernelPath:   kernel.KernelPath,
 		InitrdPath:   kernel.InitrdPath,
-		CommandLine:  alpineCommandLine,
+		CommandLine:  commandLine,
 		DiskPath:     disk,
 		DataDiskPath: dataDisk,
 		Shares: []Share{
@@ -96,5 +107,6 @@ func (clusterImage) Prepare(name string, log io.Writer) (*BootSpec, error) {
 			{Tag: kubeShareTag, HostPath: kubeDir},
 		},
 		HandlesStop: true,
+		Rosetta:     cfg.Rosetta,
 	}, nil
 }
